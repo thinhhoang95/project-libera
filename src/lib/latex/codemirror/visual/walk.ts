@@ -1088,7 +1088,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
   /** Groups that only scope layout (`{\setlength{\tabcolsep}{3pt}\input{table}}`): not an argument of anything. */
   const layoutGroups = new Set<number>();
   const inArgument = (node: SyntaxNode) => {
-    for (let parent = node.parent; parent; parent = parent.parent) if (!layoutGroups.has(parent.from) && /^(?:Group|NonEmptyGroup|TextArgument|ShortTextArgument|LongArg|SectioningArgument)$/.test(parent.name)) return true;
+    // (A group a font or size switch opens, `{\small\textbf{Abstract.} \input{abstract}}`, scopes the switch only: nlin.AO 2610.25113.)
+    for (let parent = node.parent; parent; parent = parent.parent) if (!layoutGroups.has(parent.from) && !(parent.name === "Group" && groupSwitch(parent)) && /^(?:Group|NonEmptyGroup|TextArgument|ShortTextArgument|LongArg|SectioningArgument)$/.test(parent.name)) return true;
     return false;
   };
 
@@ -1710,7 +1711,9 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           // AASTeX's `\bibliography{refs}{}` takes an empty group after it, which prints nothing.
           const empty = /^[ \t]*\{\s*\}/.exec(read(state, node.to, Math.min(doc.length, node.to + 20)));
           const bibEnd = node.to + (empty?.[0].length ?? 0);
-          let span = aloneOnLines(doc, node.from, bibEnd);
+          // A comment after the command on its line (`\bibliography{refs} % no extension`, physics 2610.30517) goes with the list.
+          const trailing = /^[ \t]*%[^\n]*/.exec(read(state, bibEnd, doc.lineAt(bibEnd).to));
+          let span = aloneOnLines(doc, node.from, bibEnd + (trailing?.[0].length ?? 0));
           // `\begingroup\renewcommand{\baselinestretch}{0.94}\bibliography{references}\endgroup` (eess.SY 2611.15162) is one line: the
           // group and the spacing around the command print nothing, and go with the list (their source shows at the caret).
           if (!span && structural && inner && !hasDirectError(node)) {
@@ -2624,7 +2627,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       }
       // Any other `\twocolumn[{ … }]` or `\twocolumn[ … ]` (a title block, text set across both columns): a wrapper. Its content is
       // drawn as it would be outside, the `\twocolumn[{` and `}]` fold away (the cursor on their lines shows them).
-      if (block && open && !teaser && !hasDirectError(node) && block.content.trim()) {
+      // (The grammar reads no comment or line end inside `[…]`, so `\twocolumn[%` has a parse error that the brackets read from the text do not: nlin.AO 2610.25113.)
+      if (block && open && !teaser && block.content.trim()) {
         const openingEnd = wrapped ? contentFrom + groupAt + 1 : contentFrom;
         const closing = { from: wrapped ? contentFrom + wrapped.end - 1 : ctrl.to + block.end - 1, to: ctrl.to + block.end };
         if (closing.from >= openingEnd) {
@@ -3395,6 +3399,12 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     // `\urlprefix` (url.sty, written into the `.bbl` by BibTeX's `\newblock\urlprefix\url{…}`) prints "URL ".
     if (text === "\\urlprefix" && !args.length && !macroAt(defs, "urlprefix", node.from)) {
       if (structural) emit({ kind: "symbol", from: node.from, to: ctrl.to, reveal: "touch", replaces: [{ from: node.from, to: ctrl.to, widget: new SymbolWidget("URL ", text) }] });
+      consumed.push([node.from, ctrl.to]);
+      return undefined;
+    }
+    // amsart's `\bysame` in a reference prints a three-em rule (math.AT 2611.11463): the author's name of the entry above.
+    if (text === "\\bysame" && !args.length && !macroAt(defs, "bysame", node.from)) {
+      if (structural) emit({ kind: "symbol", from: node.from, to: ctrl.to, reveal: "touch", replaces: [{ from: node.from, to: ctrl.to, widget: new SymbolWidget("\u2014\u2014\u2014", text) }] });
       consumed.push([node.from, ctrl.to]);
       return undefined;
     }
