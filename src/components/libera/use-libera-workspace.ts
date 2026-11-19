@@ -67,8 +67,8 @@ import { createDeferredSave, flushPendingState, registerStateFlusher } from "./d
 import { useCanvasLayout } from "./use-canvas-layout";
 import { captureCanvasViewState } from "./canvas-view-state";
 import { mergeSourceScrollState } from "@/lib/markdown-source-scroll";
-import { useGallery } from "./gallery-store";
-import { createGalleryTab, isGalleryTab, reconcileGalleryTabs, type GalleryTabPlacement } from "./gallery-tabs";
+import { useGalleryContents } from "./gallery-store";
+import { createGalleryTab, galleryTabKey, isGalleryTab, reconcileGalleryTabs, type GalleryTabPlacement } from "./gallery-tabs";
 import { createRecordingTab, isRecordingTab, recordingTabId } from "./recording/recording-tabs";
 import { createPageTab, isPageTab, type PageKind } from "./page-tabs";
 import { focusedCanvasPane } from "@/lib/canvas-layout";
@@ -1399,17 +1399,24 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
   // The gallery store is shared with the gallery view, so moves into albums,
   // edits and deletions there reach open photo tabs here.
-  const galleryContents = useGallery().contents;
+  // It listens only while a photo tab is open, and reconciles when the catalog
+  // or the set of photo tabs changes, not for drafts or view state.
+  const openGalleryKey = galleryTabKey(tabs);
+  const galleryContents = useGalleryContents(openGalleryKey !== "");
+  const closeTabsWithoutConfirmRef = useRef(closeTabsWithoutConfirm);
   useEffect(() => {
-    if (!galleryContents) return;
-    const reconciled = reconcileGalleryTabs(tabs, galleryContents.photos);
-    if (reconciled.tabs !== tabs) {
+    closeTabsWithoutConfirmRef.current = closeTabsWithoutConfirm;
+  }, [closeTabsWithoutConfirm]);
+  useEffect(() => {
+    if (!galleryContents || !openGalleryKey) return;
+    const reconciled = reconcileGalleryTabs(tabsRef.current, galleryContents.photos);
+    if (reconciled.tabs !== tabsRef.current) {
       const changed = new Map(reconciled.tabs.map((tab) => [tab.id, tab]));
       setTabs((currentTabs) => currentTabs.map((tab) => isGalleryTab(tab) ? changed.get(tab.id) ?? tab : tab));
     }
     // Called from an effect, and photos that were deleted have no place to keep.
-    if (reconciled.closedTabIds.length) closeTabsWithoutConfirm(reconciled.closedTabIds, { remember: false });
-  }, [closeTabsWithoutConfirm, galleryContents, tabs]);
+    if (reconciled.closedTabIds.length) closeTabsWithoutConfirmRef.current(reconciled.closedTabIds, { remember: false });
+  }, [galleryContents, openGalleryKey]);
 
   const closeTab = useCallback((tabId: string) => {
     const tab = tabs.find((currentTab) => currentTab.id === tabId);
