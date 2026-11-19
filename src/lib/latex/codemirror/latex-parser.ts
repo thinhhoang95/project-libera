@@ -124,7 +124,8 @@ function scanPreambleBraces(head: string): PreambleBraces | null {
         while (to < head.length && to < from + 300 && !"{%\n".includes(head[to])) to++;
         const text = head.slice(from, to);
         const rest = text.split(/#[1-9]/).filter((part) => part !== "");
-        if (head[to] === "{" && text.startsWith("#") && (rest.length >= 2 || rest.some((part) => /&|\\\\/.test(part)))) {
+        // Text before `#1` (`\def\equationautorefname~#1\null{…}`, a delimiter ahead of the first parameter) is more than the grammar reads too.
+        if (head[to] === "{" && text.includes("#") && (!text.startsWith("#") || rest.length >= 2 || rest.some((part) => /&|\\\\/.test(part)))) {
           const kept = (text.match(/#[1-9]/g) ?? []).join("");
           const patched = kept.padEnd(text.length, " ");
           for (let n = 0; n < text.length; n++) if (patched[n] !== text[n]) edits.set(from + n, patched[n]);
@@ -155,6 +156,34 @@ class PatchedInput implements Input {
   chunk(from: number) { return this.patch(this.inner.chunk(from), from); }
   read(from: number, to: number) { return this.patch(this.inner.read(from, to), from); }
 }
+
+/**
+ * The document redefines `\[` and `\]` (`\def\[{\left[}` and `\def\]{\right]}` in a preamble, cs.DM 2611.13813's `\[28(L(P_n))\]` in an
+ * `eqnarray*`): they are delimiters of a formula, not display math, but the grammar reads them as display math and the formula
+ * around them as an error, which leaves the environment around it as source. Read as thin spaces (the same length); the formula's
+ * text, which holds them, is read from the document as written and expanded as the macros say.
+ */
+const REDEFINED_BRACKETS = /\\(?:g?def|newcommand|renewcommand|providecommand|DeclareRobustCommand)\s*\*?\s*\{?\s*\\[[\]]/;
+let lastBracketHead: string | null = null;
+let lastBracketKey = "";
+function redefinedBrackets(input: Pick<Input, "length" | "read">) {
+  const head = input.read(0, Math.min(input.length, PREAMBLE_LIMIT));
+  if (head === lastBracketHead) return lastBracketKey;
+  lastBracketHead = head;
+  // A commented-out redefinition (`%\renewcommand{\[}{\begin{equation}}` in a template) leaves `\[ … \]` display math.
+  lastBracketKey = head.includes("\\") && REDEFINED_BRACKETS.test(head) && REDEFINED_BRACKETS.test(head.replace(/(^|[^\\])%[^\n]*/g, "$1")) ? "[]" : "";
+  return lastBracketKey;
+}
+/** The input with `\[` and `\]` read as `\,` (a `\\` is skipped, so `\\[2pt]` stays a line break). */
+class BracketPatchedInput implements Input {
+  constructor(readonly inner: Input) {}
+  get length() { return this.inner.length; }
+  get lineChunks() { return this.inner.lineChunks; }
+  private patch(text: string) { return text.includes("\\") ? text.replace(/\\(?:\\|[[\]])/g, (pair) => (pair === "\\\\" ? pair : "\\,")) : text; }
+  chunk(from: number) { return this.patch(this.inner.chunk(from)); }
+  read(from: number, to: number) { return this.patch(this.inner.read(from, to)); }
+}
+const bracketTrees = new WeakMap<Tree, string>();
 
 /** Trees parsed with text-box macros (`textBoxMacros`), by the names. */
 const textBoxTrees = new WeakMap<Tree, string>();
@@ -325,8 +354,9 @@ export class PreambleSafeParser extends Parser {
     const boxes = textBoxMacros(input);
     const boxKey = boxes.join(",");
     const boxBefore = fragments.length ? textBoxTrees.get(fragments[0].tree) ?? "" : "";
+    const brackets = redefinedBrackets(input);
     // Reading the same text another way invalidates what was parsed: all of it when the reading changes, the preamble while it is patched.
-    if ((before === undefined) !== !patch || (fragments.length && boxBefore !== boxKey)) fragments = [];
+    if ((before === undefined) !== !patch || (fragments.length && (boxBefore !== boxKey || (bracketTrees.get(fragments[0].tree) ?? "") !== brackets))) fragments = [];
     else if (patch && fragments.length) {
       const end = Math.min(input.length, Math.max(patch.end, before ?? 0) + 256);
       fragments = TreeFragment.applyChanges(fragments, [{ fromA: 0, toA: end, fromB: 0, toB: end }]);
@@ -357,14 +387,16 @@ export class PreambleSafeParser extends Parser {
       for (const at of dollars) edits.set(at, " ");
       source = new PatchedInput(input, patch?.positions ?? [], edits);
     }
+    if (brackets) source = new BracketPatchedInput(source);
     const parse = parser.createParse(source, fragments, ranges);
-    if (!patch && !boxKey) return parse;
+    if (!patch && !boxKey && !brackets) return parse;
     return {
       advance() {
         const tree = parse.advance();
         if (tree) {
           if (patch) patchedTrees.set(tree, patch.end);
           if (boxKey) textBoxTrees.set(tree, boxKey);
+          if (brackets) bracketTrees.set(tree, brackets);
         }
         return tree;
       },

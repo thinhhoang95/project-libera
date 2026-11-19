@@ -82,7 +82,12 @@ function rewrite(text: string, rules: Record<string, Rule>): string | null {
 }
 
 /** Commands the text renderer draws (or that a rewritten entry may still hold): any other command makes the entry source. */
-const DRAWN = /^(?:emph|textbf|textit|textsc|textrm|textsl|texttt|href|url|ss|o|O|ae|AE|oe|OE|aa|AA|l|L|i|j|c|v|u|H|k|r|d|t|newblock)$/;
+const DRAWN = /^(?:emph|textbf|textit|textsc|textrm|textsl|texttt|href|url|ss|o|O|ae|AE|oe|OE|aa|AA|l|L|i|j|c|v|u|H|k|r|d|t|newblock|cite|citep|citet|ref)$/;
+
+/** `\ifmmode A \else B \fi` as B (an entry is text mode); one without an `\else` as nothing. Not nested. */
+function textModeConditionals(text: string): string {
+  return text.replace(/\\ifmmode(?![A-Za-z@])(?:(?!\\if)[\s\S])*?(?:\\else(?![A-Za-z@])((?:(?!\\if)[\s\S])*?))?\\fi(?![A-Za-z@])/g, (_, other: string | undefined) => other ?? "");
+}
 
 /** The LaTeX an entry holds once its bibliography markup is rewritten; null when something it uses is not understood. */
 function finish(text: string | null): string | null {
@@ -98,14 +103,15 @@ function finish(text: string | null): string | null {
 }
 
 /** natbib's author-year label ends in `(1972)`, `(1972a)` or `(1972{\natexlab{a}})`. */
-export const AUTHOR_YEAR_LABEL = /\(\s*\d{4}(?:[a-z]|\{?\\natexlab\s*\{[a-z]?\}\}?)?\s*\)/;
+export const AUTHOR_YEAR_LABEL = /\(\s*\d{4}(?:[a-z]|\{?\\natexlab\s*\{[a-z]?\}\}?)?\s*\)|[A-Za-z.}]\s*\(\s*\)/;
 
 /** The markup of REVTeX's `.bbl` entries. */
 export const REVTEX_ENTRY = /\\(?:bibinfo|bibfield|BibitemOpen|BibitemShut)(?![A-Za-z@])/;
 
 /** A REVTeX `.bbl` entry's body (after `\bibitem[…]{key}`) as LaTeX the renderer draws; null when it is not understood. */
 export function revtexEntryLatex(body: string): string | null {
-  return finish(rewrite(body, REVTEX_RULES));
+  // `Papi\ifmmode~\acute{c}\else \'{c}\fi{}`: an entry is text, so its `\else` branch.
+  return finish(rewrite(textModeConditionals(body), REVTEX_RULES));
 }
 
 /** EPL's `\Name{A \and B}` as LaTeX; null when it is not understood. */

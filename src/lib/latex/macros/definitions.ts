@@ -116,9 +116,17 @@ function keyValues(list: string) {
   return values;
 }
 
+/**
+ * Data macros made with `\csname` (`\expandafter\def\csname mpb@J.one.lo\endcsname{93.1}`, `\@namedef{…}{…}`): names with `@`, `.`
+ * and digits that no control word can have, read with `\csname name\endcsname`. Kept apart from `macros` (a paper has thousands
+ * of them, and every conditional would list them). `prefixes`: each name up to its first `@`, the families that are data.
+ */
+export type LatexDataMacros = { macros: Map<string, LatexMacro[]>; prefixes: Set<string> };
+
 export type LatexDefinitions = {
   /** Every definition of each name, in reading order (later ones win from where they are). */
   macros: Map<string, LatexMacro[]>;
+  dataMacros?: LatexDataMacros;
   environments: Map<string, LatexEnvironmentDefinition>;
   theorems: Map<string, LatexTheoremDefinition>;
   /** `\newcounter{c}[within]` and `\numberwithin{c}{within}`: the counter that resets each one. */
@@ -188,7 +196,7 @@ export function emptyLatexDefinitions(): LatexDefinitions {
   };
 }
 
-const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|DeclarePairedDelimiter|foreach|newlist|setlist|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|NewExpandableDocumentCommand|RenewExpandableDocumentCommand|ProvideExpandableDocumentCommand|DeclareExpandableDocumentCommand|PassOptionsToPackage|PassOptionsToClass|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|newsiamthm|newsiamremark|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|include|setcounter|graphicspath|newcolumntype|DeclareSIUnit|sisetup|definecolor|colorlet|algnewcommand|algrenewcommand|algdef|algblockdefx|algblock|algtext|SetKwFunction|SetKwInOut|SetKwInput|SetKwProg|SetKwData|SetKwBlock|SetKwFor|SetKw|newacronym|acro|newglossaryentry|DeclareAcronym|loop|DeclareOption|ProcessOptions|ExecuteOptions|SetupKeyvalOptions|DeclareBoolOption|ProcessKeyvalOptions|ProcessLocalKeyvalOptions|declaretheorem|declaretheoremstyle|newtheoremstyle|DeclarePairedDelimiterX|DeclarePairedDelimiterXPP|DeclareMathAlphabet|DeclareMathSymbol|mathchardef|chardef|DeclareSymbolFontAlphabet)(?![A-Za-z@])/g;
+const DEFINITION = /\\(newcommand|renewcommand|providecommand|DeclareRobustCommand|def|gdef|edef|xdef|let|DeclareMathOperator|DeclarePairedDelimiter|foreach|newlist|setlist|NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand|NewExpandableDocumentCommand|RenewExpandableDocumentCommand|ProvideExpandableDocumentCommand|DeclareExpandableDocumentCommand|PassOptionsToPackage|PassOptionsToClass|newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|newtheorem|newsiamthm|newsiamremark|theoremstyle|newcounter|numberwithin|counterwithin|crefname|Crefname|documentclass|usepackage|RequirePackage|input|include|setcounter|graphicspath|newcolumntype|DeclareSIUnit|sisetup|definecolor|colorlet|algnewcommand|algrenewcommand|algdef|algblockdefx|algblock|algtext|SetKwFunction|SetKwInOut|SetKwInput|SetKwProg|SetKwData|SetKwBlock|SetKwFor|SetKw|newacronym|acro|newglossaryentry|DeclareAcronym|loop|DeclareOption|ProcessOptions|ExecuteOptions|SetupKeyvalOptions|DeclareBoolOption|ProcessKeyvalOptions|ProcessLocalKeyvalOptions|declaretheorem|declaretheoremstyle|newtheoremstyle|DeclarePairedDelimiterX|DeclarePairedDelimiterXPP|DeclareMathAlphabet|DeclareMathSymbol|mathchardef|chardef|DeclareSymbolFontAlphabet|@namedef|@gnamedef)(?![A-Za-z@])/g;
 
 /** Environments whose contents TeX reads as text, not commands. */
 const VERBATIM_ENVIRONMENTS = /^(?:verbatim\*?|Verbatim\*?|BVerbatim|LVerbatim|lstlisting|minted|comment|filecontents\*?)$/;
@@ -821,6 +829,15 @@ export const DRAWN_BUILTINS = new Set([
 ]);
 const PACKAGE_FILE = /\.(?:sty|cls)$/i;
 /** Formula commands the Visual mode draws itself when a document builds them from boxes (see math-render.ts's KATEX_MACROS). */
+/** Commands the editor (KaTeX or the fragment renderer) draws itself, which a document may redefine as a TikZ picture (`\underbrace`, `\orcidlink`). */
+const NATIVELY_DRAWN = new Set([
+  ...DRAWN_BUILTINS, "orcidlink",
+  "underbrace", "overbrace", "overline", "widehat", "widetilde", "overrightarrow", "overleftarrow", "underrightarrow", "underleftarrow", "xrightarrow", "xleftarrow",
+  "cancel", "bcancel", "xcancel", "boxed", "hat", "tilde", "bar", "vec", "dot", "ddot", "underset", "overset", "stackrel", "cdots", "ldots", "dots",
+]);
+/** Symbols a document may build from a rotated arrow, by their stix names (only names whose glyph is certain). */
+const STIX_GLYPHS: Record<string, string> = { twoheaduparrow: "\u219F", twoheaddownarrow: "\u21A1" };
+const TIKZ_BODY = /\\(?:tikz|pgf|usetikzlibrary)[A-Za-z@]*|\\begin\s*\{(?:tikzpicture|pgfpicture)\}/;
 const BOX_BUILT = new Set(["widebar"]);
 /** TeX's sized delimiters, which documents wrap for spacing (mleftright's idiom). */
 const SIZED_DELIMITERS = new Set(["left", "right", "middle"]);
@@ -838,7 +855,7 @@ function addMacro(context: ReadContext, macro: Omit<LatexMacro, "fingerprint">, 
   // A class's or package's font machinery (naaclhlt2019.sty's `\small`) passes the command itself as a token,
   // which expanding cannot follow: LaTeX's own meaning is drawn instead.
   if (!macro.alias && selfReferent(macro.name, macro.body)) return null;
-  if (context.file !== undefined && PACKAGE_FILE.test(context.file) && DRAWN_BUILTINS.has(macro.name)) return null;
+  if (context.file !== undefined && PACKAGE_FILE.test(context.file) && (DRAWN_BUILTINS.has(macro.name) || macro.name === "orcidlink")) return null;
   // The same restyling written in the document (Mask R-CNN's `\renewcommand\paragraph{\@startsection{paragraph}…}`):
   // the kernel's page machinery, not something to draw.
   if (DRAWN_BUILTINS.has(macro.name) && /\\@(?:startsection|setfontsize|setsize|dottedtocline|xpt|ixpt)(?![A-Za-z@])/.test(macro.body)) return null;
@@ -848,6 +865,9 @@ function addMacro(context: ReadContext, macro: Omit<LatexMacro, "fingerprint">, 
   // Formula commands built from box arithmetic (the TeX.SX `\widebar`: `\@ifnextchar`, `\setbox`, `\mathaccent"0362`),
   // which expanding cannot follow: KaTeX draws a near equivalent (math-render.ts).
   if (BOX_BUILT.has(macro.name) && /\\(?:@ifnextchar|setbox|mathaccent|wide@bar)(?![A-Za-z])/.test(macro.body)) return null;
+  // A command drawn natively redefined with TikZ or pgf (2611.09610's `\def\underbrace#1{\@ifnextchar_{\tikz@@underbrace…`, a project's own
+  // `orcidlink.sty`): the picture cannot be drawn here, and the built-in meaning is the one the author means.
+  if (NATIVELY_DRAWN.has(macro.name) && !macro.alias && TIKZ_BODY.test(macro.body)) return null;
   // A drawn command wrapped around its saved self (2107.05853's `\let\oldparagraph\paragraph`
   // `\renewcommand{\paragraph}[1]{\oldparagraph{#1.}}`): LaTeX's own is drawn (a heading), without what the wrapper adds.
   if (DRAWN_BUILTINS.has(macro.name) && !macro.alias && callsSavedOriginal(context.defs, macro.name, macro.body)) return null;
@@ -855,6 +875,10 @@ function addMacro(context: ReadContext, macro: Omit<LatexMacro, "fingerprint">, 
   // \mathclose\bgroup\originalleft}` and `\renewcommand{\right}{\aftergroup\egroup\originalright}`): TeX's group tricks
   // around the saved delimiter, which a formula renderer cannot run. TeX's own `\left` and `\right` are drawn.
   if (SIZED_DELIMITERS.has(macro.name) && !macro.alias && callsSavedOriginal(context.defs, macro.name, macro.body) && /\\(?:aftergroup|bgroup|egroup|mathopen|mathclose)(?![A-Za-z@])/.test(macro.body)) return null;
+  // stix's and unicode-math's names for U+219F and U+21A1, made by hand with a rotated arrow (`\mathpalette` and `\rotatebox`, math.GN
+  // 2610.31059): the symbol itself, which a formula can draw.
+  const glyph = STIX_GLYPHS[macro.name];
+  if (glyph && !macro.arity && /\\(?:mathpalette|rotatebox)(?![A-Za-z@])/.test(macro.body)) macro = { ...macro, body: `\\mathrel{\\text{${glyph}}}` };
   const existing = context.defs.macros.get(macro.name);
   if (mode === "provide" && existing?.length) return null;
   const fingerprint = hashString(JSON.stringify([macro.name, macro.arity, macro.optional ?? null, macro.spec ?? null, macro.body, !!macro.mathOnly, !!macro.unsupported, !!macro.alias, mode === "provide"]));
@@ -863,6 +887,25 @@ function addMacro(context: ReadContext, macro: Omit<LatexMacro, "fingerprint">, 
   list.push(added);
   context.defs.macros.set(macro.name, list);
   return added;
+}
+
+/** A data macro (`\csname name\endcsname`): a macro without arguments under a name no control word has. */
+function addDataMacro(defs: LatexDefinitions, name: string, body: string, pos: number, file: string | undefined): LatexMacro {
+  const data = defs.dataMacros ??= { macros: new Map(), prefixes: new Set() };
+  const macro: LatexMacro = { name, arity: 0, body, pos, file, fingerprint: hashString(JSON.stringify(["csname", name, body])) };
+  const list = data.macros.get(name);
+  if (list) list.push(macro); else data.macros.set(name, [macro]);
+  const at = name.indexOf("@");
+  if (at > 0) data.prefixes.add(name.slice(0, at + 1));
+  return macro;
+}
+
+/** The data macro `name` in force at `pos`, or null. */
+export function dataMacroAt(defs: LatexDefinitions, name: string, pos: number): LatexMacro | null {
+  const list = defs.dataMacros?.macros.get(name);
+  if (!list) return null;
+  for (let i = list.length - 1; i >= 0; i--) if (list[i].pos <= pos && (list[i].end === undefined || pos < list[i].end!)) return list[i];
+  return null;
 }
 
 /** What a macro without arguments stands for when it is a plain constant (`\def\llncs{0}`), which conditionals may test. */
@@ -1183,6 +1226,18 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
       }
     } else if (command === "def" || command === "gdef" || command === "edef" || command === "xdef") {
       const name = readCommandName(source, index);
+      // `\expandafter\def\csname mpb@J.one.lo\endcsname{93.1}`: a data macro, read with `\csname … \endcsname`.
+      if (name?.name === "csname" && /\\expandafter\s*(?:\\global\s*)?$/.test(source.slice(Math.max(0, start - 40), start))) {
+        const close = source.indexOf("\\endcsname", name.end);
+        const key = close > 0 && close - name.end <= 200 ? source.slice(name.end, close).trim() : "";
+        const body = key && !/[\\{}%#$\n]/.test(key) ? readGroupAt(source, close + 10) : null;
+        if (body) {
+          end = body.end;
+          if (!uncertain && (command === "def" || command === "gdef" || !/[\\#]/.test(body.content))) added = addDataMacro(defs, key, body.content, pos, context.file);
+        }
+        if (end !== null) { if (added && !global) (scanner.innermost()?.locals ?? []).push(added); if (context.file === undefined) defs.extents.push({ from: context.offset + start, to: context.offset + end }); if (end > pattern.lastIndex) pattern.lastIndex = end; scanner.jump(end); }
+        continue;
+      }
       // `\xdef\csname m\x\endcsname{…}` defines a name made at run time, not `\csname`.
       if (!name || source[skipSpace(source, index)] === "{" || name.name === "csname") continue;
       index = name.end;
@@ -1211,6 +1266,14 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
         else if (uncertain) shadow(name.name, `\\${name.name} is defined under a condition`);
         else added = addMacro(context, { name: name.name, arity: (parameters.match(/#/g) ?? []).length, body: body.content, pos, file: context.file }, "renew");
       }
+    } else if (command === "@namedef" || command === "@gnamedef") {
+      // `\@namedef{mpb@x}{93.1}`: the data macro `\csname mpb@x\endcsname`.
+      const key = readGroupAt(source, index);
+      const body = key && readGroupAt(source, key.end);
+      if (!key || !body) continue;
+      end = body.end;
+      const name = key.content.trim();
+      if (!uncertain && name && !/[\\{}%#$\n]/.test(name)) added = addDataMacro(defs, name, body.content, pos, context.file);
     } else if (command === "let") {
       const name = readCommandName(source, index);
       if (!name) continue;
@@ -1817,6 +1880,7 @@ export function readLatexDefinitions(source: string, defs = emptyLatexDefinition
 export function definitionsFingerprint(defs: LatexDefinitions) {
   const parts: string[] = [];
   for (const [name, list] of defs.macros) parts.push(name, ...list.map((macro) => `${macro.fingerprint}@${macro.pos}-${macro.end ?? ""}`));
+  for (const [name, list] of defs.dataMacros?.macros ?? []) parts.push(`data:${name}`, ...list.map((macro) => `${macro.fingerprint}@${macro.pos}-${macro.end ?? ""}`));
   for (const env of defs.environments.values()) parts.push(JSON.stringify(env));
   for (const thm of defs.theorems.values()) parts.push(JSON.stringify(thm));
   for (const [counter, within] of defs.counterWithin) parts.push(`${counter}<${within}`);
@@ -1986,6 +2050,19 @@ export function macroAt(defs: LatexDefinitions, name: string, pos: number): Late
   return null;
 }
 
+/**
+ * `\begin{PRoof}` with no `\newenvironment`, only `\def\PRoof{\par\noindent{\textbf{Proof of Claim 1}~}}` (cs.DM 2611.13813): TeX's
+ * `\begin{X}` runs `\X`, and `\end{X}` runs `\endX` when there is one. An environment of the document with that opening and closing.
+ */
+export function macroEnvironment(defs: LatexDefinitions, name: string, pos: number): LatexEnvironmentDefinition | undefined {
+  if (!/^[A-Za-z@]+$/.test(name)) return undefined;
+  const plain = (macro: LatexMacro | null) => !!macro && !macro.unsupported && !macro.alias && !macro.arity && !macro.spec && !macro.mathOnly && !macro.package;
+  const open = macroAt(defs, name, pos);
+  const close = macroAt(defs, `end${name}`, pos);
+  if (!plain(open) || (close && !plain(close))) return undefined;
+  return { name, arity: 0, begin: open!.body, end: close?.body ?? "", pos: open!.pos };
+}
+
 /** The state of the `\newif` switch `name` at `pos` in the open file: true or false, null when not known, undefined for no switch. */
 export function switchAt(defs: LatexDefinitions, name: string, pos: number): boolean | null | undefined {
   const list = defs.switches?.get(name);
@@ -2092,10 +2169,14 @@ export function mapLatexDefinitions(defs: LatexDefinitions, changes: PositionMap
   for (const [name, list] of defs.macros) macros.set(name, list.map((macro) => (macro.pos < 0 && macro.end === undefined ? macro : { ...macro, pos: map(macro.pos), end: macro.end === undefined ? undefined : map(macro.end) })));
   const environments = new Map<string, LatexEnvironmentDefinition>();
   for (const [name, env] of defs.environments) environments.set(name, env.pos < 0 ? env : { ...env, pos: map(env.pos) });
+  let dataMacros = defs.dataMacros;
+  if (dataMacros && [...dataMacros.macros.values()].some((list) => list.some((macro) => macro.pos >= 0))) {
+    dataMacros = { prefixes: dataMacros.prefixes, macros: new Map([...dataMacros.macros].map(([name, list]) => [name, list.map((macro) => (macro.pos < 0 && macro.end === undefined ? macro : { ...macro, pos: map(macro.pos), end: macro.end === undefined ? undefined : map(macro.end) }))])) };
+  }
   const note = (item: LatexDefinitionNote) => (item.file !== undefined ? item : { ...item, pos: map(item.pos) });
   const switches = defs.switches && new Map([...defs.switches].map(([name, list]) => [name, list.map((setting) => (setting.pos < 0 && setting.end === undefined ? setting : { ...setting, pos: map(setting.pos), end: setting.end === undefined ? undefined : map(setting.end) }))]));
   return {
-    ...defs, macros, environments, ...(switches ? { switches } : {}),
+    ...defs, macros, environments, ...(switches ? { switches } : {}), ...(dataMacros ? { dataMacros } : {}),
     extents: defs.extents.map((extent) => ({ from: map(extent.from), to: map(extent.to), ...(extent.broken ? { broken: true } : {}) })),
     problems: defs.problems.map(note), unsupported: defs.unsupported.map(note),
   };

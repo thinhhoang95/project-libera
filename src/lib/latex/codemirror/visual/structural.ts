@@ -3,9 +3,9 @@ import { Facet, RangeSet, RangeValue, StateEffect, StateField, type ChangeDesc, 
 import { Decoration, EditorView, type DecorationSet } from "@codemirror/view";
 import type { Tree } from "@lezer/common";
 import { readGroup, TEX_GROUPS } from "../../../macros/core";
-import { macroAt } from "../../macros/definitions";
+import { macroAt, macroEnvironment } from "../../macros/definitions";
 import { environmentName, FLOAT_KINDS } from "../../macros/numbering";
-import { bodyStartIn, disabledField, noteBodyStart, preambleOpenField, visualDefinitions } from "./model";
+import { bodyStartIn, disabledField, macroSourcesField, noteBodyStart, preambleOpenField, visualDefinitions } from "./model";
 import { FRAMED_PROSE, GENERIC_LISTS } from "./environments";
 import { boxEnvironments, handTitleBlock, noteBoxEnvironments, macroRegionsFor, titleRunStart, walkConstructs, type Construct, type RevealPolicy } from "./walk";
 import { isPreambleFragment } from "./preamble-fragment";
@@ -219,7 +219,7 @@ function widen(state: EditorState, tree: Tree, extents: RangeSet<ConstructMark>,
           const defs = visualDefinitions(state);
           // Floats and tabulars the grammar does not name (`algorithm`, `table*`, `tabular*`) are drawn whole too;
           // so are enumitem's lists of the document's own (`\newlist{steps}{enumerate}{3}`), as the lists the grammar knows.
-          rendered = !!name && (RENDERED_ENVIRONMENTS.test(name) || name in FLOAT_KINDS || TABULAR_ENVIRONMENTS.test(name) || defs.theorems.has(name) || defs.environments.has(name) || boxEnvironments(state.doc, defs).has(name) || FRAMED_PROSE.test(name) || (wholeLists && GENERIC_LISTS.test(name)) || (wholeLists && /^(?:(?:enumerate|itemize|description)\*|(?:compact|aspara|inpara)(?:enum|item|desc))$/.test(name)) || (wholeLists && !!defs.lists?.has(name)));
+          rendered = !!name && (RENDERED_ENVIRONMENTS.test(name) || name in FLOAT_KINDS || TABULAR_ENVIRONMENTS.test(name) || defs.theorems.has(name) || defs.environments.has(name) || !!macroEnvironment(defs, name, node.from) || boxEnvironments(state.doc, defs).has(name) || FRAMED_PROSE.test(name) || (wholeLists && GENERIC_LISTS.test(name)) || (wholeLists && /^(?:(?:enumerate|itemize|description)\*|(?:compact|aspara|inpara)(?:enum|item|desc))$/.test(name)) || (wholeLists && !!defs.lists?.has(name)));
         }
         // A group opened by a font or size switch (`{\tt …}`, `{    \it …}`) is drawn whole: an edit whose `}` now closes
         // one opened lines before (`\begin{algorithmic}` becoming `\be\eqnralgorithmic}`) draws it from its `{`.
@@ -544,6 +544,17 @@ function treeOf(state: EditorState) {
   return syntaxTree(state);
 }
 
+/** The text of the `\input` files that hold title commands (a title block's authors in `authors.tex`), which a title block draws. */
+function titleInputs(state: EditorState) {
+  const sources = state.field(macroSourcesField, false);
+  return sources ? sources.filter((source) => source.key?.startsWith("input:") && /\\(?:title|author)(?![A-Za-z@])/.test(source.text)).map((source) => source.text).join("\n") : "";
+}
+
+/** Whether the files a title block reads its authors from changed (they arrive after the first build, or are edited). */
+function titleInputsChanged(before: EditorState, after: EditorState) {
+  return before.field(macroSourcesField, false) !== after.field(macroSourcesField, false) && titleInputs(before) !== titleInputs(after);
+}
+
 export const structuralField = StateField.define<StructuralState>({
   create(state) {
     const preambleEnd = preambleEndOf(state);
@@ -563,7 +574,8 @@ export const structuralField = StateField.define<StructuralState>({
     let forced = value.forced;
     let working: Working = { decorations: value.decorations, extents: value.extents, pending: value.pending };
     const full = defsFingerprint !== value.defsFingerprint || preambleOpen !== value.preambleOpen || preambleEnd !== value.preambleEnd
-      || tr.effects.some((effect) => effect.is(rebuildVisualEffect));
+      || tr.effects.some((effect) => effect.is(rebuildVisualEffect))
+      || titleInputsChanged(tr.startState, state);
 
     // How far the parse that built the decorations reached (an earlier build may have parsed ahead of this tree).
     let treeLength = tr.docChanged ? tree.length : Math.max(tree.length, value.treeLength);

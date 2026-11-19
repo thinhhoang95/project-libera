@@ -1,6 +1,6 @@
 import { MAX_MACRO_DEPTH, readGroup, readOptional, TEX_GROUPS } from "../../macros/core";
 import { evaluateIfThenElse, evaluateTexConditionals } from "./conditionals";
-import { DRAWN_BUILTINS, conditionalFacts, macroAt, type LatexDefinitions, type LatexMacro, type XparseArgument } from "./definitions";
+import { DRAWN_BUILTINS, conditionalFacts, dataMacroAt, macroAt, type LatexDefinitions, type LatexMacro, type XparseArgument } from "./definitions";
 
 /* Expanding the document's macros (docs/latex-visual-editor-plan.md §7.4).
  * In math, uses are substituted into the formula before KaTeX sees it; in
@@ -281,6 +281,37 @@ function evaluateNumexpr(text: string) {
 /** Idioms with `@` that are not debris: cvpr's `\futurelet\@let@token` (the renderer reads its `\ifx`), an undecided `\if@switch`, `\@ifnextchar`, `\@ifstar`, and a box's width (`\begin{minipage}{\dimexpr\linewidth-2\fboxsep\relax}`). */
 const KNOWN_INTERNALS = /\\@let@token|\\if@[A-Za-z@]*|\\@(?:ifnextchar|ifstar)(?![A-Za-z@])|\\algorithmic@(?:begin|end)(?![A-Za-z@])|\\(?:begin\{(?:minipage|tcolorbox)\}|parbox)\s*(?:\[[^\]]*\]\s*)*\{(?:[^{}]|\{[^{}]*\})*\}/g;
 
+/**
+ * `\csname name\endcsname` for a data macro the document made (`\expandafter\def\csname mpb@J.one.lo\endcsname{93.1}`), and
+ * `\@ifundefined{name}{yes}{no}` (and `\@namedef`'s test): the data macro's text expanded, or the branch the test decides.
+ * A name that is no data macro is defined (`\@ifundefined` takes `no`) or not; "not" is only decided for a family the document
+ * defines data for (`mpb@…`): LaTeX's own names (`c@page`) are not known here. Null: not this, false: not decidable.
+ */
+function expandDataUse(source: string, index: number, context: Context, depth: number): { text: string; end: number } | null | false {
+  const data = context.defs.dataMacros;
+  if (!data) return null;
+  const csname = /^\\csname\s*([^\\{}%]*?)\s*\\endcsname/.exec(source.slice(index, index + 260));
+  if (csname) {
+    const macro = dataMacroAt(context.defs, csname[1], context.pos);
+    if (!macro || depth >= MAX_MACRO_DEPTH || --context.budget < 0) return false;
+    context.used.add(macro.fingerprint);
+    const inner = expandText(macro.body, context, depth + 1);
+    return inner === null ? false : { text: inner, end: index + csname[0].length };
+  }
+  if (!/^\\@ifundefined(?![A-Za-z@])/.test(source.slice(index, index + 16))) return null;
+  const name = readUndelimited(source, index + 13);
+  const yes = name && readUndelimited(source, name.end);
+  const no = yes && readUndelimited(source, yes.end);
+  const key = name?.value.trim();
+  if (!name || !yes || !no || !key || /[\\{}]/.test(key) || depth >= MAX_MACRO_DEPTH || --context.budget < 0) return false;
+  const macro = dataMacroAt(context.defs, key, context.pos);
+  const at = key.indexOf("@");
+  if (!macro && !(at > 0 && data.prefixes.has(key.slice(0, at + 1)))) return false;
+  if (macro) context.used.add(macro.fingerprint);
+  const inner = expandText(macro ? no.value : yes.value, context, depth + 1);
+  return inner === null ? false : { text: inner, end: no.end };
+}
+
 function expandUse(source: string, index: number, context: Context, depth: number): { text: string; end: number } | null | false {
   // A control word, or a control symbol the document defines (GRF's `\newcommand{\1}{\mathbf{1}}`).
   const match = /^\\([A-Za-z@]+|[0-9!*+|<>?()[\]])/.exec(source.slice(index, index + 80));
@@ -445,7 +476,7 @@ function expandText(source: string, context: Context, depth: number): string | n
       continue;
     }
     context.mode = math ? "math" : outer;
-    const result = expandUse(source, i, context, depth);
+    const result = (next === "c" || next === "@") && context.defs.dataMacros ? expandDataUse(source, i, context, depth) ?? expandUse(source, i, context, depth) : expandUse(source, i, context, depth);
     context.mode = outer;
     if (result === false) return null;
     if (!result) { i += /^\\(?:[A-Za-z@]+|[\s\S])/.exec(source.slice(i, i + 80))![0].length - 1; continue; }
