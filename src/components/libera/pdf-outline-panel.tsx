@@ -21,6 +21,7 @@ import {
   type PdfOutlineUpdatedDetail,
 } from "@/lib/pdf-outline";
 import type { LiberaFileNode } from "@/lib/types";
+import { useLivePdfPage } from "./live-reading-position";
 
 type OpenFile = (file: LiberaFileNode, options?: { viewState?: OpenTab["viewState"] }) => Promise<void>;
 
@@ -180,7 +181,10 @@ export function PdfDocumentOutline({ activeTab, expansionLevel, onExpansionLevel
   const showingGenerated = Boolean(generated) && (!embedded.length || preferGenerated);
   const entries = useMemo(() => (showingGenerated ? generated?.entries : embedded) ?? [], [showingGenerated, generated, embedded]);
   const rows = useMemo(() => visibleOutlineRows(entries, { query, expansionLevel, expanded }), [entries, query, expansionLevel, expanded]);
-  const currentEntryId = useMemo(() => currentOutlineEntryId(entries, activeTab.viewState?.pdf?.page), [entries, activeTab.viewState?.pdf?.page]);
+  // The page being scrolled through is live; the stored one only follows at a pause.
+  const livePage = useLivePdfPage(activeTab.id);
+  const currentPage = livePage ?? activeTab.viewState?.pdf?.page;
+  const currentEntryId = useMemo(() => currentOutlineEntryId(entries, currentPage), [entries, currentPage]);
   const problems = showingGenerated ? generated?.problems ?? [] : [];
   const errors = outlineErrors(problems);
 

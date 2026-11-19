@@ -7,6 +7,7 @@ import { createRoot } from "react-dom/client";
 import { normalizeMarkdownPreferences } from "../../src/lib/markdown-preferences";
 import type { MarkdownTabViewState, OpenTab, OpenTabViewState } from "../../src/components/libera/types";
 import { captureCanvasViewState } from "../../src/components/libera/canvas-view-state";
+import { getLiveMarkdownLine } from "../../src/components/libera/live-reading-position";
 
 function setupDom() {
   const dom = new JSDOM("<!doctype html><div id='root'></div>", { url: "http://localhost", pretendToBeVisual: true });
@@ -80,11 +81,14 @@ test("visual scroll positions are stored when scrolling pauses, not on every fra
     await pause(250);
     assert.deepEqual(stored, [{ markdown: { visualScrollLeft: 0, visualScrollTop: 200, visualScrollAnchorPos: 5, visualScrollAnchorOffset: 2 }, tabId: active.id }], "a pause stores the latest position once");
 
-    // The outline's line is stored at once, carrying the position held so far.
+    // A line crossed while scrolling waits with the positions, like them.
     stored.length = 0;
     report({ visualScrollTop: 240, visualScrollAnchorPos: undefined, visualScrollAnchorOffset: undefined });
-    report({ visualScrollTop: 280, line: 7 });
-    assert.deepEqual(stored, [{ markdown: { visualScrollTop: 280, visualScrollAnchorPos: undefined, visualScrollAnchorOffset: undefined, line: 7 }, tabId: active.id }]);
+    for (const line of [3, 4, 5, 6, 7]) report({ visualScrollTop: 250 + line, line });
+    assert.equal(stored.length, 0, "crossing headings stores nothing while scrolling");
+    assert.equal(getLiveMarkdownLine(active.id), 7, "the outline reads the line as it moves");
+    await pause(250);
+    assert.deepEqual(stored, [{ markdown: { visualScrollTop: 257, visualScrollAnchorPos: undefined, visualScrollAnchorOffset: undefined, line: 7 }, tabId: active.id }], "a pause stores the last line once");
     assert.ok("visualScrollAnchorPos" in stored[0].markdown!, "a cleared anchor stays cleared");
     await render();
 
@@ -93,7 +97,7 @@ test("visual scroll positions are stored when scrolling pauses, not on every fra
     report({ visualScrollTop: 320, line: 7 });
     assert.equal(stored.length, 0);
     captureCanvasViewState();
-    assert.deepEqual(stored, [{ markdown: { visualScrollTop: 320 }, tabId: active.id }], "a canvas capture stores what is held");
+    assert.deepEqual(stored, [{ markdown: { visualScrollTop: 320, line: 7 }, tabId: active.id }], "a canvas capture stores what is held, line included");
     await pause(250);
     assert.equal(stored.length, 1, "nothing is stored twice");
 
@@ -107,6 +111,58 @@ test("visual scroll positions are stored when scrolling pauses, not on every fra
     report({ visualScrollTop: 440 });
     await act(async () => root.render(null));
     assert.deepEqual(stored, [{ markdown: { visualScrollTop: 440 }, tabId: active.id }], "closing the pane stores what is held");
+    assert.equal(getLiveMarkdownLine(active.id), undefined, "a closed pane leaves no live line behind");
+  } finally {
+    await act(async () => root.unmount());
+    saved.forEach(({ id, module }) => { if (module) require.cache[id] = module; else delete require.cache[id]; });
+    dom.window.close();
+  }
+});
+
+test("the slide preview's scroll waits for a pause like the editors", async () => {
+  const dom = setupDom();
+  const require = createRequire(import.meta.url);
+  const mocks = [
+    ["../../src/components/libera/tiptap-markdown-editor", { TiptapMarkdownEditor: () => createElement("div") }],
+    ["../../src/components/libera/markdown-editor", { MarkdownEditor: () => createElement("div") }],
+    ["../../src/components/libera/markdown-worker-preview", { MarkdownWorkerPreview: () => null }],
+  ] as const;
+  const saved = mocks.map(([path]) => { const id = require.resolve(path); return { id, module: require.cache[id] }; });
+  mocks.forEach(([, exports], i) => { require.cache[saved[i].id] = { exports } as NodeModule; });
+  const { WorkspacePanel } = await import("../../src/components/libera/workspace-panel");
+  const noOp = () => {};
+  const asyncNoOp = async () => {};
+  const props: ComponentProps<typeof WorkspacePanel> = {
+    markdownEditorMode: "source", activePreviewTabId: null, onActivePreviewTabIdChange: noOp,
+    files: [], aiFormatting: false, canStartScreenshotSnip: false, firstNotebook: "", imageMarkdownConverting: false,
+    yourName: "", markdownPreferences: normalizeMarkdownPreferences({}), recentFiles: [], screenshotSnipSession: null,
+    tabs: [], textareaRef: { current: null }, onAiFormatSelection: asyncNoOp, onShiftMarkdownList: noOp, onAiImageToMarkdown: asyncNoOp,
+    onAiRewriteSelection: asyncNoOp, onAiWriteAt: asyncNoOp, onCreateMarkdown: asyncNoOp, onCreateSlides: asyncNoOp, onCreateNotebook: noOp, fileTags: {}, onEditFileTags: noOp,
+    onCancelScreenshotSnip: noOp, onCompleteScreenshotSnip: asyncNoOp, onInsertExistingImage: asyncNoOp,
+    onFinishVisualInsertion: noOp, onCreateMarkdownBesidePdf: async () => { throw new Error("unused"); }, onWriteConvertedMarkdown: asyncNoOp,
+    onInsertFileLink: noOp, onInsertFileLinkPlaceholder: noOp, onInsertImage: asyncNoOp, onInsertMarkdown: noOp, onInsertMarkdownTable: noOp,
+    onOpenFile: asyncNoOp, onSave: asyncNoOp, onSetDraft: noOp, onSetViewState: noOp,
+    onOpenMarkdownFileLink: async () => false, onStartScreenshotSnip: noOp,
+  };
+  Object.assign(globalThis, { ResizeObserver: class { observe() {} unobserve() {} disconnect() {} } });
+  dom.window.HTMLElement.prototype.scrollIntoView = () => {};
+  const root = createRoot(document.getElementById("root")!);
+  const active: OpenTab = { ...tab("Notes/deck.slides.md"), draft: "# One\n\n---\n\n# Two\n" };
+  const stored: { markdown?: MarkdownTabViewState; tabId?: string }[] = [];
+  const onSetViewState = (viewState: OpenTabViewState, tabId?: string) => { stored.push({ markdown: viewState.markdown, tabId }); };
+  const pause = (ms: number) => act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
+  try {
+    await act(async () => root.render(createElement(WorkspacePanel, { ...props, activeTab: active, tabs: [active], focused: true, onSetViewState })));
+    const article = document.querySelector<HTMLElement>("article")!;
+    assert.ok(article, "the slide preview is mounted");
+    for (const top of [40, 80, 120]) {
+      article.scrollTop = top;
+      await act(async () => { article.dispatchEvent(new dom.window.Event("scroll", { bubbles: true })); });
+    }
+    assert.equal(stored.length, 0, "slide scrolling stores nothing while it moves");
+    await pause(250);
+    assert.equal(stored.length, 1, "a pause stores once");
+    assert.equal(stored[0].markdown?.previewScrollTop, 120);
   } finally {
     await act(async () => root.unmount());
     saved.forEach(({ id, module }) => { if (module) require.cache[id] = module; else delete require.cache[id]; });

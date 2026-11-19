@@ -25,6 +25,7 @@ import { scrollTextareaToOffset } from "@/lib/textarea-position";
 import { MARKDOWN_OUTLINE_NAVIGATE_EVENT, type MarkdownOutlineNavigateDetail } from "@/lib/markdown-outline-navigation";
 import type { MathMarkerSettings } from "@/lib/math-markers";
 import type { LiberaFileNode } from "@/lib/types";
+import { useLiveMarkdownLine } from "./live-reading-position";
 
 type OutlinePanelProps = {
   activeTab?: OpenTab;
@@ -549,7 +550,10 @@ function MarkdownOutline({
     [headings, normalizedQuery, expansionLevel, expandedHeadings],
   );
   const outlineIsCurrent = outlineState.draft === (activeTab?.draft ?? "");
+  // The line scrolling reports lives here until it is stored at a pause.
+  const liveMarkdownLine = useLiveMarkdownLine(activeTab?.id);
   const activeMarkdownLine =
+    liveMarkdownLine ??
     activeTab?.viewState?.markdown?.line ??
     (typeof activeTab?.viewState?.markdown?.selectionStart === "number"
       ? lineForOffset(activeTab.draft, activeTab.viewState.markdown.selectionStart)

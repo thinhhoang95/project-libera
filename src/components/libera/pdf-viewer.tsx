@@ -1,6 +1,7 @@
 "use client";
 
 import { useCanvasViewStateCapture } from "./canvas-view-state";
+import { setLivePdfPage } from "./live-reading-position";
 import { useCanvasPaneFocused } from "@/components/libera/canvas-pane-context";
 import {
   ChevronDown,
@@ -344,6 +345,8 @@ type PdfViewerProps = {
   onCancelScreenshotSnip?: () => void;
   onCompleteScreenshotSnip?: (file: File) => Promise<void>;
   onViewStateChange?: (viewState: PdfTabViewState) => void;
+  /** The tab showing this PDF: its current page is kept live for readers elsewhere (the outline). */
+  tabId?: string;
   /** "markdown" snips are rendered sharper, since the local model reads them. */
   screenshotSnipMode?: "image" | "markdown";
   mathMarkers?: MathMarkerSettings;
@@ -698,6 +701,7 @@ export function PdfViewer({
   onCancelScreenshotSnip,
   onCompleteScreenshotSnip,
   onViewStateChange,
+  tabId,
   screenshotSnipMode = "image",
   mathMarkers,
   markdownConversion,
@@ -794,6 +798,15 @@ export function PdfViewer({
   }, [activeSearchMatch]);
   const [basePageLayouts, setBasePageLayouts] = useState<PdfPageLayout[]>([]);
   const [currentPage, setCurrentPage] = useState(1);
+  // The page being read is stored with the scroll position when scrolling
+  // pauses; until then it is live here and in the live store, never in the tab state.
+  const livePageRef = useRef(1);
+  const publishedPageRef = useRef<number | undefined>(undefined);
+  const showPage = useCallback((page: number) => {
+    livePageRef.current = page;
+    setCurrentPage(page);
+    if (tabId) setLivePdfPage(tabId, page);
+  }, [tabId]);
   const [renderWindowPages, setRenderWindowPages] = useState<Set<number>>(new Set());
   const [annotations, setAnnotations] = useState<PdfAnnotation[]>([]);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState(
@@ -1037,15 +1050,20 @@ export function PdfViewer({
     const pageTop = page.getBoundingClientRect().top;
     if (previousPage && readingLine < pageTop &&
       readingLine - previousPage.getBoundingClientRect().bottom < pageTop - readingLine) {
-      setCurrentPage(first - 1);
+      showPage(first - 1);
     } else {
-      setCurrentPage(first);
+      showPage(first);
     }
-  }, []);
+  }, [showPage]);
 
+  // The page count is news when the document loads; page changes while
+  // scrolling wait for the pause (see flushPendingScrollViewState).
   useEffect(() => {
-    if (pageLayouts.length) updateViewState({ page: Math.min(currentPage, pageLayouts.length), pageCount: pageLayouts.length });
-  }, [currentPage, pageLayouts.length, updateViewState]);
+    if (!pageLayouts.length) return;
+    const page = Math.min(livePageRef.current, pageLayouts.length);
+    publishedPageRef.current = page;
+    updateViewState({ page, pageCount: pageLayouts.length });
+  }, [pageLayouts.length, updateViewState]);
 
   const flushPendingScrollViewState = useCallback(() => {
     if (scrollViewStateTimeoutRef.current !== null) {
@@ -1062,12 +1080,17 @@ export function PdfViewer({
       if (scroller) updateCurrentPage(scroller);
     }
 
-    if (!pendingScrollViewStateRef.current) {
+    // The page goes with the position it was read at.
+    const page = livePageRef.current;
+    const pageChanged = publishedPageRef.current !== undefined && page !== publishedPageRef.current;
+    if (!pendingScrollViewStateRef.current && !pageChanged) {
       return;
     }
 
-    updateViewState(pendingScrollViewStateRef.current);
+    const patch = { ...pendingScrollViewStateRef.current, ...(pageChanged ? { page } : {}) };
     pendingScrollViewStateRef.current = null;
+    if (pageChanged) publishedPageRef.current = page;
+    updateViewState(patch);
   }, [updateCurrentPage, updateViewState]);
 
   const publishView = useCallback(() => {
@@ -1235,6 +1258,7 @@ export function PdfViewer({
       setPdfDocument(null);
       setLoadedHash(undefined);
       setBasePageLayouts([]);
+      livePageRef.current = 1;
       setCurrentPage(1);
       setRenderWindowPages(new Set());
       pageElementRefs.current.clear();
@@ -1499,6 +1523,10 @@ export function PdfViewer({
       publishViewFrameRef.current = null;
     }
   }, [flushPendingScrollViewState]);
+  // After the flush above, which still reads the page: a closed viewer leaves no live page.
+  useEffect(() => () => {
+    if (tabId) setLivePdfPage(tabId, undefined);
+  }, [tabId]);
 
   // Changes to spaces on pages above the one being read would slide it; the
   // reading position is captured before such a change and restored after it.
