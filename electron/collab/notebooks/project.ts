@@ -7,7 +7,7 @@
 // self-writes invisible: a scan never runs between a write and the layout
 // update that records its hash.
 
-import { promises as fs, watch, type FSWatcher } from "node:fs";
+import { promises as fs, watch, type FSWatcher, type Stats } from "node:fs";
 import path from "node:path";
 
 import type * as Y from "yjs";
@@ -50,6 +50,7 @@ import {
   encodeText,
   ensureDirectory,
   isActiveSqliteDatabase,
+  isDataless,
   isExcludedPath,
   isFinderCopy,
   isGeneratedPath,
@@ -114,8 +115,15 @@ const MAX_REPORTED_PATHS = 10_000;
 /** Longest wait between retries of a failed state.json write. */
 const MAX_SAVE_RETRY_MS = 5 * 60_000;
 
-/** How long a follower keeps watching for one path, for a slow sync client or a writer that is away. */
-const FOLLOWER_DISK_WAIT_MS = 10 * 60_000;
+/** Longest wait between a follower's probes of a path that still has not arrived. */
+const FOLLOWER_DISK_MAX_PROBE_MS = 5 * 60_000;
+
+/**
+ * Wait before state.json is rewritten after a text flush. The file holds the
+ * whole notebook layout, so rewriting it on every flush multiplies provider
+ * work; a state a crash loses is rebuilt from the files (the text is adopted).
+ */
+const TEXT_FLUSH_SAVE_MS = 2000;
 
 export interface Timings {
   /**
@@ -146,6 +154,8 @@ export interface Timings {
   batteryScale: number;
   /** How often a follower checks whether the writer's disk has caught up with the manifest. */
   followerDiskMs: number;
+  /** How long a follower probes a path every tick before it backs off (it keeps waiting after that). */
+  followerDiskWaitMs: number;
   /** Retry delay for downloads and creates that failed (offline). */
   retryMs: number;
   /**
@@ -189,6 +199,7 @@ export const DEFAULT_TIMINGS: Timings = {
   watchGraceMs: 2000,
   batteryScale: 4,
   followerDiskMs: 1000,
+  followerDiskWaitMs: 10 * 60_000,
   retryMs: 5000,
   verifyMs: 60_000,
   trustedVerifyMs: 10 * 60_000,
@@ -244,6 +255,24 @@ export interface ProjectContext {
   layoutChanged(projectId: string): void;
   /** Fresh local writer lease; editor/explicit manifest operations do not need it. */
   canWriteDisk?(projectId: string): boolean;
+}
+
+/** A path a follower waits on (see awaitDisk). */
+interface AwaitedPath {
+  present: boolean;
+  /** Probed every tick until then; after it, with a growing wait (it is never given up silently). */
+  until: number;
+  blob?: { hash: string; size: number };
+  /** What the last hash probe looked at: the file's stats and the manifest hash it was compared with. */
+  probed?: string;
+  /** From the first manifest: bytes already there at the expected size count as arrived without hashing them. */
+  initial?: boolean;
+  /** The path was found not to match at least once, so its arrival is worth announcing. */
+  waited?: boolean;
+  /** Wait between probes once `until` has passed; doubles up to FOLLOWER_DISK_MAX_PROBE_MS. */
+  delay?: number;
+  /** No probe before this time (Date.now()). */
+  nextAt?: number;
 }
 
 interface DocRuntime {
@@ -317,11 +346,19 @@ export class SharedProject {
   /** manifestPathKey of each path fs.watch reported, with when (performance.now()). */
   private readonly reportedAt = new Map<string, number>();
   /** Paths a follower is waiting on: whether each should be on disk, and until when to wait. */
-  private readonly awaitedOnDisk = new Map<string, { present: boolean; until: number; blob?: { hash: string; size: number }; probed?: string }>();
+  private readonly awaitedOnDisk = new Map<string, AwaitedPath>();
   /** A follower's last-read manifest blob versions: a same-path replacement changes the hash, not the layout. */
   private followerBlobs: Map<string, { hash: string; size: number }> | null = null;
   private followerDiskTimer: ReturnType<typeof setInterval> | null = null;
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
+  /** performance.now() the pending state.json write is due. */
+  private saveDueAt = 0;
+  /** The state.json text last written (or found unchanged), so an identical state is not written again. */
+  private savedState: string | null = null;
+  /** Hubs (by document id) that heard the server's answer since this runtime started: a writer does no disk work before that (finding 2). */
+  private readonly caughtUp = new Set<string>();
+  /** Documents whose write was skipped because their move is still pending; written once it is placed. */
+  private readonly moveDeferred = new Set<string>();
   /** state.json is behind the in-memory state; kept until a write succeeds. */
   private stateDirty = false;
   private saveFailures = 0;
@@ -473,6 +510,11 @@ export class SharedProject {
         this.scheduleManifest(30);
       }),
       hub.onStatus(() => {
+        if (this.noteCaughtUp(hub)) {
+          // The manifest is the gate for every document's write too.
+          this.scheduleManifest(30);
+          for (const runtime of this.docs.values()) this.scheduleWrite(runtime);
+        }
         if (!this.manifestWasReady && this.manifestReady()) this.scheduleManifest(30);
         // PDFs first opened elsewhere while this host was away announced it to nobody here.
         const { connected } = hub.getStatus();
@@ -691,7 +733,9 @@ export class SharedProject {
   /** True once every manifest entry has been placed on disk (join waits on this). */
   isMaterialized(): boolean {
     if (!this.manifestReady()) return false;
-    if (this.follower) return true;
+    // A follower's files arrive through the sync client: not materialized while any is awaited.
+    if (this.follower) return this.manifestWasReady && this.awaitedOnDisk.size === 0;
+    if (!this.manifestCaughtUp()) return false;
     const layout = computeLayout(this.readEntries().values());
     for (const fileId of layout.paths.keys()) {
       const record = this.state.layout[fileId];
@@ -765,6 +809,33 @@ export class SharedProject {
     return hubHasState(this.ctx.host, hub, "manifest");
   }
 
+  /**
+   * Records that `hub` heard the server's state since this runtime started.
+   * True the first time. The SQLite cache alone does not count: a newer file
+   * and its bookkeeping may have arrived through the cloud folder meanwhile,
+   * and a cache older than them must not be taken for the baseline (finding 2).
+   */
+  private noteCaughtUp(hub: DocHub): boolean {
+    if (hub.isClosed || this.caughtUp.has(hub.docId) || !hub.hasOpened) return false;
+    this.caughtUp.add(hub.docId);
+    return true;
+  }
+
+  private hubCaughtUp(hub: DocHub): boolean {
+    this.noteCaughtUp(hub);
+    return this.caughtUp.has(hub.docId);
+  }
+
+  /** The manifest has caught up with the server: until then a writer does no disk work. */
+  private manifestCaughtUp(): boolean {
+    return !!this.manifestHub && this.hubCaughtUp(this.manifestHub);
+  }
+
+  /** A document a writer may write, adopt or merge: its text is the server's, not an older cache of it. */
+  private docWritable(runtime: DocRuntime): boolean {
+    return this.docReady(runtime) && this.manifestCaughtUp() && this.hubCaughtUp(runtime.hub);
+  }
+
   private scheduleManifest(delay: number): void {
     if (this.stopped || this.manifestTimer) return;
     this.manifestTimer = setTimeout(() => {
@@ -788,6 +859,8 @@ export class SharedProject {
       this.notifyAlbumChanged();
       return;
     }
+    // Hands off the disk until the server has answered; the status listener runs this again then.
+    if (!this.manifestCaughtUp()) return;
     if (!(await this.rootAvailable())) {
       this.scheduleRetry();
       return;
@@ -987,9 +1060,10 @@ export class SharedProject {
     this.pdfs.sync(this.entries.values(), layout.paths);
     // Documents whose file is missing or new get written now that their place exists.
     for (const [fileId, record] of Object.entries(next)) {
-      if (record.kind === "doc" && record.docId && !pending.has(fileId) && (!record.hash || this.rootUnavailable || this.baselineMissing.has(fileId))) {
+      if (record.kind === "doc" && record.docId && !pending.has(fileId) && (!record.hash || this.rootUnavailable || this.baselineMissing.has(fileId) || this.moveDeferred.has(record.docId))) {
         const runtime = this.docs.get(record.docId);
-        if (runtime && runtime.fileId === fileId && this.docReady(runtime)) await this.materializeDoc(record.docId);
+        this.moveDeferred.delete(record.docId);
+        if (runtime && runtime.fileId === fileId && this.docWritable(runtime)) await this.materializeDoc(record.docId);
       }
     }
     this.rootUnavailable = false;
@@ -1021,6 +1095,7 @@ export class SharedProject {
     for (const [fileId, entry] of this.entries) if (entry.kind === "blob" && entry.blobHash && layout.paths.has(fileId)) blobs.set(fileId, { hash: entry.blobHash, size: entry.size ?? -1 });
     const knownBlobs = this.followerBlobs;
     this.followerBlobs = blobs;
+    this.pruneAwaited(next);
     if (JSON.stringify(previous) === JSON.stringify(next)) {
       // Same names, new bytes: the old file on disk is not the arrival.
       if (knownBlobs && Object.keys(previous).length > 0) this.awaitReplacedBlobs(knownBlobs, blobs, next);
@@ -1029,40 +1104,57 @@ export class SharedProject {
     this.state.layout = next;
     this.ctx.layoutChanged(this.info.projectId);
     this.treeChanged(previous, next);
-    this.awaitDisk(previous, next);
+    this.awaitDisk(previous, next, blobs);
     if (knownBlobs) this.awaitReplacedBlobs(knownBlobs, blobs, next);
+  }
+
+  private armDiskTimer(): void {
+    if (this.awaitedOnDisk.size === 0 || this.followerDiskTimer) return;
+    this.followerDiskTimer = setInterval(() => void this.checkAwaitedDisk(), this.ctx.timings.followerDiskMs);
+    this.followerDiskTimer.unref?.();
+  }
+
+  /** A path the manifest no longer puts there (or no longer takes away) has nothing left to arrive. */
+  private pruneAwaited(next: Record<string, LayoutRecord>): void {
+    const paths = new Set(Object.values(next).map((record) => record.path));
+    for (const [relative, awaited] of this.awaitedOnDisk) if (paths.has(relative) !== awaited.present) this.awaitedOnDisk.delete(relative);
   }
 
   /** Blobs that kept their path but not their bytes: wait for the disk file to reach the new hash. */
   private awaitReplacedBlobs(known: Map<string, { hash: string; size: number }>, blobs: Map<string, { hash: string; size: number }>, next: Record<string, LayoutRecord>): void {
-    const until = Date.now() + FOLLOWER_DISK_WAIT_MS;
+    const until = Date.now() + this.ctx.timings.followerDiskWaitMs;
     for (const [fileId, blob] of blobs) {
       const before = known.get(fileId);
       if (before && before.hash !== blob.hash && next[fileId]) this.awaitedOnDisk.set(next[fileId].path, { present: true, until, blob });
     }
-    if (this.awaitedOnDisk.size === 0 || this.followerDiskTimer) return;
-    this.followerDiskTimer = setInterval(() => void this.checkAwaitedDisk(), this.ctx.timings.followerDiskMs);
-    this.followerDiskTimer.unref?.();
+    this.armDiskTimer();
   }
 
   /**
    * A follower has no watcher, and the writer changes the disk after the
    * manifest, so the tree a window read on tree-changed can be out of date.
    * This says when the disk catches up, which through a sync client can take
-   * minutes. An empty `previous` is the first read of the manifest, not a change.
+   * minutes. The first read of the manifest (an empty `previous`) is tracked
+   * too: its files may not have reached this disk either (finding 23).
    */
-  private awaitDisk(previous: Record<string, LayoutRecord>, next: Record<string, LayoutRecord>): void {
-    if (Object.keys(previous).length === 0) return;
-    const until = Date.now() + FOLLOWER_DISK_WAIT_MS;
+  private awaitDisk(previous: Record<string, LayoutRecord>, next: Record<string, LayoutRecord>, blobs: Map<string, { hash: string; size: number }>): void {
+    const until = Date.now() + this.ctx.timings.followerDiskWaitMs;
+    if (Object.keys(previous).length === 0) {
+      for (const [fileId, record] of Object.entries(next)) {
+        if (record.kind === "folder") continue;
+        const blob = blobs.get(fileId);
+        this.awaitedOnDisk.set(record.path, { present: true, until, initial: true, ...(blob ? { blob } : {}) });
+      }
+      this.armDiskTimer();
+      return;
+    }
     for (const [fileId, record] of Object.entries(previous)) {
       if (next[fileId]?.path !== record.path) this.awaitedOnDisk.set(record.path, { present: false, until });
     }
     for (const [fileId, record] of Object.entries(next)) {
       if (previous[fileId]?.path !== record.path) this.awaitedOnDisk.set(record.path, { present: true, until });
     }
-    if (this.awaitedOnDisk.size === 0 || this.followerDiskTimer) return;
-    this.followerDiskTimer = setInterval(() => void this.checkAwaitedDisk(), this.ctx.timings.followerDiskMs);
-    this.followerDiskTimer.unref?.();
+    this.armDiskTimer();
   }
 
   private async checkAwaitedDisk(): Promise<void> {
@@ -1072,22 +1164,45 @@ export class SharedProject {
     }
     const arrived: string[] = [];
     for (const [relative, awaited] of [...this.awaitedOnDisk]) {
+      if (awaited.nextAt !== undefined && Date.now() < awaited.nextAt) continue;
       const target = await resolveInside(this.info.root, relative).catch(() => null);
-      let settled = target !== null && (await statIfExists(target) !== null) === awaited.present;
+      const found = target === null ? null : await statIfExists(target);
+      let settled = target !== null && (found !== null) === awaited.present;
       if (settled && awaited.blob && target !== null) {
         // Hashing a large file every second is the cost to avoid: hash only a
-        // file of the expected size whose size or mtime moved since the last look.
-        const stats = await statIfExists(target);
-        const signature = stats ? `${stats.size}:${stats.mtimeMs}` : "";
+        // file of the expected size whose stats moved since the last look at
+        // this manifest hash. The memo holds more than size and mtime (a
+        // delivery can keep both), and is dropped when the wait is re-armed.
+        const stats = found;
+        const signature = stats ? `${stats.size}:${stats.mtimeMs}:${stats.ctimeMs}:${stats.ino}:${awaited.blob.hash}` : "";
         settled = false;
-        if (stats && (awaited.blob.size < 0 || stats.size === awaited.blob.size) && signature !== awaited.probed) {
-          awaited.probed = signature;
-          const bytes = await readIfExists(target);
-          settled = bytes !== null && sha256(bytes) === awaited.blob.hash;
+        if (stats && (awaited.blob.size < 0 || stats.size === awaited.blob.size)) {
+          if (awaited.initial) {
+            // Present at the expected size from the start: not worth hashing every file on every open.
+            settled = true;
+          } else if (signature !== awaited.probed && !isDataless(stats)) {
+            awaited.probed = signature;
+            const bytes = await readIfExists(target);
+            settled = bytes !== null && sha256(bytes) === awaited.blob.hash;
+          }
         }
       }
-      if (settled) arrived.push(relative);
-      if (settled || Date.now() >= awaited.until) this.awaitedOnDisk.delete(relative);
+      // Replaced or pruned while it was being looked at: the newer entry is judged on its own.
+      if (this.awaitedOnDisk.get(relative) !== awaited) continue;
+      if (settled) {
+        // Present from the start is not an arrival to announce.
+        if (!awaited.initial || awaited.waited) arrived.push(relative);
+        this.awaitedOnDisk.delete(relative);
+        continue;
+      }
+      awaited.waited = true;
+      const now = Date.now();
+      if (now >= awaited.until) {
+        // Not given up: it may take a sync client much longer. Probe less and less often, and hash again.
+        awaited.delay = Math.min(FOLLOWER_DISK_MAX_PROBE_MS, (awaited.delay ?? this.ctx.timings.followerDiskMs) * 2);
+        awaited.nextAt = now + awaited.delay;
+        awaited.probed = undefined;
+      }
     }
     if (this.stopped) return;
     if (arrived.length) this.filesChanged(arrived);
@@ -1110,6 +1225,27 @@ export class SharedProject {
     this.retryTimer.unref?.();
   }
 
+  /**
+   * What a blob's destination holds, from one read: its stats and hash (the
+   * bytes too, to place without a download when they are the blob). An
+   * online-only placeholder is not read; our own record answers when its
+   * stats are the ones this host recorded, else the hash is unknown (undefined).
+   */
+  private async observeDestination(target: string, record: LayoutRecord): Promise<DestinationView | typeof SLOW_READ> {
+    const before = await statIfExists(target);
+    if (!before) return { stats: null, hash: null };
+    if (isDataless(before)) {
+      const recorded = record.hash !== undefined && record.size === before.size && record.mtimeMs === before.mtimeMs;
+      return { stats: before, hash: recorded ? record.hash : undefined };
+    }
+    const bytes = await readWithin(target, HYDRATION_WAIT_MS);
+    if (bytes === SLOW_READ) return SLOW_READ;
+    const after = await statIfExists(target);
+    // Replaced while it was read: what was read says nothing about what is there now.
+    if (bytes === null || !after || statsKey(after) !== statsKey(before)) throw new WriteCancelledError();
+    return { stats: after, hash: sha256(bytes), bytes };
+  }
+
   /** Downloads (or reuses a cached copy of) a blob and writes it in place. */
   private async placeBlob(entry: ManifestEntry, record: LayoutRecord): Promise<boolean> {
     const hash = entry.blobHash as string;
@@ -1120,38 +1256,55 @@ export class SharedProject {
       this.refuse(record.path, error);
       return true;
     }
-    // A valid local delivery needs no HTTP round trip. All destination
-    // decisions below still use a fresh read after any download has finished.
+    // A writer that has not heard the server yet may be holding an older manifest than the files on disk.
+    if (!this.manifestCaughtUp()) return false;
+    // The destination is read and hashed once. A download can outlive an
+    // external edit, so afterwards only its stats are looked at again (a read
+    // only if they moved), and each disk commit verifies those stats: no more
+    // whole-file reads of a large file, and an online-only placeholder is
+    // never downloaded just to be compared (finding 38).
     // A provider that stalls must not hold the project queue (handoff, takedown, stop wait on it).
-    const delivered = await readWithin(target, HYDRATION_WAIT_MS).catch(() => null);
-    if (delivered === SLOW_READ) return false;
-    const bytes = delivered && sha256(delivered) === hash ? delivered : await this.blobBytes(hash);
+    let observed: DestinationView | typeof SLOW_READ;
+    try { observed = await this.observeDestination(target, record); }
+    catch (error) {
+      if (!(error instanceof WriteCancelledError)) this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: could not read ${record.path}`, error);
+      return false;
+    }
+    if (observed === SLOW_READ) return false;
+    const delivered = observed.bytes && observed.hash === hash;
+    const bytes = delivered ? observed.bytes as Uint8Array : await this.blobBytes(hash);
     if (!bytes) return false;
+    if (!delivered) {
+      const again = await statIfExists(target).catch(() => undefined);
+      if (again === undefined || statsKey(again) !== statsKey(observed.stats)) {
+        try {
+          const fresh = await this.observeDestination(target, record);
+          if (fresh === SLOW_READ) return false;
+          observed = fresh;
+        } catch { return false; }
+      }
+    }
     const guard = this.diskGuard();
     const canCommit = guard.canCommit;
-    let expected: string | null;
+    let expected: string | null = observed.stats ? statsKey(observed.stats) : null;
     guard.canCommit = async () => {
       if (!(await canCommit()) || !this.manifestReady()) return false;
       const current = this.readEntries();
       if (current.get(entry.fileId)?.blobHash !== hash || computeLayout(current.values()).paths.get(entry.fileId) !== record.path) return false;
-      const disk = await readIfExists(target);
-      return (disk === null ? null : sha256(disk)) === expected;
+      const stats = await statIfExists(target);
+      return (stats ? statsKey(stats) : null) === expected;
     };
     try {
-      // Network waits can outlive an external edit. Observe the destination
-      // after downloading, and verify that observation at each disk commit.
-      const existing = await readWithin(target, HYDRATION_WAIT_MS);
-      if (existing === SLOW_READ) return false;
-      const existingHash = existing === null ? null : sha256(existing);
-      expected = existingHash;
-      const existingStats = await statIfExists(target);
-      if (expected === hash) {
+      const existingHash = observed.hash;
+      const existingStats = observed.stats;
+      if (existingHash === hash) {
         if (!(await guard.canCommit())) return false;
         setMaterialized(record, hash, existingStats?.size, existingStats?.mtimeMs);
         this.baselineMissing.delete(entry.fileId);
         return true;
       }
-      if (existingHash !== null && existingHash !== record.hash && !(existingStats && isStaleCopy(record, existingHash, existingStats.mtimeMs))) {
+      // An online-only file nobody explains (existingHash undefined) is archived like any unexplained one.
+      if (existingHash !== null && existingHash !== record.hash && !(existingHash !== undefined && existingStats && isStaleCopy(record, existingHash, existingStats.mtimeMs))) {
         this.baselineMissing.add(entry.fileId);
         await this.archive(record.path, guard);
         expected = null;
@@ -1402,7 +1555,8 @@ export class SharedProject {
         this.scheduleWrite(runtime);
       }),
       hub.onStatus(() => {
-        if (!runtime.wasReady && this.docReady(runtime)) this.scheduleWrite(runtime);
+        // Ready from the cache first, then caught up with the server: the second is when a writer may write.
+        if ((!runtime.wasReady && this.docReady(runtime)) || this.noteCaughtUp(hub)) this.scheduleWrite(runtime);
       }),
       hub.onMeta((meta) => this.metaChanged(meta.role, meta.readOnlyReason)),
     );
@@ -1413,6 +1567,7 @@ export class SharedProject {
     const runtime = this.docs.get(docId);
     if (!runtime) return;
     this.docs.delete(docId);
+    this.moveDeferred.delete(docId);
     if (runtime.writeTimer) clearTimeout(runtime.writeTimer);
     for (const unsubscribe of runtime.unsubscribe) unsubscribe();
     this.ctx.host.release(docId);
@@ -1439,6 +1594,12 @@ export class SharedProject {
     runtime.writeTimer.unref?.();
   }
 
+  /** The manifest wants the file somewhere else than its layout record says: its move is still pending. */
+  private movePending(fileId: string, record: LayoutRecord): boolean {
+    const desired = computeLayout(this.readEntries().values()).paths.get(fileId);
+    return desired !== undefined && desired !== record.path;
+  }
+
   private recordFor(docId: string): { fileId: string; record: LayoutRecord } | null {
     const runtime = this.docs.get(docId);
     if (!runtime) return null;
@@ -1455,8 +1616,14 @@ export class SharedProject {
     }
     const runtime = this.docs.get(docId);
     const found = this.recordFor(docId);
-    if (!runtime || !found || this.reconciliationFor(docId) || !this.docReady(runtime)) return;
+    if (!runtime || !found || this.reconciliationFor(docId) || !this.docWritable(runtime)) return;
     const { fileId, record } = found;
+    if (this.movePending(fileId, record)) {
+      // The layout keeps the old path until a pass places the file (its bytes are
+      // staged or mid-move): writing here would leave a second copy at the old name.
+      this.moveDeferred.add(docId);
+      return;
+    }
     let target: string;
     try {
       target = await resolveInside(this.info.root, record.path);
@@ -1472,7 +1639,15 @@ export class SharedProject {
     if (disk) {
       const diskHash = sha256(disk);
       if (record.hash && diskHash !== record.hash) {
-        // Someone edited the file since our last write; merge that first.
+        // Someone edited the file since our last write. Another program may still
+        // be writing it, so it waits out the same quiet period the scanner applies
+        // (finding 28); the scan then takes the edit in and merges it first.
+        const stats = await statIfExists(target);
+        const wait = stats ? quietWaitMs(stats, Date.now(), this.ctx.timings.importQuietMs) : 0;
+        if (wait > 0) {
+          this.scheduleScan(Math.ceil(wait) + 50);
+          return;
+        }
         await this.takeExternalEdit(runtime, record, disk, diskHash);
         return;
       }
@@ -1514,18 +1689,26 @@ export class SharedProject {
       const current = this.readEntries();
       return current.get(runtime.fileId)?.docId === runtime.docId && computeLayout(current.values()).paths.get(runtime.fileId) === record.path;
     };
+    // A record holding this hash has its base written already (a busy base clears the hash).
+    const baseCurrent = record.hash === hash;
     let stats;
-    try { stats = await writeFileAtomic(target, bytes, contentGuard(target, expected, base)); }
-    catch (error) {
-      if (!(error instanceof WriteCancelledError)) throw error;
-      this.scheduleScan(0); this.scheduleRetry(); return false;
+    if (expected === hash) {
+      // The file already holds these bytes: rewriting it only gives the sync client work.
+      stats = await statIfExists(target);
+      if (!stats) { this.scheduleScan(0); this.scheduleRetry(); return false; }
+    } else {
+      try { stats = await writeFileAtomic(target, bytes, contentGuard(target, expected, base)); }
+      catch (error) {
+        if (!(error instanceof WriteCancelledError)) throw error;
+        this.scheduleScan(0); this.scheduleRetry(); return false;
+      }
     }
     setMaterialized(record, hash, stats.size, stats.mtimeMs);
-    await this.writeBaseOrRetry(record, runtime.docId, text);
+    if (!baseCurrent) await this.writeBaseOrRetry(record, runtime.docId, text);
     this.baselineMissing.delete(runtime.fileId);
     this.ctx.host.store.upsertDoc({ docId: runtime.docId, projectId: this.info.projectId, fileId: runtime.fileId, path: record.path, materializedHash: hash });
-    this.saveSoon();
-    this.filesChanged([record.path]);
+    this.saveSoon(TEXT_FLUSH_SAVE_MS);
+    if (expected !== hash) this.filesChanged([record.path]);
     return true;
   }
 
@@ -1548,12 +1731,14 @@ export class SharedProject {
     const stats = await statIfExists(target);
     if (stats?.isFile()) this.baselineMissing.delete(fileId);
     const changed = record.hash !== hash;
+    // Identical bytes with the stats already recorded: nothing to remember (finding 39).
+    if (!changed && record.size === stats?.size && record.mtimeMs === stats?.mtimeMs) return;
     setMaterialized(record, hash, stats?.size, stats?.mtimeMs);
     if (record.docId) {
       if (changed) await this.writeBaseOrRetry(record, record.docId, text);
       this.ctx.host.store.upsertDoc({ docId: record.docId, projectId: this.info.projectId, fileId, path: record.path, materializedHash: hash });
     }
-    this.saveSoon();
+    this.saveSoon(TEXT_FLUSH_SAVE_MS);
   }
 
   /**
@@ -1562,7 +1747,7 @@ export class SharedProject {
    * Otherwise both sides moved: open a reconciliation and touch neither.
    */
   private async takeExternalEdit(runtime: DocRuntime, record: LayoutRecord, disk: Uint8Array, diskHash: string): Promise<void> {
-    if (this.follower || !this.docReady(runtime)) return;
+    if (this.follower || !this.docWritable(runtime)) return;
     const target = await resolveInside(this.info.root, record.path);
     const shared = runtime.hub.getText("content");
     const diskStats = await statIfExists(target);
@@ -1657,6 +1842,7 @@ export class SharedProject {
       this.ctx.host.store.clearExternalAdoption(this.info.projectId);
       delete this.state.externalAdoptionRequired;
       delete this.state.externalAdoptionReason;
+      this.savedState = null;
       if (await this.rootAvailable()) await writeState(this.info.root, this.state, this.diskGuard());
       this.scheduleScan(0);
     });
@@ -3225,7 +3411,14 @@ export class SharedProject {
    */
   private saveSoon(delay = 100): void {
     this.stateDirty = true;
-    if (this.saveTimer || this.stopped || this.follower) return;
+    if (this.stopped || this.follower) return;
+    const due = performance.now() + delay;
+    if (this.saveTimer) {
+      // Writes coalesce into the pending one, unless this one is wanted sooner (a text flush waits longer).
+      if (due >= this.saveDueAt) return;
+      clearTimeout(this.saveTimer);
+    }
+    this.saveDueAt = due;
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
       void this.enqueue(async () => {
@@ -3234,7 +3427,10 @@ export class SharedProject {
         let saved = false;
         try {
           if (await this.rootAvailable()) {
-            await writeState(this.info.root, this.state, this.diskGuard());
+            // A state identical to the one on disk (a flush that changed nothing recorded) is not rewritten.
+            const text = JSON.stringify(this.state);
+            if (text !== this.savedState) await writeState(this.info.root, this.state, this.diskGuard());
+            this.savedState = text;
             saved = true;
           }
         } finally {
@@ -3312,6 +3508,18 @@ function normalizeRelative(input: string): string {
 }
 
 /** Every version of a removed or moved file this host knows, for recognizing it if it returns. */
+/** A blob's destination as observed once: `stats` null when absent; `hash` null when absent, undefined when online-only and unexplained. */
+interface DestinationView {
+  stats: Stats | null;
+  hash: string | null | undefined;
+  bytes?: Uint8Array;
+}
+
+/** What identifies the bytes of a file without reading them (ctime and inode too: a delivery can keep size and mtime). */
+function statsKey(stats: Stats | null): string | null {
+  return stats ? `${stats.size}:${stats.mtimeMs}:${stats.ctimeMs}:${stats.ino}` : null;
+}
+
 function knownHashes(record?: LayoutRecord, entry?: ManifestEntry): string[] {
   const hashes = [record?.hash, entry?.blobHash, ...(record?.previous ?? []).map((item) => item.hash)];
   return [...new Set(hashes.filter((hash): hash is string => Boolean(hash)))];
