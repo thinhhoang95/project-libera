@@ -130,6 +130,8 @@ export interface VersionResponse {
   projectCreationKeys?: boolean;
   /** Project deletion can be fenced against the manifest sequence exported locally. */
   guardedProjectDeletion?: boolean;
+  /** Server can fence a project's writes for a takedown (ApiRoutes.projectClosing). */
+  takedownFence?: boolean;
   /** Server makes PDF documents on `open`. Live PDFs need it, and older servers refuse those opens. */
   livePdfs?: boolean;
   protocolVersion: number;
@@ -167,6 +169,11 @@ export interface FolderLeaseRequest {
   holder: string;
   /** How long the lease lasts unless renewed (the server clamps it). */
   ttlMs: number;
+}
+
+/** What a takedown fence froze: every live document of the project and its final sequence. */
+export interface ProjectClosingResponse {
+  docs: Array<{ docId: string; kind: DocKind; serverSeq: number }>;
 }
 
 export interface FolderLease {
@@ -717,6 +724,12 @@ export const ApiRoutes = {
   notificationsRead: "/v1/notifications/read",
   audit: (projectId: string) => `/v1/projects/${encodeURIComponent(projectId)}/audit`,
   folderLease: (projectId: string) => `/v1/projects/${encodeURIComponent(projectId)}/folder-lease`,
+  /**
+   * POST (owner) → ProjectClosingResponse: starts a takedown by refusing every later document
+   * update and comment write, and answers with each document's final sequence. DELETE lifts the
+   * fence when the takedown is abandoned.
+   */
+  projectClosing: (projectId: string) => `/v1/projects/${encodeURIComponent(projectId)}/closing`,
   /** POST AlbumActivityRequest → 204: tells the album's other members about new photos. */
   albumActivity: (projectId: string) => `/v1/projects/${encodeURIComponent(projectId)}/album-activity`,
   commands: "/v1/commands",

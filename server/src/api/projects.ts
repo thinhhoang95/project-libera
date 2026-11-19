@@ -19,6 +19,7 @@ import {
   type AuditEntry,
   type FolderLease,
   type Member,
+  type ProjectClosingResponse,
   type ProjectKind,
   type ProjectSummary,
   type Role,
@@ -204,15 +205,20 @@ export function registerProjectRoutes(app: FastifyInstance, context: ServerConte
     await requireProjectAction(db, projectId, accountId, "delete-project", actor);
     const body = z.object({ expectedManifestSeq: z.number().int().nonnegative().optional() }).parse(request.body ?? {});
     const { docs, members } = await db.transaction().execute(async (trx) => {
+      // Lock order, shared with persistUpdate (sync/store.ts): every document
+      // row first (the manifest's included), then memberships. The manifest
+      // alone, then the cascade into memberships, deadlocked with an update
+      // that held its membership row and waited for the manifest row.
+      const docs = await trx.selectFrom("documents").select(["id", "kind", "last_server_seq"])
+        .where("project_id", "=", projectId).orderBy("id").forUpdate().execute();
+      const members = await trx.selectFrom("memberships").select("account_id")
+        .where("project_id", "=", projectId).orderBy("account_id").forUpdate().execute();
       if (body.expectedManifestSeq !== undefined) {
-        const manifest = await trx.selectFrom("documents").select("last_server_seq")
-          .where("project_id", "=", projectId).where("kind", "=", "manifest").forUpdate().executeTakeFirst();
+        const manifest = docs.find((doc) => doc.kind === "manifest");
         if (!manifest || manifest.last_server_seq !== body.expectedManifestSeq) {
           throw new HttpError("conflict", "The notebook changed after its local export. Export its current files before taking it down.");
         }
       }
-      const docs = await trx.selectFrom("documents").select("id").where("project_id", "=", projectId).execute();
-      const members = await trx.selectFrom("memberships").select("account_id").where("project_id", "=", projectId).execute();
       // Reviews reference revisions without ON DELETE CASCADE. Remove them
       // first, then let the project's foreign keys erase all dependent rows.
       await trx.deleteFrom("reviews").where("project_id", "=", projectId).execute();
@@ -226,6 +232,33 @@ export function registerProjectRoutes(app: FastifyInstance, context: ServerConte
     for (const member of members) publish(context, "user", member.account_id, EventKind.ProjectDeleted, { projectId });
     publish(context, "project", projectId, EventKind.ProjectDeleted, { projectId });
     for (const doc of docs) notifyRooms(context, "documentDeleted", (rooms) => rooms.documentDeleted(doc.id));
+    return reply.status(204).send();
+  });
+
+  // Takedown fence: refuse every later document update and comment write, then
+  // report where each document ended, so the owner exports state taken after it.
+  app.post(route(ApiRoutes.projectClosing, "projectId"), async (request): Promise<ProjectClosingResponse> => {
+    const { accountId } = await requireAccount(context, request);
+    const { projectId } = projectParams.parse(request.params);
+    const actor = bindActor(accountId, undefined);
+    await requireProjectAction(db, projectId, accountId, "delete-project", actor);
+    return db.transaction().execute(async (trx) => {
+      // Same order as persistUpdate and the takedown itself: documents, then memberships.
+      const docs = await trx.selectFrom("documents").select(["id", "kind", "last_server_seq"])
+        .where("project_id", "=", projectId).where("deleted_at", "is", null).orderBy("id").forUpdate().execute();
+      const member = await trx.selectFrom("memberships").select("role")
+        .where("project_id", "=", projectId).where("account_id", "=", accountId).forShare().executeTakeFirst();
+      if (!member) throw new HttpError("forbidden", "Your notebook access changed before this change could be saved.");
+      await trx.updateTable("projects").set({ closing_at: new Date() }).where("id", "=", projectId).where("closing_at", "is", null).execute();
+      return { docs: docs.map((doc) => ({ docId: doc.id, kind: doc.kind, serverSeq: doc.last_server_seq })) };
+    });
+  });
+
+  app.delete(route(ApiRoutes.projectClosing, "projectId"), async (request, reply) => {
+    const { accountId } = await requireAccount(context, request);
+    const { projectId } = projectParams.parse(request.params);
+    await requireProjectAction(db, projectId, accountId, "delete-project", bindActor(accountId, undefined));
+    await db.updateTable("projects").set({ closing_at: null }).where("id", "=", projectId).execute();
     return reply.status(204).send();
   });
 

@@ -592,6 +592,20 @@ export class PdfMarksRuntime {
     await Promise.all([...this.docs.values()].map((doc) => this.close(doc, doc.timer !== null || doc.writing === true || options.local === true, { ...options, final: true })));
   }
 
+  /** The PDF documents open now: a takedown waits until each has every update the server holds. */
+  openDocIds(): string[] {
+    return [...this.docs.values()].map((doc) => doc.docId);
+  }
+
+  /**
+   * Takedown export, before the server copy is deleted: writes each open PDF's
+   * marks and comments to its local sidecar now, while the server can still
+   * answer for the threads. Failures propagate so the takedown is not carried on.
+   */
+  async exportLocal(): Promise<void> {
+    await Promise.all([...this.docs.values()].map((doc) => this.writeCopy(doc, { local: true, final: true })));
+  }
+
   async seed(fileId: string, relative: string, input: PdfImportRequest): Promise<void> {
     const { host, projectId } = this.ctx;
     const docId = pdfDocId(projectId, fileId);

@@ -46,7 +46,8 @@ import { normalizedServerUrl, sameAuthority } from "../core/authority";
 import { ControlError, type ControlDeps, type ControlHandler, type ControlRouter, type NotebookService } from "../control/types";
 import { classifyFile, createSharedDocument, mimeForPath } from "./documents";
 import { ARCHIVE_DIRECTORY, SHARE_PENDING_FILE, SHARED_MARKER_FILE, PathRefusedError, WriteCancelledError, checkWriteGuard, contentGuard, isActiveSqliteDatabase, randomId, readIfExists, isNotFound, sha256, statIfExists, walkNotebook, writeFileAtomic, type WriteGuard } from "./fs-ops";
-import { entryRecord } from "./layout";
+import { entryRecord, manifestEntryBytes, splitManifestBatches } from "./layout";
+import { convertLocalTranscripts } from "./transcript-conversion";
 import { isPdfDocId, isPdfPath, PDF_LIVE_SETTING } from "../../../src/lib/collab/protocol/pdf";
 import { DEFAULT_TIMINGS, SharedProject, hubHasState, type IndexedDoc, type ProjectContext, type Timings } from "./project";
 import {
@@ -1253,22 +1254,35 @@ export class NotebookServiceImpl implements NotebookService {
       if (handle.runtime && !(await handle.runtime.whenIdle(this.joinTimeoutMs))) {
         throw new ControlError(503, "unavailable", "This notebook is still syncing changes. Retry taking it down in a moment.");
       }
-      if (!(await api.version()).guardedProjectDeletion) throw new ControlError(409, "update-required", "Update the collaboration server before taking down this notebook safely.");
+      const version = await api.version();
+      if (!version.guardedProjectDeletion || !version.takedownFence) throw new ControlError(409, "update-required", "Update the collaboration server before taking down this notebook safely.");
       if (!handle.runtime) throw new ControlError(503, "offline", "Open and sync this notebook before taking it down.");
-      const sequence = await handle.runtime.prepareLocalConversion();
+      // The server stops accepting document and comment writes once the fence
+      // is up; if the takedown is abandoned from here on, the fence is lifted.
+      let fenced = false;
+      let deleted = false;
       try {
-        await api.deleteProject(projectId, sequence);
-      } catch (error) {
-        // A lost response or a local cleanup failure can be retried safely.
-        if (!(error instanceof ApiClientError)) throw error;
-        if (error.status !== 404) {
-          if (!error.transient) throw error;
-          const gone = await api.getProject(projectId).then(
-            () => false,
-            (checkError: unknown) => checkError instanceof ApiClientError && checkError.status === 404,
-          );
-          if (!gone) throw error;
+        const sequence = await handle.runtime.prepareLocalConversion(() => { fenced = true; return api.closeProject(projectId); });
+        try {
+          await api.deleteProject(projectId, sequence);
+        } catch (error) {
+          // A lost response or a local cleanup failure can be retried safely.
+          if (!(error instanceof ApiClientError)) throw error;
+          if (error.status !== 404) {
+            if (!error.transient) throw error;
+            const gone = await api.getProject(projectId).then(
+              () => false,
+              (checkError: unknown) => checkError instanceof ApiClientError && checkError.status === 404,
+            );
+            if (!gone) throw error;
+          }
         }
+        deleted = true;
+      } catch (error) {
+        if (fenced && !deleted) await api.reopenProject(projectId).catch((reopenError: unknown) => {
+          this.logger.warn(`Shared notebook ${handle.name}: could not lift the takedown fence; changes stay paused until the next takedown attempt or its removal.`, reopenError);
+        });
+        throw error;
       }
       await this.removeLocally(handle);
     });
@@ -1666,6 +1680,9 @@ export class NotebookServiceImpl implements NotebookService {
     if (existing?.projectId) await authorize(existing.projectId, existing.manifestDocId);
     const name = (requestedName?.trim() || existing?.name || notebook).slice(0, 200);
     const previous = new Map((existing?.files ?? []).map((file) => [file.path, file]));
+    // Transcripts kept in the hidden local location become `.transcript`
+    // companions beside their recordings first, so the walk shares them.
+    const transcripts = album ? null : await convertLocalTranscripts(root, guard);
     const { entries: everything, skipped, complete } = await walkNotebook(root);
     if (!complete) throw new ControlError(409, "scan-incomplete", "The notebook folder could not be read completely. Wait for its files to finish syncing and try again.");
     // An album shares its top-level photos; anything else in the folder stays local.
@@ -1803,52 +1820,64 @@ export class NotebookServiceImpl implements NotebookService {
       const hub = this.deps.host.acquire(manifestDocId, { kind: "manifest", projectId });
       let synced = false;
       try {
-        hub.applyLocalChange(
-          "manifest",
-          (doc) => {
-            const map = doc.getMap<unknown>(ManifestKeys.files);
-            for (const file of files) {
-              const entry: ManifestEntry = {
-                fileId: file.fileId,
-                path: file.path,
-                kind: file.kind,
-                ...(file.kind === "doc" ? { docId: file.docId, docKind: file.docKind } : {}),
-                ...(file.kind === "blob" ? { blobHash: file.blobHash, mime: file.mime } : {}),
-                ...(file.size !== undefined ? { size: file.size } : {}),
-                createdBy: accountId,
-                createdAt: plan.startedAt,
-                updatedAt: plan.startedAt,
-              };
-              map.set(file.fileId, entryRecord(entry));
-            }
-            if (target.pdfLive) doc.getMap<unknown>(ManifestKeys.settings).set(PDF_LIVE_SETTING, true);
-            if (album) {
-              const settings = doc.getMap<unknown>(ManifestKeys.settings);
-              if (album.direct) settings.set(AlbumSettingKeys.direct, true);
-              settings.set(AlbumSettingKeys.keepLocation, album.keepLocation);
-              settings.set(AlbumSettingKeys.sharePrompts, album.sharePrompts);
-              const photos = doc.getMap<unknown>(ManifestKeys.photos);
-              for (const file of files) {
-                const details = album.photos.get(manifestPathKey(file.path));
-                const photo: AlbumPhotoRecord = {
-                  fileId: file.fileId,
-                  addedBy: accountId,
-                  updatedAt: plan.startedAt,
-                  ...(details?.caption?.trim() ? { caption: details.caption.trim().slice(0, 2000) } : {}),
-                  ...(album.sharePrompts && details?.prompt ? { prompt: details.prompt } : {}),
-                  ...(album.sharePrompts && details?.model ? { model: details.model } : {}),
-                };
-                photos.set(file.fileId, JSON.parse(JSON.stringify(photo)));
+        const manifestEntry = (file: PlannedFile): ManifestEntry => ({
+          fileId: file.fileId,
+          path: file.path,
+          kind: file.kind,
+          ...(file.kind === "doc" ? { docId: file.docId, docKind: file.docKind } : {}),
+          ...(file.kind === "blob" ? { blobHash: file.blobHash, mime: file.mime } : {}),
+          ...(file.size !== undefined ? { size: file.size } : {}),
+          createdBy: accountId,
+          createdAt: plan.startedAt,
+          updatedAt: plan.startedAt,
+        });
+        // Several transactions, each far below the server's update limit: one
+        // update over it is never sent, and the share would never sync.
+        const batches = splitManifestBatches(files, (file) => manifestEntryBytes(manifestEntry(file)) + (album ? 1024 : 0));
+        for (const [index, batch] of (batches.length ? batches : [[]] as PlannedFile[][]).entries()) {
+          hub.applyLocalChange(
+            "manifest",
+            (doc) => {
+              const map = doc.getMap<unknown>(ManifestKeys.files);
+              for (const file of batch) map.set(file.fileId, entryRecord(manifestEntry(file)));
+              if (album) {
+                const photos = doc.getMap<unknown>(ManifestKeys.photos);
+                for (const file of batch) {
+                  const details = album.photos.get(manifestPathKey(file.path));
+                  const photo: AlbumPhotoRecord = {
+                    fileId: file.fileId,
+                    addedBy: accountId,
+                    updatedAt: plan.startedAt,
+                    ...(details?.caption?.trim() ? { caption: details.caption.trim().slice(0, 2000) } : {}),
+                    ...(album.sharePrompts && details?.prompt ? { prompt: details.prompt } : {}),
+                    ...(album.sharePrompts && details?.model ? { model: details.model } : {}),
+                  };
+                  photos.set(file.fileId, JSON.parse(JSON.stringify(photo)));
+                }
               }
-            }
-          },
-          { source: "import" },
-        );
+              if (index > 0) return;
+              if (target.pdfLive) doc.getMap<unknown>(ManifestKeys.settings).set(PDF_LIVE_SETTING, true);
+              if (album) {
+                const settings = doc.getMap<unknown>(ManifestKeys.settings);
+                if (album.direct) settings.set(AlbumSettingKeys.direct, true);
+                settings.set(AlbumSettingKeys.keepLocation, album.keepLocation);
+                settings.set(AlbumSettingKeys.sharePrompts, album.sharePrompts);
+              }
+            },
+            { source: "import" },
+          );
+        }
 
-        synced = await waitUntil(() => hub.isClosed || !!hub.readOnlyReason || this.deps.host.api !== api || !this.started ||
+        synced = await waitUntil(() => hub.isClosed || !!hub.readOnlyReason || this.deps.host.api !== api || !this.started || !!hub.syncBlockedDetail ||
           (hub.pendingCount === 0 && hubHasState(this.deps.host, hub, "manifest") && hub.getStatus().state === "saved-remote"), this.shareSyncTimeoutMs);
         if (hub.isClosed || hub.readOnlyReason) throw new ControlError(409, "access-changed", "Project access changed before sharing completed; the checkpoint was preserved.");
         await checkWriteGuard(guard);
+        // Without the file list on the server no other device can open this
+        // share. Installing the marker now would report a share that does not
+        // exist; the checkpoint stays so a retry only has to send the list again.
+        if (!synced) throw new ControlError(503, "share-unfinished", hub.syncBlockedDetail
+          ? `The notebook's file list could not be sent to the server: ${hub.syncBlockedDetail} The share was not finished; try again.`
+          : "The notebook's file list has not reached the server yet. The share was not finished; try again when the connection is steady.");
         // The layout as it is on disk now: the materializer starts from it and
         // treats anything that differs (edits during the share) as new edits.
         const state = emptyState();
@@ -1888,6 +1917,8 @@ export class NotebookServiceImpl implements NotebookService {
         installedMarker = marker;
         await checkWriteGuard(guard);
         this.deps.host.store.upsertProject({ projectId, name, localRoot: root, role: "owner" });
+        // Their transcripts are shared companions now; a stale local copy must not outrank later edits.
+        for (const sidecar of transcripts?.sidecars ?? []) await fs.rm(sidecar, { force: true }).catch(() => undefined);
       } finally {
         this.deps.host.release(manifestDocId);
       }

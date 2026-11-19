@@ -123,23 +123,24 @@ export class UpdateAccessChangedError extends HttpError {
   }
 }
 
+/** The project is being taken down; its owner is exporting a final copy. Retry only if the takedown is abandoned. */
+export class ProjectClosingError extends HttpError {
+  constructor() {
+    super("conflict", "This notebook is being taken down, so changes are paused. They can be saved again if the takedown is cancelled.", { closing: true });
+  }
+}
+
 /**
  * Appends one update and bumps documents.last_server_seq in one transaction.
  * The row update takes the document's row lock, so seqs are gap-free and
  * commit in order even if two writers ever raced. Returns null when the
  * document no longer exists.
+ *
+ * Lock order (shared with guarded takedown in api/projects.ts, which deadlocked
+ * when the two differed): the project's document rows first, then memberships.
  */
 export async function persistUpdate(db: Kysely<DB>, input: PersistInput): Promise<number | null> {
   return db.transaction().execute(async (trx) => {
-    if (input.requiredAccess) {
-      const member = await trx.selectFrom("memberships").select("role")
-        .where("project_id", "=", input.requiredAccess.projectId)
-        .where("account_id", "=", input.accountId!)
-        .forShare().executeTakeFirst();
-      // UPDATE/DELETE of this membership must wait for our transaction.
-      // A change that already committed is rejected before writing a seq.
-      if (member?.role !== input.requiredAccess.role) throw new UpdateAccessChangedError();
-    }
     const row = await trx
       .updateTable("documents")
       .set((eb) => ({ last_server_seq: eb("last_server_seq", "+", 1) }))
@@ -148,6 +149,20 @@ export async function persistUpdate(db: Kysely<DB>, input: PersistInput): Promis
       .returning(["last_server_seq", "project_id"])
       .executeTakeFirst();
     if (!row) return null;
+    // Takedown sets closing_at while holding every document row, so a write
+    // that got the row lock afterwards sees it (and one before it commits first).
+    const project = await trx.selectFrom("projects").select("closing_at").where("id", "=", row.project_id).executeTakeFirst();
+    if (project?.closing_at) throw new ProjectClosingError();
+    if (input.requiredAccess) {
+      const member = await trx.selectFrom("memberships").select("role")
+        .where("project_id", "=", input.requiredAccess.projectId)
+        .where("account_id", "=", input.accountId!)
+        .forShare().executeTakeFirst();
+      // UPDATE/DELETE of this membership must wait for our transaction.
+      // A change that already committed is rejected before writing a seq
+      // (throwing rolls back the seq bump above).
+      if (member?.role !== input.requiredAccess.role) throw new UpdateAccessChangedError();
+    }
     const serverSeq = row.last_server_seq;
     await trx
       .insertInto("doc_updates")
