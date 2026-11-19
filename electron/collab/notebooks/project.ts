@@ -93,6 +93,8 @@ const INK_DIRECTORY = "_ink";
  * notebook's queue (stopping and lease changes wait on it).
  */
 const HYDRATION_WAIT_MS = 10_000;
+/** Longest stopping waits for the project queue's running task (a stalled provider can hold it for good). */
+export const stopTimings = { queueWaitMs: 15_000 };
 
 /**
  * Files at least this large are verified against their stats every
@@ -509,7 +511,15 @@ export class SharedProject {
       doc.writeTimer = null;
       doc.pendingSince = null;
     }
-    await this.queue.catch(() => undefined);
+    // A stalled provider can hold the queue's running task for good: wait a
+    // bounded while, then go on. That task writes nothing after this point
+    // (every write is fenced by diskGuard, which refuses once stopped).
+    let queueTimer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      this.queue.catch(() => undefined),
+      new Promise<void>((resolve) => { queueTimer = setTimeout(resolve, stopTimings.queueWaitMs); queueTimer.unref?.(); }),
+    ]);
+    clearTimeout(queueTimer);
     if (this.saveTimer) {
       clearTimeout(this.saveTimer);
       this.saveTimer = null;
@@ -1720,7 +1730,8 @@ export class SharedProject {
           this.dirtyPaths.add(relative);
           this.noteReported(relative);
         } else this.verifyAll = true;
-        this.scheduleScan(this.ctx.timings.settleMs);
+        // On battery the debounce stretches like the poll does.
+        this.scheduleScan(this.ctx.timings.settleMs * this.powerScale());
       });
       this.watcher.on("error", (error) => {
         this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: file watching stopped; polling only`, error);
@@ -1924,7 +1935,7 @@ export class SharedProject {
     let due = now + delay;
     if (this.scanTimer) {
       if (delay === 0 ? this.scanDueAt <= due : this.scanForced) return;
-      if (delay > 0) due = Math.min(due, this.scanFirstAt + SCAN_MAX_WAIT_MS);
+      if (delay > 0) due = Math.min(due, this.scanFirstAt + SCAN_MAX_WAIT_MS * this.powerScale());
       clearTimeout(this.scanTimer);
     } else {
       this.scanFirstAt = now;
@@ -1934,16 +1945,55 @@ export class SharedProject {
     this.scanDueAt = due;
     this.scanTimer = setTimeout(() => {
       this.scanTimer = null;
+      const forced = this.scanForced;
       this.scanForced = false;
-      // One queued scan at a time: it starts later and sees what came since.
-      if (this.scanQueued) return;
-      this.scanQueued = true;
-      void this.enqueue(async () => {
-        this.scanQueued = false;
-        await this.scan();
-      });
+      void this.startScan(forced);
     }, Math.max(0, due - now));
     this.scanTimer.unref?.();
+  }
+
+  private async startScan(forced: boolean): Promise<void> {
+    // One queued scan at a time: it starts later and sees what came since.
+    if (this.scanQueued) return;
+    if (!forced && await this.ownWritesOnly()) return;
+    if (this.scanQueued) return;
+    this.scanQueued = true;
+    void this.enqueue(async () => {
+      this.scanQueued = false;
+      await this.scan();
+    });
+  }
+
+  /**
+   * Whether every path the watcher reported now has the size and mtime the
+   * bookkeeping holds for it: the writer's own atomic write (it records what it
+   * placed), or a touch that changed nothing. Walking the whole notebook for
+   * that is wasted work (the poll still verifies on its schedule). Those paths
+   * are dropped from the dirty set; any other event, or a stat that cannot be
+   * taken quickly, leaves everything for the scan.
+   */
+  private async ownWritesOnly(): Promise<boolean> {
+    if (this.stopped || this.verifyAll || this.dirtyPaths.size === 0) return false;
+    const records = new Map<string, LayoutRecord>();
+    for (const record of Object.values(this.state.layout)) if (record.kind !== "folder" && record.hash) records.set(manifestPathKey(record.path), record);
+    const reported = [...this.dirtyPaths];
+    for (const relative of reported) {
+      const record = records.get(manifestPathKey(relative));
+      if (!record || record.size === undefined || record.mtimeMs === undefined) return false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const slow = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), HYDRATION_WAIT_MS); timer.unref?.(); });
+      const stats = await Promise.race([
+        resolveInside(this.info.root, relative).then((absolute) => statIfExists(absolute)).catch(() => null),
+        slow,
+      ]);
+      clearTimeout(timer);
+      if (!stats || !stats.isFile() || stats.size !== record.size || stats.mtimeMs !== record.mtimeMs) return false;
+    }
+    if (this.stopped || this.verifyAll) return false;
+    for (const relative of reported) this.dirtyPaths.delete(relative);
+    // Something arrived while the stats were taken: it has its own debounce.
+    if (this.dirtyPaths.size > 0) this.scheduleScan(this.ctx.timings.settleMs * this.powerScale());
+    return true;
   }
 
   /** Turns differences between the folder and the layout into document edits and manifest operations. */
@@ -2013,6 +2063,8 @@ export class SharedProject {
     let needsRetry = false;
     /** The shortest wait until a file another program is still changing counts as quiet. */
     let quietDeferMs = Infinity;
+    /** Bytes still to read this scan, tracked files and new ones alike. */
+    let readBudget = SCAN_READ_BUDGET_BYTES;
 
     for (const [fileId, record] of Object.entries(this.state.layout)) {
       const recordKey = manifestPathKey(record.path);
@@ -2053,8 +2105,24 @@ export class SharedProject {
         this.verified.set(fileId, { ctimeMs: seen.ctimeMs, at: performance.now() });
         continue;
       }
+      // A tracked file that grew past what the server takes cannot be shared
+      // whatever it holds: it is neither read nor hashed (nor downloaded).
+      if (seen.size > MAX_UPLOAD_BYTES) {
+        if (!scanReads.oversized.has(seen.relative)) {
+          scanReads.oversized.add(seen.relative);
+          this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: ${seen.relative} is larger than the ${MAX_UPLOAD_BYTES / (1024 * 1024)} MiB a shared file can be, so its changes are not checked.`);
+        }
+        continue;
+      }
+      // One scan reads a bounded amount in all; the rest waits for the next.
+      if (seen.size > readBudget) {
+        needsRetry = true;
+        continue;
+      }
+      // Charged when the read starts: one given up on keeps reading in the background.
+      readBudget -= seen.size;
       const absolute = await resolveInside(this.info.root, seen.relative).catch(() => null);
-      const read = absolute ? await readShared(absolute, HYDRATION_WAIT_MS, seen) : null;
+      const read = absolute ? await readShared(absolute, HYDRATION_WAIT_MS, seen, this) : null;
       if (read === SLOW_READ) {
         needsRetry = true;
         continue;
@@ -2180,8 +2248,7 @@ export class SharedProject {
 
     // New files and folders the layout does not know.
     const fresh: Array<{ entry: WalkEntry; bytes: Uint8Array | null; hash: string; quiet: boolean }> = [];
-    /** Bytes still to read this scan, and bytes of new files held in memory. */
-    let readBudget = SCAN_READ_BUDGET_BYTES;
+    /** Bytes of new files held in memory (readBudget is shared with the tracked files above). */
     let retainedBytes = 0;
     // A rename needs the new file's bytes only when a missing record has its size.
     const missingSizes = new Set<number | undefined>();
@@ -2231,7 +2298,7 @@ export class SharedProject {
         continue;
       }
       const absolute = await resolveInside(this.info.root, relative).catch(() => null);
-      const read = absolute ? await readShared(absolute, HYDRATION_WAIT_MS, entry) : null;
+      const read = absolute ? await readShared(absolute, HYDRATION_WAIT_MS, entry, this) : null;
       if (read === SLOW_READ) {
         needsRetry = true;
         continue;
@@ -2337,7 +2404,7 @@ export class SharedProject {
         let candidateBytes = candidate.bytes;
         if (!candidateBytes) {
           const absolute = await resolveInside(this.info.root, candidate.entry.relative).catch(() => null);
-          const again = absolute ? await readShared(absolute, HYDRATION_WAIT_MS, candidate.entry) : null;
+          const again = absolute ? await readShared(absolute, HYDRATION_WAIT_MS, candidate.entry, this) : null;
           if (!again || again === SLOW_READ || sha256(again) !== candidate.hash) {
             needsRetry = true;
             continue;
