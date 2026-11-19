@@ -11,6 +11,7 @@ import { fileExistence, libraryNotebookNames, linkCandidates, resolveLinkWith } 
 import { extractNotebookLinkDestinations } from "./notebook-links";
 import { copyReferencesOnMove, type ReferenceMoveResult } from "@/lib/references/moves";
 import { copyFile, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { writeFileAtomic } from "../../../electron/collab/notebooks/fs-ops";
 import { constants } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
@@ -116,6 +117,7 @@ export async function readLiberaFile(
   return {
     file: node,
     content,
+    version: textVersion(content),
   };
 }
 
@@ -154,7 +156,21 @@ export async function createMarkdownFile(
   return readLiberaFile(relativeFilePath(safeNotebook, targetParts));
 }
 
-export async function updateMarkdownFile(relativePath: string, content: string) {
+/** Identifies a text file's content: the editor sends the version of the text it opened (see updateMarkdownFile). */
+export function textVersion(content: string) {
+  return createHash("sha256").update(content, "utf8").digest("hex");
+}
+
+/**
+ * Saves a text file. With `baseVersion` (the textVersion of what the editor
+ * opened or last saved) the save is refused with 409 when the file on disk is
+ * another version (a cloud copy arrived, another window saved) or is gone (it
+ * was moved or deleted), so a stale tab never replaces newer bytes or brings an
+ * old name back. Without it the file is replaced whatever it holds. The bytes
+ * are staged in a temporary file and renamed into place, so a cloud provider
+ * never uploads a half-written file.
+ */
+export async function updateMarkdownFile(relativePath: string, content: string, baseVersion?: string) {
   await ensureAdminRoot();
   const { notebook, name, pathParts } = splitFilePath(relativePath);
   const fileType = assertSupportedFileName(name);
@@ -166,8 +182,19 @@ export async function updateMarkdownFile(relativePath: string, content: string) 
   // A shared file is a working copy of a CRDT document; edits go through the host.
   assertNotSharedItem(notebook, pathParts);
   await assertNotMigrating(itemLibraryPath(notebook, pathParts));
-  const previous = fileType === "markdown" ? await readFile(filePathFromParts(notebook, pathParts), "utf8") : undefined;
-  await writeFile(filePathFromParts(notebook, pathParts), content, "utf8");
+  const absolute = filePathFromParts(notebook, pathParts);
+  const onDisk = baseVersion !== undefined || fileType === "markdown" ? await readFile(absolute, "utf8").catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT" && baseVersion !== undefined) throw new StorageError(`${name} is no longer there (it was moved or deleted), so this save was not applied. Your text is still in the editor.`, 409);
+    throw error;
+  }) : undefined;
+  // Saving what the file already holds is no conflict, whoever wrote it.
+  if (baseVersion !== undefined && onDisk !== undefined && textVersion(onDisk) !== baseVersion && onDisk !== content) {
+    throw new StorageError(`${name} changed on disk since you opened it, so this save was not applied. Your text is still in the editor.`, 409);
+  }
+  const previous = fileType === "markdown" ? onDisk : undefined;
+  // A path that lost its folder is not recreated: the plain write failed there too.
+  if (!(await pathExists(path.dirname(absolute)))) throw new StorageError("Folder was not found.", 404);
+  await writeFileAtomic(absolute, Buffer.from(content, "utf8"));
   if (fileType === "markdown") await pruneUnusedMarkdownImageAssets(relativePath, content, previous);
   notifySearchChanges([relativePath]);
 
@@ -563,21 +590,8 @@ export async function renameFolder(relativePath: string, nextName: string) {
   await migrateImageAnnotationDirectory(current.notebook, current.pathParts);
   const notes = await markdownPathsInFolder(current.notebook, current.pathParts);
   for (const note of notes) await migratePythonSidecar(note);
-  await withMovedReviewsUnder(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts), () => rename(currentPath, nextPath));
-  await moveFolderSidecars(current.notebook, current.pathParts, current.notebook, nextParts);
-  await moveFolderPythonSidecars(notes, relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
   // Image URLs are relative to the notebook root, so their paths stay stable.
-  await moveReviewPath(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
-  await recordFolderMove(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
-  await moveReferenceAttachments(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
-  await renameFileMetadataPathPrefix(
-    relativeFilePath(current.notebook, current.pathParts),
-    relativeFilePath(current.notebook, nextParts),
-  );
-  await renameNotebookPanelExpandedPathPrefix(
-    relativeFilePath(current.notebook, current.pathParts),
-    relativeFilePath(current.notebook, nextParts),
-  );
+  await moveFolderWithRecords(current.notebook, current.pathParts, nextParts, currentPath, nextPath, notes);
   notifySearchChanges();
 
   return getTree();
@@ -635,14 +649,7 @@ export async function archiveFolder(relativePath: string) {
   await migrateImageAnnotationDirectory(current.notebook, current.pathParts);
   const notes = await markdownPathsInFolder(current.notebook, current.pathParts);
   for (const note of notes) await migratePythonSidecar(note);
-  await withMovedReviewsUnder(currentRelativePath, nextRelativePath, () => rename(currentPath, available.path));
-  await moveFolderSidecars(current.notebook, current.pathParts, current.notebook, nextParts);
-  await moveFolderPythonSidecars(notes, currentRelativePath, nextRelativePath);
-  await moveReviewPath(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
-  await recordFolderMove(currentRelativePath, nextRelativePath);
-  await moveReferenceAttachments(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
-  await renameFileMetadataPathPrefix(currentRelativePath, nextRelativePath);
-  await renameNotebookPanelExpandedPathPrefix(currentRelativePath, nextRelativePath);
+  await moveFolderWithRecords(current.notebook, current.pathParts, nextParts, currentPath, available.path, notes);
   notifySearchChanges();
 
   return { ...await getTree(), moved: { from: currentRelativePath, to: nextRelativePath } };
@@ -976,6 +983,44 @@ export async function locateRawFile(relativePath: string) {
 }
 
 /** The Python sidecars of a moved folder's notes, whose paths follow the notes' (markdown-assets.ts). */
+/** A step of a folder move and how to take it back. `partial`: a failing run may have moved some of what it covers, so its undo runs too. */
+type FolderMoveStep = { run: () => Promise<unknown>; undo: () => Promise<unknown>; partial?: boolean };
+
+/**
+ * Moves a folder and everything keyed by its path (sidecars, Python code,
+ * reviews, undo history, references, metadata). The folder moves first; if a
+ * later step fails (a locked or newly occupied sidecar destination), the
+ * completed steps are taken back in reverse so the folder never ends
+ * half-moved. Undo is best effort: an undo that fails leaves that record
+ * where it is, and the original error is still the one thrown.
+ */
+async function moveFolderWithRecords(notebook: string, fromParts: string[], toParts: string[], fromPath: string, toPath: string, notes: string[]) {
+  const from = relativeFilePath(notebook, fromParts);
+  const to = relativeFilePath(notebook, toParts);
+  const movedNotes = notes.map((note) => `${to}${note.slice(from.length)}`);
+  const steps: FolderMoveStep[] = [
+    { run: () => withMovedReviewsUnder(from, to, () => rename(fromPath, toPath)), undo: () => withMovedReviewsUnder(to, from, () => rename(toPath, fromPath)) },
+    { run: () => moveFolderSidecars(notebook, fromParts, notebook, toParts), undo: () => moveFolderSidecars(notebook, toParts, notebook, fromParts), partial: true },
+    { run: () => moveFolderPythonSidecars(notes, from, to), undo: () => moveFolderPythonSidecars(movedNotes, to, from), partial: true },
+    { run: () => moveReviewPath(from, to), undo: () => moveReviewPath(to, from) },
+    { run: () => recordFolderMove(from, to), undo: () => recordFolderMove(to, from) },
+    { run: () => moveReferenceAttachments(from, to), undo: () => moveReferenceAttachments(to, from) },
+    { run: () => renameFileMetadataPathPrefix(from, to), undo: () => renameFileMetadataPathPrefix(to, from) },
+    { run: () => renameNotebookPanelExpandedPathPrefix(from, to), undo: () => renameNotebookPanelExpandedPathPrefix(to, from) },
+  ];
+  const done: FolderMoveStep[] = [];
+  for (const step of steps) {
+    try {
+      await step.run();
+      done.push(step);
+    } catch (error) {
+      const undo = step.partial ? [step, ...done.reverse()] : done.reverse();
+      for (const taken of undo) await taken.undo().catch(() => undefined);
+      throw error;
+    }
+  }
+}
+
 async function moveFolderPythonSidecars(notes: string[], from: string, to: string) {
   for (const note of notes) await movePythonSidecar(note, `${to}${note.slice(from.length)}`);
 }
