@@ -7,7 +7,7 @@
 // a sync client cannot change shared state.
 
 import { createHash } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
 
 import type * as Y from "yjs";
@@ -31,6 +31,12 @@ interface CopyOptions {
   local?: boolean;
   /** The app is stopping: the copy waiting for its delay is written now. */
   final?: boolean;
+}
+
+async function hashFile(file: string): Promise<string> {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(file)) hash.update(chunk as Buffer);
+  return hash.digest("hex");
 }
 
 /** The document of a shared PDF; every client derives the same one. */
@@ -90,6 +96,8 @@ interface PdfDoc {
   /** The sidecar's stats ("missing" when absent) at its last read, and when that was (Date.now()). */
   sidecarStat?: string;
   sidecarReadAt?: number;
+  /** The sidecar on disk records another PDF's bytes: its source must not be carried into the copy. */
+  foreignSource?: boolean;
   /** Settles when the import under way (importing) ends. */
   importDone?: Promise<void>;
   writes: Promise<void>;
@@ -386,9 +394,25 @@ export class PdfMarksRuntime {
         return;
       }
       // Only a PDF with no sidecar of its own can have an older one to merge.
-      const bytes = current ?? await readIfExists(await this.sidecarToRead(doc.path));
+      const sidecarFile = current ? target : await this.sidecarToRead(doc.path);
+      const bytes = current ?? await readIfExists(sidecarFile);
       const sidecar = bytes ? JSON.parse(bytes.toString("utf8")) as Sidecar : null;
       if (bytes && sidecar && !await this.keepRejected(doc, bytes.toString("utf8"))) return;
+      if (sidecar) {
+        const belongs = await this.sidecarBelongsToPdf(doc, sidecar, sidecarFile);
+        // The PDF cannot be read right now: decide on the next check, import nothing.
+        if (belongs === null) return;
+        if (!belongs) {
+          // Another PDF's notes (the name was reused). Kept above; nothing from it enters this document.
+          doc.foreignSource = true;
+          doc.observedHash = observed;
+          doc.imported = true;
+          doc.sidecarStat = statKey;
+          doc.sidecarReadAt = Date.now();
+          return;
+        }
+        doc.foreignSource = false;
+      }
       const annotations = Array.isArray(sidecar?.annotations) ? sidecar.annotations.filter(validAnnotation) : [];
       // Server threads in a sidecar are copies of what the server holds. Only
       // comments written locally are new: importing a copy would duplicate a
@@ -481,7 +505,7 @@ export class PdfMarksRuntime {
     const threads = await this.commentsForCopy(doc, options);
     const comments = threads ?? (Array.isArray(existing?.comments) ? existing.comments : []);
     if (!annotations.length && !comments.length && !existing) return;
-    const copy: Sidecar = { annotations, ...(comments.length ? { comments } : {}), ...(existing?.source ? { source: existing.source } : {}), ...(options.local ? {} : { sharedCopy: doc.docId }) };
+    const copy: Sidecar = { annotations, ...(comments.length ? { comments } : {}), ...(existing?.source && !doc.foreignSource ? { source: existing.source } : {}), ...(options.local ? {} : { sharedCopy: doc.docId }) };
     const bytes = Buffer.from(`${JSON.stringify(copy, null, 2)}\n`, "utf8");
     const hash = sha256(bytes);
     if (hash === expected) return;
@@ -500,6 +524,25 @@ export class PdfMarksRuntime {
     this.ctx.filesChanged([doc.path]);
   }
 
+  /**
+   * Whether a sidecar's notes are this PDF's: true, false, or null when the PDF
+   * cannot be read. A sidecar recording its PDF's bytes (source.contentHash) must
+   * match them. One this runtime wrote for this very document is its own. A legacy
+   * sidecar with no recorded bytes is imported only when it is not older than the
+   * PDF file (a PDF saved after it was written cannot have been annotated by it).
+   */
+  private async sidecarBelongsToPdf(doc: PdfDoc, sidecar: Sidecar, sidecarFile: string): Promise<boolean | null> {
+    if ((sidecar as { sharedCopy?: unknown }).sharedCopy === doc.docId) return true;
+    const pdf = path.join(this.ctx.root, ...doc.path.split("/"));
+    const stored = (sidecar.source as { contentHash?: unknown } | undefined)?.contentHash;
+    if (typeof stored === "string" && /^[0-9a-f]{64}$/.test(stored)) {
+      try { return await hashFile(pdf) === stored; } catch { return null; }
+    }
+    const [pdfStats, sidecarStats] = await Promise.all([fs.stat(pdf).catch(() => null), fs.stat(sidecarFile).catch(() => null)]);
+    if (!pdfStats) return null;
+    return !sidecarStats || pdfStats.mtimeMs <= sidecarStats.mtimeMs + 2_000;
+  }
+
   /** The threads for the copy; null keeps the ones it has, as when the server cannot answer. */
   private async commentsForCopy(doc: PdfDoc, options: CopyOptions): Promise<unknown[] | null> {
     const threads = this.ctx.listComments?.(doc.docId).catch(() => null) ?? Promise.resolve(null);
@@ -514,6 +557,8 @@ export class PdfMarksRuntime {
     if (!finalizing && !this.ctx.canWriteDisk()) return false;
     const target = path.join(this.ctx.root, ".libera", "collab", "rejected-pdf", `${doc.fileId}-${sha256(Buffer.from(text, "utf8"))}.json`);
     try {
+      // Content-addressed: the same text is already kept, so opening the PDF again writes nothing.
+      if (await readIfExists(target) !== null) return true;
       await ensureDirectory(path.dirname(target), this.ctx.guard(finalizing));
       await writeFileAtomic(target, Buffer.from(text, "utf8"), this.ctx.guard(finalizing));
       return true;

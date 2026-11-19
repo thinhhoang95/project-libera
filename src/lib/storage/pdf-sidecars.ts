@@ -101,30 +101,106 @@ async function setAside(notebook: string, store: KindStore, sidecarPath: string,
  * the PDF there has the bytes the side-car records, and only into a free
  * destination; the original stays. Removals leave side-cars in place for
  * reconcilePdfSidecars, which sets aside or re-attaches them by identity.
+ * A removal sets the removed PDF's side-cars aside (retireRemovedPdf).
  * Returns how many side-cars it copied.
  */
-export async function followSharedPdfChanges(moves: Array<{ from: string; to: string }>, _removed: string[]) {
-  void _removed; // Normal identity reconciliation retains removal recovery.
-  let changed = 0;
+export async function followSharedPdfChanges(moves: Array<{ from: string; to: string }>, removed: string[]) {
+  let changed = await replayPendingPdfMoves();
   // Destinations are exclusive and sources are retained. Occupied paths and
   // swaps wait for identity-based reconciliation rather than destroying work.
   for (const { from, to } of moves) {
-    try {
-      if (getFileType(from) !== "pdf" || getFileType(to) !== "pdf" || from === to) continue;
-      const source = splitFilePath(from);
-      const target = splitFilePath(to);
-      const pdf = filePathFromParts(target.notebook, target.pathParts);
-      for (const store of KINDS) {
-        if (await copyLifecycleSidecar(store.path(source.notebook, source.pathParts), store.path(target.notebook, target.pathParts), notebookPath(target.notebook), async (bytes) => {
-          const identity = sidecarIdentity(JSON.parse(bytes.toString("utf8")));
-          const current = identity ? await cachedPdfIdentity(pdf) : null;
-          return current !== null && identity !== null && current.contentHash === identity.contentHash && current.size === identity.size;
-        })) changed += 1;
-      }
-    } catch { /* Unavailable or ambiguous inputs stay in their original sidecar. */ }
+    const result = await followOneMove(from, to);
+    changed += result.changed;
+    if (result.waiting) rememberPendingMove(from, to);
   }
-  // Removal carries no reviewed file identity. Leave the sidecar for normal
-  // PDF identity reconciliation, which can set it aside with recovery data.
+  // A removed PDF's notes are set aside (recoverable, and put back with the same
+  // bytes under the same name), so a new PDF saved at that name starts clean.
+  for (const libraryPath of removed) await retireRemovedPdf(libraryPath);
+  return changed;
+}
+
+/**
+ * Sets aside the side-cars of a PDF the host removed, unless the file at that
+ * path still has the bytes they record (a rename back, a re-delivery). Nothing
+ * is erased: setAside keeps the full record in `orphaned-sidecars`.
+ */
+async function retireRemovedPdf(libraryPath: string) {
+  try {
+    if (getFileType(libraryPath) !== "pdf") return;
+    const { notebook, pathParts } = splitFilePath(libraryPath);
+    const present = await pdfExists(libraryPath);
+    if (present === null) return; // Unreadable: not known to be gone.
+    const pdf = filePathFromParts(notebook, pathParts);
+    for (const store of KINDS) {
+      const sidecarPath = store.path(notebook, pathParts);
+      if (present) {
+        const identity = sidecarIdentity(await readJson(sidecarPath));
+        const current = identity ? await cachedPdfIdentity(pdf).catch(() => null) : null;
+        // Same bytes: still this PDF's. Different bytes: the name was reused. A legacy
+        // side-car with no identity cannot be told apart: it stays (the readers trust it too).
+        if (!identity || !current || (current.contentHash === identity.contentHash && current.size === identity.size)) continue;
+      }
+      await setAside(notebook, store, sidecarPath, libraryPath);
+    }
+  } catch { /* Left in place for identity reconciliation. */ }
+}
+
+/**
+ * Copies the side-cars of one moved PDF. `waiting` is true when a side-car was
+ * left behind only because the PDF at the destination is not there yet (or not
+ * these bytes yet): a cloud folder delivers the moved file late.
+ */
+async function followOneMove(from: string, to: string): Promise<{ changed: number; waiting: boolean }> {
+  let changed = 0;
+  let waiting = false;
+  try {
+    if (getFileType(from) !== "pdf" || getFileType(to) !== "pdf" || from === to) return { changed, waiting };
+    const source = splitFilePath(from);
+    const target = splitFilePath(to);
+    const pdf = filePathFromParts(target.notebook, target.pathParts);
+    for (const store of KINDS) {
+      let mismatch = false;
+      if (await copyLifecycleSidecar(store.path(source.notebook, source.pathParts), store.path(target.notebook, target.pathParts), notebookPath(target.notebook), async (bytes) => {
+        const identity = sidecarIdentity(JSON.parse(bytes.toString("utf8")));
+        const current = identity ? await cachedPdfIdentity(pdf).catch(() => null) : null;
+        const matches = current !== null && identity !== null && current.contentHash === identity.contentHash && current.size === identity.size;
+        if (!matches) mismatch = true;
+        return matches;
+      })) changed += 1;
+      else if (mismatch) waiting = true;
+    }
+  } catch { /* Unavailable or ambiguous inputs stay in their original sidecar. */ }
+  return { changed, waiting };
+}
+
+/** Moves whose destination PDF had not arrived (or matched) when the host reported them; replayed later. */
+const PENDING_MOVES = Symbol.for("libera.pendingPdfSidecarMoves");
+type PendingMove = { from: string; to: string; at: number };
+const pendingState = globalThis as { [PENDING_MOVES]?: Map<string, PendingMove> };
+const pendingMoves = pendingState[PENDING_MOVES] ??= new Map<string, PendingMove>();
+const PENDING_MOVE_LIMIT = 2_000;
+const PENDING_MOVE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+
+function rememberPendingMove(from: string, to: string) {
+  const key = `${from} ${to}`;
+  if (pendingMoves.size >= PENDING_MOVE_LIMIT && !pendingMoves.has(key)) return;
+  pendingMoves.set(key, { from, to, at: Date.now() });
+}
+
+/**
+ * Retries the pending moves of `notebook` (all when omitted). A move is done
+ * once its side-cars were copied, or its source side-car is gone or its
+ * destination already has one; it expires after PENDING_MOVE_TTL_MS.
+ */
+export async function replayPendingPdfMoves(notebook?: string) {
+  let changed = 0;
+  for (const [key, move] of [...pendingMoves]) {
+    if (Date.now() - move.at > PENDING_MOVE_TTL_MS) { pendingMoves.delete(key); continue; }
+    try { if (notebook !== undefined && splitFilePath(move.to).notebook !== notebook) continue; } catch { pendingMoves.delete(key); continue; }
+    const result = await followOneMove(move.from, move.to);
+    changed += result.changed;
+    if (!result.waiting) pendingMoves.delete(key);
+  }
   return changed;
 }
 
@@ -239,6 +315,8 @@ export async function reconcilePdfSidecars(notebook: string, pdfFiles: Array<{ p
   // content matching must not pick another PDF, and nothing is set aside or expires
   // here. Moves and removals reach it through followSharedPdfChanges.
   const shared = Boolean(sharedNotebookMarker(notebook));
+  // A moved PDF's bytes may have arrived since the host reported the move: reattach its side-cars at the active path.
+  if (shared) reattached += await replayPendingPdfMoves(notebook);
   for (const found of shared ? [] : missing) {
     const identity = sidecarIdentity(await readJson(found.sidecarPath));
     const target = identity ? await match(found.store.kind, identity) : null;

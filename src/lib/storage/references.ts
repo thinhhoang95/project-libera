@@ -14,6 +14,7 @@ import {
   filePathFromParts,
   getAdminRoot,
   getLinkedFolders,
+  getLocalLockDir,
   notebookPath,
   referenceLibraryPath,
   splitFilePath,
@@ -103,8 +104,9 @@ async function withLibraryLock<T>(target: string, fn: () => Promise<T>): Promise
 }
 
 async function withFileLock<T>(target: string, fn: () => Promise<T>): Promise<T> {
-  const lockPath = `${target}.lock`;
-  await mkdir(path.dirname(target), { recursive: true });
+  // Local, never beside the (synced) file: a remote machine's PID means nothing here.
+  const lockPath = path.join(getLocalLockDir(), `reflib-${createHash("sha256").update(target).digest("hex").slice(0, 32)}.lock`);
+  await mkdir(path.dirname(lockPath), { recursive: true });
   let lock;
   for (let attempt = 0; attempt < 100; attempt++) {
     try { lock = await open(lockPath, "wx", 0o600); await lock.writeFile(String(process.pid)); break; }
@@ -123,6 +125,16 @@ async function withFileLock<T>(target: string, fn: () => Promise<T>): Promise<T>
   }
   if (!lock) throw new StorageError("The reference library is busy. Retry; if the app crashed, restart it.", 409);
   try { return await fn(); } finally { await lock.close(); await rm(lockPath, { force: true }); }
+}
+
+/**
+ * The lock is local, so another device's write can land through the sync
+ * folder while this one is in flight. Just before publishing, the file's
+ * revision must still be the one this change was built on.
+ */
+async function assertRevisionUnchanged(target: string, revision: number) {
+  const latest = await readLibraryFile(target).catch(() => null);
+  if (latest && latest.revision !== revision) throw new ReferenceRevisionConflict(latest);
 }
 
 /** Read under the lock; a damaged file is moved aside and replaced by an empty library. */
@@ -174,21 +186,32 @@ export async function updateReferenceLibrary(notebook: string, expectedRevision:
   if (!Array.isArray(ops)) throw new LibraryOpError("Library changes must be a list.");
   const prepared = await withAttachmentHashes(ops);
   return withLibraryLock(target, async () => {
-    const current = await readForWrite(target);
-    if (expectedRevision !== null && current.revision !== expectedRevision) throw new ReferenceRevisionConflict(current);
-    const { library, changed } = applyLibraryOps(current, prepared, new Date().toISOString());
-    if (!changed) { await beforeCommit?.(); return current; }
-    const next = { ...library, revision: current.revision + 1 };
-    // Prepare the JSON before the tether writes its file, under the same
-    // revision lock. A full disk or failed .bib write commits neither side.
-    await writeJsonAtomically(target, next, beforeCommit);
-    // The notebook's generated references.bib follows the library when it is turned on.
-    scheduleBibMirror(notebook, next);
-    // Global Search indexes the entries as their own source.
-    notifySearchReferenceChanges([notebook]);
-    // A tethered .bib follows (bib-tether.ts), and open windows reload.
-    publishReferenceEvent({ type: "library", notebook, revision: next.revision });
-    return next;
+    for (let attempt = 0; ; attempt++) {
+      const current = await readForWrite(target);
+      if (expectedRevision !== null && current.revision !== expectedRevision) throw new ReferenceRevisionConflict(current);
+      const { library, changed } = applyLibraryOps(current, prepared, new Date().toISOString());
+      if (!changed) { await beforeCommit?.(); return current; }
+      const next = { ...library, revision: current.revision + 1 };
+      try {
+        // Prepare the JSON before the tether writes its file, under the same
+        // revision lock. A full disk or failed .bib write commits neither side.
+        await writeJsonAtomically(target, next, async () => {
+          await assertRevisionUnchanged(target, current.revision);
+          await beforeCommit?.();
+        });
+      } catch (error) {
+        // A server-side job applies to the latest library: merge by re-applying onto what arrived.
+        if (error instanceof ReferenceRevisionConflict && expectedRevision === null && attempt < 3) continue;
+        throw error;
+      }
+      // The notebook's generated references.bib follows the library when it is turned on.
+      scheduleBibMirror(notebook, next);
+      // Global Search indexes the entries as their own source.
+      notifySearchReferenceChanges([notebook]);
+      // A tethered .bib follows (bib-tether.ts), and open windows reload.
+      publishReferenceEvent({ type: "library", notebook, revision: next.revision });
+      return next;
+    }
   });
 }
 
@@ -308,7 +331,7 @@ export async function remapReferenceAttachments(transform: (path: string) => str
         if (entryDirty) { entry.attachments = uniqueAttachments(attachments); entry.updatedAt = now; dirty = true; }
       }
       if (!dirty) return false;
-      await writeJsonAtomically(target, { ...library, revision: library.revision + 1 });
+      await writeJsonAtomically(target, { ...library, revision: library.revision + 1 }, () => assertRevisionUnchanged(target, library.revision));
       return true;
     }).catch((error: unknown) => {
       // With `failures`, one library that cannot be written does not stop the others.
@@ -504,7 +527,7 @@ export async function reattachMissingReferenceFiles(notebook?: string): Promise<
         });
         if (entryChanged) entry.updatedAt = now;
       }
-      if (count) await writeJsonAtomically(target, { ...library, revision: library.revision + 1 });
+      if (count) await writeJsonAtomically(target, { ...library, revision: library.revision + 1 }, () => assertRevisionUnchanged(target, library.revision));
       return count;
     });
   }

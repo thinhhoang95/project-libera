@@ -1,6 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { statSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   directoryModeStatePath,
@@ -174,6 +176,17 @@ export function getLinkedFolder(name: string): LinkedFolder | null {
 /** Library-level state (sessions, stars, tags, reviews) is shared by notebooks and linked folders. */
 export function getStateRoot() {
   return getAdminRoot();
+}
+
+/**
+ * Where process (PID) lock files live: this machine's temp directory, keyed by
+ * a hash of the library path. A lock inside the synced library would travel
+ * through OneDrive and be judged by a PID that means nothing on another
+ * computer, and two devices could each hold their own copy of it.
+ */
+export function getLocalLockDir() {
+  const key = createHash("sha256").update(getAdminRoot()).digest("hex").slice(0, 16);
+  return path.join(tmpdir(), "libera-locks", key);
 }
 
 function notebookRootPath(safeNotebook: string) {
