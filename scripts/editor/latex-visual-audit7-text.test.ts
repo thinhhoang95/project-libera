@@ -241,7 +241,7 @@ Body text.
   sloppy.done();
 });
 
-test("`\\setlength` after `\\begin{enumerate}` on its line is hidden; a one-line centred heading stays source (stat.ME 2611.14598, physics.flu-dyn 2611.12193)", () => {
+test("`\\setlength` after `\\begin{enumerate}` on its line is hidden; a one-line centred heading is drawn centred (stat.ME 2611.14598, physics.flu-dyn 2611.12193)", () => {
   const list = body(String.raw`\begin{enumerate}\setlength{\itemsep}{0pt}
 \item First.
 \item Second.
@@ -255,7 +255,10 @@ test("`\\setlength` after `\\begin{enumerate}` on its line is hidden; a one-line
   assert.match(caret.text, /\\setlength\{\\itemsep\}\{0pt\}/);
   caret.done();
   const centred = body(String.raw`\begin{center}{\large\bfseries Supplementary Materials}\end{center}`);
-  assert.ok(centred.left.includes("begin{center}"), "a one-line centred block stays source");
+  // Left open in round 7; drawn since round 10 (nlin.PS 2610.37990 writes the same line): its markers hide, the line is centred.
+  assert.ok(!centred.left.includes("begin{center}"), "a one-line centred block is drawn");
+  assert.match(centred.lines.join(" "), /Supplementary Materials/);
+  assert.ok(centred.view.contentDOM.querySelector(".cm-vis-center"), "the line is centred");
   centred.done();
 });
 
