@@ -34,7 +34,7 @@ import type { DocHub } from "../core/doc-hub";
 import type { CollabHost } from "../core/host";
 import { ControlError } from "../control/types";
 import { classifyFile, createSharedDocument, mimeForPath } from "./documents";
-import { clearMoveJournal, recoverInterruptedMoves, writeMoveJournal } from "./move-journal";
+import { clearMoveJournal, placeStagedMoves, recoverInterruptedMoves, writeMoveJournal } from "./move-journal";
 import {
   ARCHIVE_DIRECTORY,
   PathRefusedError,
@@ -56,6 +56,8 @@ import {
   isShareablePath,
   mayStillBeCopying,
   movePath,
+  movePathExclusive,
+  DestinationTakenError,
   pruneEmptyDirectories,
   randomId,
   readIfExists,
@@ -788,14 +790,41 @@ export class SharedProject {
     const vacated = new Set<string>();
     let needsRetry = false;
 
+    // Staged bytes of earlier moves whose placement failed: retry them before
+    // anything else decides what the old and new paths hold (finding 29).
+    const stagedMoves = new Map<string, "placed" | "archived">();
+    const stagedWaiting = new Set<string>();
+    if (!this.info.album) {
+      const results = await placeStagedMoves(this.info.root, layout.paths, this.diskGuard()).catch((error) => {
+        this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: could not retry staged moves`, error);
+        return null;
+      });
+      if (results) {
+        for (const move of results.placed) stagedMoves.set(move.fileId, move.outcome === "archived" ? "archived" : "placed");
+        for (const fileId of results.waiting) stagedWaiting.add(fileId);
+        if (results.waiting.size > 0) needsRetry = true;
+      }
+    }
+
     // Removed entries: archive files (never delete user data outright).
     for (const [fileId, record] of Object.entries(previous)) {
       if (layout.paths.has(fileId)) continue;
       this.retirePath(record.path, knownHashes(record));
       touched.add(record.path);
       vacated.add(record.kind === "folder" ? record.path : path.posix.dirname(record.path));
-      if (record.docId) this.docs.get(record.docId)?.hub.markDeleted();
-      if (record.kind !== "folder") await this.archiveRemoved(record);
+      // No tombstone here: the removal may still roll back (an optimistic delete
+      // the server refuses, a manifest that lags). Only the server's own
+      // document-deleted answer ends a document (finding 3).
+      try {
+        if (record.kind !== "folder") await this.archiveRemoved(record);
+      } catch (error) {
+        // One failing archive must not abort the pass: keep the record, so the
+        // removal is retried, and go on with the other entries (finding 29).
+        this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: could not archive ${record.path}`, error);
+        next[fileId] = record;
+        needsRetry = true;
+        continue;
+      }
       if (record.docId) {
         this.releaseDoc(record.docId);
         this.dropReconciliations(record.docId);
@@ -806,6 +835,10 @@ export class SharedProject {
 
     // Moves, in two phases so swaps and chains (a→b, b→a) cannot collide.
     const staged: Array<{ fileId: string; staging: string; record: LayoutRecord }> = [];
+    // Files whose bytes did not reach their new path: the layout keeps the old
+    // path (and the hash that goes with it) until a pass places them (finding 29).
+    const pending = new Set<string>();
+    const occupied = new Set<string>();
     for (const [fileId, record] of Object.entries(previous)) {
       const desired = layout.paths.get(fileId);
       if (!desired || desired === record.path) continue;
@@ -816,9 +849,29 @@ export class SharedProject {
       }
       touched.add(record.path).add(desired);
       vacated.add(path.posix.dirname(record.path));
+      const early = stagedMoves.get(fileId);
+      if (early) {
+        // Placed from the journal above; its bytes are the file's own unless they were archived.
+        next[fileId] = early === "archived" ? { ...record, path: desired, hash: undefined, size: undefined, mtimeMs: undefined } : { ...record, path: desired };
+        continue;
+      }
+      if (stagedWaiting.has(fileId)) {
+        next[fileId] = { ...record };
+        pending.add(fileId);
+        continue;
+      }
       try {
         const source = await resolveInside(this.info.root, record.path);
         if (!(await statIfExists(source))) {
+          next[fileId] = { ...record, path: desired, hash: undefined, size: undefined, mtimeMs: undefined };
+          continue;
+        }
+        // The old name may already hold something else (a sync client reuses names):
+        // only this entry's own bytes move. Anything else is new content the scanner
+        // imports, and the entry is materialized at its destination from authority.
+        const owner = await this.holdsOwnBytes(source, record);
+        if (owner === SLOW_READ) throw new Error(`${record.path} is still downloading from the cloud folder`);
+        if (!owner) {
           next[fileId] = { ...record, path: desired, hash: undefined, size: undefined, mtimeMs: undefined };
           continue;
         }
@@ -836,20 +889,32 @@ export class SharedProject {
         staged.push({ fileId, staging, record });
       } catch (error) {
         this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: could not move ${record.path}`, error);
+        // Still at the old path, so the layout stays there and the next pass tries again.
+        next[fileId] = { ...record };
+        pending.add(fileId);
+        occupied.add(record.path);
+        needsRetry = true;
       }
     }
     for (const { fileId, staging, record } of staged) {
       const desired = layout.paths.get(fileId) as string;
       try {
         const target = await resolveInside(this.info.root, desired);
+        // A file whose own move failed still sits there: it is not ours to archive.
+        if (occupied.has(desired)) throw new DestinationTakenError(target);
         if (await statIfExists(target)) await this.archive(desired);
-        await movePath(staging, target, this.diskGuard());
+        await movePathExclusive(staging, target, this.diskGuard());
         if (!this.info.album) await clearMoveJournal(this.info.root, path.basename(staging)).catch(() => undefined);
         next[fileId] = { ...record, path: desired };
         this.missingSince.delete(fileId);
       } catch (error) {
         this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: could not move ${record.path} to ${desired}`, error);
-        next[fileId] = { ...record, path: desired, hash: undefined, size: undefined, mtimeMs: undefined };
+        // The staged bytes stay (journalled) for a later pass to place or resolve; they are never overwritten onto anything.
+        // An album keeps no journal, so its file goes back where it was.
+        if (this.info.album) await movePathExclusive(staging, await resolveInside(this.info.root, record.path), this.diskGuard()).catch(() => undefined);
+        next[fileId] = { ...record };
+        pending.add(fileId);
+        needsRetry = true;
       }
     }
 
@@ -881,6 +946,9 @@ export class SharedProject {
       if (entry.kind === "doc" && entry.docId) {
         if (record.docId && previous[fileId]?.docId && previous[fileId].docId !== entry.docId) this.releaseDoc(previous[fileId].docId as string);
         this.ensureDoc(entry.docId, fileId);
+      } else if (pending.has(fileId)) {
+        // Its bytes are mid-move: placing from authority now would leave two copies.
+        continue;
       } else if (entry.kind === "blob" && entry.blobHash && (record.hash !== entry.blobHash || this.baselineMissing.has(fileId))) {
         const placed = await this.placeBlob(entry, record);
         if (placed) touched.add(desired);
@@ -904,7 +972,7 @@ export class SharedProject {
     this.pdfs.sync(this.entries.values(), layout.paths);
     // Documents whose file is missing or new get written now that their place exists.
     for (const [fileId, record] of Object.entries(next)) {
-      if (record.kind === "doc" && record.docId && (!record.hash || this.rootUnavailable || this.baselineMissing.has(fileId))) {
+      if (record.kind === "doc" && record.docId && !pending.has(fileId) && (!record.hash || this.rootUnavailable || this.baselineMissing.has(fileId))) {
         const runtime = this.docs.get(record.docId);
         if (runtime && runtime.fileId === fileId && this.docReady(runtime)) await this.materializeDoc(record.docId);
       }
@@ -929,10 +997,8 @@ export class SharedProject {
     }
     for (const [fileId, record] of Object.entries(previous)) {
       if (!next[fileId] || next[fileId].path !== record.path) this.retirePath(record.path, knownHashes(record));
-      if (record.docId && next[fileId]?.docId !== record.docId) {
-        this.docs.get(record.docId)?.hub.markDeleted();
-        this.releaseDoc(record.docId);
-      }
+      // Released, not tombstoned: only the server's document-deleted answer ends a document (finding 3).
+      if (record.docId && next[fileId]?.docId !== record.docId) this.releaseDoc(record.docId);
     }
     for (const [fileId, record] of Object.entries(next)) if (record.docId) this.ensureDoc(record.docId, fileId);
     this.pdfs.sync(this.entries.values(), layout.paths);
@@ -1130,6 +1196,27 @@ export class SharedProject {
     await movePathUnique(source, archiveRoot, path.posix.basename(relative), guard);
   }
 
+  /**
+   * Whether the bytes at `source` are the entry's own: the hash this host last
+   * placed or adopted (any earlier one too), or for a document its base text.
+   * A file the entry never had there is someone else's.
+   */
+  private async holdsOwnBytes(source: string, record: LayoutRecord): Promise<boolean | typeof SLOW_READ> {
+    const known = new Set(knownHashes(record));
+    if (record.docId) {
+      const base = await readBase(this.info.root, record.docId).catch(() => null);
+      if (base !== null) known.add(sha256(encodeText(base)));
+    }
+    if (known.size === 0) return false;
+    const stats = await statIfExists(source);
+    if (!stats) return false;
+    // Hashing a large file needs a read; the stats this host recorded answer first.
+    if (record.hash && record.size === stats.size && record.mtimeMs === stats.mtimeMs) return true;
+    const bytes = await readWithin(source, HYDRATION_WAIT_MS).catch(() => null);
+    if (bytes === SLOW_READ) return SLOW_READ;
+    return bytes !== null && known.has(sha256(bytes));
+  }
+
   /** Keep the latest CRDT text as well as any distinct on-disk version. */
   private async archiveRemoved(record: LayoutRecord): Promise<void> {
     if (!(await this.rootAvailable())) return;
@@ -1282,9 +1369,12 @@ export class SharedProject {
     const existing = this.docs.get(docId);
     if (existing) {
       existing.fileId = fileId;
+      existing.hub.reviveDeleted();
       return;
     }
     const hub = this.ctx.host.acquire(docId, { kind: "file", projectId: this.info.projectId });
+    // The manifest lists it, so an older tombstone (a rolled-back delete) must not keep it shut.
+    hub.reviveDeleted();
     const runtime: DocRuntime = { docId, fileId, hub, unsubscribe: [], writeTimer: null, pendingSince: null, rebuilt: false, wasReady: false };
     this.docs.set(docId, runtime);
     runtime.unsubscribe.push(

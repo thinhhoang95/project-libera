@@ -953,13 +953,31 @@ export class DocHub implements CompactionTarget {
     this.status.changed();
   }
 
-  /** Stops a removed file without discarding its text or unacknowledged local edits. */
+  /**
+   * Stops a removed file without discarding its text or unacknowledged local edits.
+   * The tombstone is permanent: call it for a deletion the server confirmed, never
+   * for a removal from the local manifest (see reviveDeleted).
+   */
   markDeleted(): void {
     if (this.closed || this.meta.readOnlyReason === "document-deleted") return;
     this.store.updateDocMeta(this.docId, { readOnlyReason: "document-deleted" });
     this.stopSyncing();
     this.refreshMeta();
     this.broadcast({ t: "closed", docId: this.docId, reason: "document-deleted" });
+    this.status.changed(true);
+  }
+
+  /**
+   * The current manifest lists this document again. A tombstone is only right
+   * for a deletion the server confirmed, and that ends the entry for good; one
+   * that outlived a rolled-back optimistic delete (or was written by an
+   * earlier version on a mere local removal) must not lock a live file.
+   */
+  reviveDeleted(): void {
+    if (this.closed || this.meta.readOnlyReason !== "document-deleted") return;
+    this.store.updateDocMeta(this.docId, { readOnlyReason: null });
+    this.refreshMeta();
+    this.link?.reopen();
     this.status.changed(true);
   }
 
