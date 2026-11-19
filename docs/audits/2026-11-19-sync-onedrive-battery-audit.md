@@ -186,3 +186,74 @@ No textual conflicts. Central `tsc` found one error (a `Y.Map` passed where a `R
 Line numbers refer to `23b8925`. Unqualified `project.ts`, `service.ts` and `fs-ops.ts` are under
 `electron/collab/notebooks/`; `doc-hub.ts` and `outbound.ts` under `electron/collab/core/`;
 `files.ts`, `paths.ts`, `transcripts.ts`, `annotations.ts` and `pdf-sidecars.ts` under `src/lib/storage/`.
+
+## Verification
+
+Full suites on the final branch: editor 3034/3034, server 221/221, collab 808/812 with the last
+failure fixed afterwards (below) and its file rerun green, 4 skipped (intermittent, see the
+inventory). Root and server `tsc` clean; eslint on every changed file: no errors.
+
+The first full run found three regressions, fixed in code:
+
+- **PDF side-cars on removal** (round A, finding 15): a shared removal set a PDF's notes and
+  outline aside, so a refused delete that rolled back (finding 3) lost them. Side-cars now stay
+  until other bytes take the name; the readers' identity check covers name reuse.
+- **Writer handover after a clean release** (round B, finding 40): a refused follower waited for
+  the old lease's expiry. A release now publishes `folder-lease-released` to the account's other
+  installations, which claim at once; a live holder is still not contested every tick.
+- **Concurrent creates** (round A, finding 25): a create whose name another member took meanwhile
+  was refused, losing that document. Both are kept; the answer is the created file's own
+  (suffixed) path and id.
+
+## Test inventory
+
+### Broken on `main` before this work (still failing; unrelated to sync)
+
+| File | Tests | Cause |
+|---|---|---|
+| `scripts/lib/profiles.test.cjs` | 13 (Users IPC, profile creation, removal, switching, startup configs, storage partitions) | The harness loads `electron/main.cjs` in a sandbox without a stub for `createUserFonts`, which 6878b2f (Windows per-user fonts) added: every case throws `ReferenceError`. Needs a user-fonts stub. |
+| `scripts/lib/session-shutdown.test.cjs` | 2 ("a failed session save leaves the window and server available for a successful retry"; "a failed pop-out save cancels main closure and leaves every server available for retry") | Expect the save error (`Disk unavailable`, `Annotation disk unavailable`) to surface; it arrives as `undefined`. Either the error path changed or the test is stale; needs a look. |
+
+Pre-existing lint warnings: unused `invite` in `scripts/collab/audit-1112-follower-authority.test.ts`;
+missing `refreshTree` dependency in `use-libera-workspace.ts`.
+
+### Skipped as intermittent (opt-in with `LIBERA_COLLAB_INTERMITTENT=1`, since 216340b)
+
+- `scripts/collab/notebooks-boundary-recovery.test.ts:278` — a legacy host's offline edits resume with its original client sequence identity
+- `scripts/collab/notebooks-share-lifecycle-recovery.test.ts:209` — terminal text preservation keeps a late external edit and archives the latest shared text
+- `scripts/collab/audit/sync-boundary-review.mjs:221` — matching account IDs on separate servers do not reuse local sync authority
+- `scripts/collab/audit/sync-edge-cases.mjs:150` — remote takedown preserves text newer than the debounced disk copy
+
+### Flaky under full-suite load
+
+Failed once in the first full run, passed alone (on `main` and the branch) and in the second full run:
+`scripts/editor/latex-visual-gaps-text.test.ts` ("boxes, rules, space and symbols in running text are
+drawn; \texorpdfstring …") and `scripts/editor/references-editors-source.test.ts` ("textarea: citation
+hover uses the shared dismissal rules …").
+
+### Updated because a finding changed the behaviour on purpose (passing)
+
+| Test | Finding | Change |
+|---|---|---|
+| `review-medium-host` R25 (retype `other.pdf` → `.png`) | 20 | A rename that would drop ink is refused (409); the file and its ink stay. |
+| `audit-1112-companions` STALE-2 (`c.m4a` → `.png`) | 20 | Same for a transcript. |
+| `ai-shared-writes` folder rename/deletion | 13 (P4c) | The fake host serves the new file-entries route. |
+| `audit-1112-follower-authority` DATA-6 | 26 | The export lists from the host; a disk-only file is not exported. |
+| `critical-transition-cases` interrupted move | 4 | The edit is imported before the rename (unscanned bytes are no longer staged as the entry's); the injected failure covers hard-link placement too. |
+| `sync-followup-edge-cases` eight-version history | 2, 28, 39 | Waits for each adoption and reads the in-memory record (`state.json` is written ~2 s later). |
+| `pdf-live-host` F15/F16 | 15 | The fixture records the PDF's real hash (a foreign hash is now never imported). |
+| `audit-1112-scan-classification` STALE-7 | 12 | Old-mtime bytes matching no retired hash are imported, not archived. |
+| `audit-1112-scan-reads` | 28, 2 | Real mtimes for the post-read re-stat; the detached harness stubs the catch-up gate. |
+| `shared-tree-changes` | 24 | Moves in one event are one mapping, not a chain. |
+| `notebooks-poll-pacing` | 37 | The detached harness has the fields the own-write check reads. |
+| `notebooks-synced-peers` handover | 40 | A tighter wait now that a release is announced. |
+| `server/test/sync-documents`, `collab-critical`, `sync-pdf-documents` | 35 | Entries reference real documents and uploaded blobs. |
+
+### New audit tests with weaker evidence
+
+Not seen failing for their own reason before the fix (new exports made the old code fail at
+import, or the run stopped at an earlier failure): P10 findings 9 and 11; P7b `contentGuard` and
+`doStop`; P8 same-path probe and pending-move cases; P2 finding 29 project-level cases; P6
+share/takedown cases; P11 tree-UI cases (the save-409 handler in the hook has no test); P4a merge
+cases; P4b's shared-parse case. No test covers the references-library revision check (P9).
+`audit-1119-writer-pass` uses `chmod 555`, so its finding 29 cases are POSIX-only.
