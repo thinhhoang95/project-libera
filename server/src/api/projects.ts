@@ -404,13 +404,17 @@ export function registerProjectRoutes(app: FastifyInstance, context: ServerConte
     const { projectId } = projectParams.parse(request.params);
     const query = folderLeaseQuery.parse(request.query);
     await requireProjectAction(db, projectId, accountId, "read");
-    await db
+    const released = await db
       .deleteFrom("folder_leases")
       .where("project_id", "=", projectId)
       .where("account_id", "=", accountId)
       .where("folder_id", "=", query.folderId)
       .where("holder", "=", query.holder)
+      .returning("folder_id")
       .execute();
+    // The account's other installations hold off contesting a live lease; tell
+    // them this one is free now instead of leaving them to wait out its expiry.
+    if (released.length > 0) publish(context, "user", accountId, EventKind.FolderLeaseReleased, { projectId, folderId: query.folderId });
     return reply.status(204).send();
   });
 

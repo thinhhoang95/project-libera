@@ -48,3 +48,20 @@ test("a refused claim writes the contention timestamp once and reports the time 
   assert.equal(renewed.body.granted, true);
   assert.equal(renewed.body.contended, true);
 });
+
+test("releasing a lease tells the account's other installations; a release of nothing does not", async () => {
+  const owner = await register(h, "lease-release");
+  const project = await createProject(h, owner, "Released");
+  const route = `/v1/projects/${project.id}/folder-lease`;
+  const claim = (holder: string) => request(h, "POST", route, owner, { folderId: "fld_release", holder, ttlMs: 60_000 });
+  const release = (holder: string) => request(h, "DELETE", `${route}?folderId=fld_release&holder=${holder}`, owner);
+  const heard = () => h.events.filter((event) => event.kind === "folder-lease.released" && (event.payload as { projectId?: string }).projectId === project.id);
+
+  await claim("holder_a");
+  await release("holder_b");
+  assert.equal(heard().length, 0, "a holder that does not hold the lease releases nothing");
+  await release("holder_a");
+  assert.equal(heard().length, 1);
+  assert.equal(heard()[0].scope, "user");
+  assert.equal((await claim("holder_b")).body.granted, true, "the released lease is claimable at once");
+});
