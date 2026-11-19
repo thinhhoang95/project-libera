@@ -3,7 +3,7 @@
 // SYNC-3 (watcher/scan exclusions) and SYNC-5 (multi-hyphen device copies).
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
@@ -59,17 +59,15 @@ test("STALE-7 and SYNC-5 and DATA-4 through the host", { timeout: 90_000 }, asyn
     await until(async () => { await project.whenIdle(); return readFileSync(path.join(root, "note.md"), "utf8") === "second\n" && peer!.service.resolvePath("Scan/note.md") !== null; }, "edit imported");
     await sleepUntilHash(peer, "Scan/note.md", "second\n");
 
-    // STALE-7: bytes the remembered history has never seen, at a deleted path.
+    // STALE-7, revised by finding 12 of the 2026-11-19 audit: bytes the
+    // remembered history has never seen are a new file whatever mtime a sync
+    // client gave them (the mtime alone cannot say they are an old copy).
     await peer.service.fileOp(shared.projectId, { op: "delete", path: "gone.md" });
     await project.whenIdle();
-    // A sync client keeps the version's original mtime; a person's new file has a fresh one.
     writeFileSync(path.join(root, "gone.md"), "an older version nobody remembers\n");
     utimesSync(path.join(root, "gone.md"), new Date(Date.now() - 3_600_000), new Date(Date.now() - 3_600_000));
-    await until(() => !existsSync(path.join(root, "gone.md")), "unknown bytes at a retired path set aside");
-    assert.equal(peer.service.resolvePath("Scan/gone.md"), null);
-    assert.ok(readdirSync(path.join(root, "_archive")).some((name) => name.startsWith("gone")), "kept in _archive, not deleted");
-    await peer.service.fileOp(shared.projectId, { op: "create-file", path: "gone.md", content: "explicit\n" });
-    assert.equal(readFileSync(path.join(root, "gone.md"), "utf8"), "explicit\n");
+    await until(() => peer!.service.resolvePath("Scan/gone.md") !== null, "unknown bytes at a retired path are shared");
+    assert.equal(readFileSync(path.join(root, "gone.md"), "utf8"), "an older version nobody remembers\n", "never deleted or set aside");
     // A person's later new file at another retired path (fresh mtime) is still shared.
     await peer.service.fileOp(shared.projectId, { op: "delete", path: "other.md" });
     await project.whenIdle();

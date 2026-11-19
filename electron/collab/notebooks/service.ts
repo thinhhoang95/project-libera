@@ -27,7 +27,7 @@ import type {
 } from "../../../src/lib/collab/local-api";
 import { stripPhotoMetadata } from "../../../src/lib/collab/photo-metadata";
 import { ControlRoutes } from "../../../src/lib/collab/local-api";
-import type { ProjectSummary } from "../../../src/lib/collab/protocol/api";
+import type { FolderLease, ProjectSummary } from "../../../src/lib/collab/protocol/api";
 import { EventKind } from "../../../src/lib/collab/protocol/messages";
 import { isRole, roleAtLeast, type Role } from "../../../src/lib/collab/protocol/roles";
 import {
@@ -45,8 +45,9 @@ import type { CollabHostEvent } from "../core/host";
 import { normalizedServerUrl, sameAuthority } from "../core/authority";
 import { ControlError, type ControlDeps, type ControlHandler, type ControlRouter, type NotebookService } from "../control/types";
 import { classifyFile, createSharedDocument, mimeForPath } from "./documents";
-import { ARCHIVE_DIRECTORY, SHARE_PENDING_FILE, SHARED_MARKER_FILE, PathRefusedError, WriteCancelledError, checkWriteGuard, contentGuard, randomId, readIfExists, isNotFound, sha256, statIfExists, walkNotebook, writeFileAtomic, type WriteGuard } from "./fs-ops";
-import { entryRecord } from "./layout";
+import { ARCHIVE_DIRECTORY, SHARE_PENDING_FILE, SHARED_MARKER_FILE, PathRefusedError, WriteCancelledError, checkWriteGuard, contentGuard, isActiveSqliteDatabase, randomId, readIfExists, isNotFound, sha256, statIfExists, walkNotebook, writeFileAtomic, type WriteGuard } from "./fs-ops";
+import { entryRecord, manifestEntryBytes, splitManifestBatches } from "./layout";
+import { convertLocalTranscripts } from "./transcript-conversion";
 import { isPdfDocId, isPdfPath, PDF_LIVE_SETTING } from "../../../src/lib/collab/protocol/pdf";
 import { DEFAULT_TIMINGS, SharedProject, hubHasState, type IndexedDoc, type ProjectContext, type Timings } from "./project";
 import {
@@ -75,10 +76,16 @@ export interface NotebookServiceOptions {
   shareSyncTimeoutMs?: number;
   /**
    * How long a synced folder's writer lease lasts unless renewed. Leases are
-   * renewed, and followers try to take over, every third of it; the same
-   * pass looks for shared folders that arrived through a sync client.
+   * renewed every third of it; a follower contests a held lease near its
+   * expiry. Renewal never waits for discovery.
    */
   leaseTtlMs?: number;
+  /**
+   * How often the library and gallery are scanned for shared folders that
+   * arrived through a sync client and stored projects are started or repaired
+   * (times the battery scale on battery). Default: twice the lease lifetime.
+   */
+  discoveryMs?: number;
   /**
    * How long a bound folder's sharing marker must stay missing before it is
    * restored from this installation's binding (a cloud provider may only be
@@ -170,6 +177,10 @@ interface ProjectHandle {
   leaseSupported: boolean;
   /** Conservative monotonic deadline, never extended by a failed renewal. */
   leaseDeadline?: number;
+  /** A follower refused the lease contests it again at this monotonic time (near the holder's expiry). */
+  nextContestAt?: number;
+  /** Counts lease releases heard from the server, so a refusal that crossed one is not trusted. */
+  leaseReleases?: number;
   /** A role change or reopen failed: no runtime until a later tick succeeds (retried with backoff). */
   restart?: { attempts: number; retryAt: number; stale?: SharedProject };
 }
@@ -281,10 +292,16 @@ export class NotebookServiceImpl implements NotebookService {
   private loading: Promise<void> | null = null;
   private readonly leaseTtlMs: number;
   private readonly markerRepairDelayMs: number;
+  private readonly discoveryMs: number;
   /** Bound roots whose marker is missing, and since when (see repairMissingMarker). */
   private readonly markerMissingSince = new Map<string, number>();
   private leaseTimer: ReturnType<typeof setInterval> | null = null;
   private ticking: Promise<void> | null = null;
+  /** Discovery (stored projects, markers) runs on its own timer; renewal never waits for it. */
+  private discoveryTimer: ReturnType<typeof setTimeout> | null = null;
+  private discovering: Promise<void> | null = null;
+  /** Lifecycle checks started by ticks (outside the renewal's own time budget); stop waits for them. */
+  private readonly lifecycleChecks = new Set<Promise<void>>();
   /** Between beforeAccountChange and accountChanged: no lease is renewed or taken. */
   private releasing = false;
   /** Folders being shared or joined right now: their marker is ours before the store knows it. */
@@ -306,6 +323,7 @@ export class NotebookServiceImpl implements NotebookService {
     this.shareSyncTimeoutMs = options.shareSyncTimeoutMs ?? 20_000;
     this.leaseTtlMs = options.leaseTtlMs ?? 60_000;
     this.markerRepairDelayMs = options.markerRepairDelayMs ?? 5 * 60_000;
+    this.discoveryMs = options.discoveryMs ?? Math.max(1000, this.leaseTtlMs * 2);
   }
 
   // ------------------------------------------------------------ lifecycle
@@ -318,6 +336,36 @@ export class NotebookServiceImpl implements NotebookService {
     if (!this.started) return;
     this.leaseTimer = setInterval(() => void this.tick(), Math.max(100, Math.floor(this.leaseTtlMs / 3)));
     this.leaseTimer.unref?.();
+    this.scheduleDiscovery();
+  }
+
+  /** The next discovery pass, a self-rescheduling timer so the battery scale applies as it changes. */
+  private scheduleDiscovery(): void {
+    if (!this.started) return;
+    if (this.discoveryTimer) clearTimeout(this.discoveryTimer);
+    const scale = this.onBattery ? Math.max(1, this.timings.batteryScale) : 1;
+    this.discoveryTimer = setTimeout(() => {
+      this.discoveryTimer = null;
+      void this.discover().finally(() => this.scheduleDiscovery());
+    }, this.discoveryMs * scale);
+    this.discoveryTimer.unref?.();
+  }
+
+  /** Starts stored projects, repairs markers and adopts folders that arrived; at most one pass at a time. */
+  private discover(): Promise<void> {
+    if (this.discovering || !this.started || this.releasing) return this.discovering ?? Promise.resolve();
+    this.discovering = (async () => {
+      try {
+        await this.loading?.catch(() => undefined);
+        await this.loadStoredProjects();
+        if (this.started && !this.releasing) await this.adoptMarkers();
+      } catch (error) {
+        this.logger.warn("Shared notebooks: discovery failed; it will retry.", error);
+      } finally {
+        this.discovering = null;
+      }
+    })();
+    return this.discovering;
   }
 
   async stop(): Promise<void> {
@@ -326,9 +374,13 @@ export class NotebookServiceImpl implements NotebookService {
     this.unsubscribeHost = null;
     if (this.leaseTimer) clearInterval(this.leaseTimer);
     this.leaseTimer = null;
+    if (this.discoveryTimer) clearTimeout(this.discoveryTimer);
+    this.discoveryTimer = null;
     this.deps.host.api?.cancelPending();
     await this.loading?.catch(() => undefined);
     await this.ticking?.catch(() => undefined);
+    await this.discovering?.catch(() => undefined);
+    await Promise.all([...this.lifecycleChecks]);
     await Promise.all([...this.projects.values()].map((handle) => handle.runtime?.stop()));
     // Another installation on the same folder can take over right away.
     await Promise.all([...this.projects.values()].map((handle) => this.releaseLease(handle)));
@@ -343,6 +395,8 @@ export class NotebookServiceImpl implements NotebookService {
       return;
     }
     await this.ticking?.catch(() => undefined);
+    await this.discovering?.catch(() => undefined);
+    await Promise.all([...this.lifecycleChecks]);
     await Promise.all([...this.projects.values()].map((handle) => handle.runtime?.stop()));
     this.projects.clear();
     this.releasing = false;
@@ -531,7 +585,10 @@ export class NotebookServiceImpl implements NotebookService {
     if (!api) return { outcome: "signed-out", contended: false };
     if (!handle.leaseSupported) return { outcome: "unsupported", contended: false };
     if (!handle.folderId) return { outcome: "unavailable", contended: false };
+    // A follower already refused tries again near the holder's expiry, not on every tick.
+    if (!handle.writer && (handle.nextContestAt ?? 0) > performance.now()) return { outcome: "refused", contended: false };
     const requestedAt = performance.now();
+    const releases = handle.leaseReleases ?? 0;
     try {
       const lease = await api.acquireFolderLease(handle.projectId, { folderId: handle.folderId, holder: this.installationId, ttlMs: this.leaseTtlMs }, { timeoutMs: Math.min(5000, Math.max(100, Math.floor(this.leaseTtlMs / 3))) });
       if (!this.started || this.releasing) return { outcome: "unavailable", contended: false };
@@ -540,6 +597,7 @@ export class NotebookServiceImpl implements NotebookService {
       // which a skewed clock turns into a zero-length (or overlong) lease.
       const grantedMs = typeof lease.ttlMs === "number" && Number.isFinite(lease.ttlMs) && lease.ttlMs > 0 ? lease.ttlMs : this.leaseTtlMs;
       handle.leaseDeadline = lease.granted ? requestedAt + Math.min(this.leaseTtlMs, grantedMs) : 0;
+      handle.nextContestAt = lease.granted || (handle.leaseReleases ?? 0) !== releases ? 0 : this.contestTime(lease, requestedAt);
       return { outcome: lease.granted ? "granted" : "refused", contended: lease.contended === true };
     } catch (error) {
       if (error instanceof ApiClientError && error.status === 404) {
@@ -556,6 +614,19 @@ export class NotebookServiceImpl implements NotebookService {
       }
       return { outcome: "unavailable", contended: false };
     }
+  }
+
+  /**
+   * When a refused follower asks again: just after the holder's lease runs
+   * out, with jitter so followers do not all arrive together. The remaining
+   * time is the server's own duration when it sends one (never its absolute
+   * expiry against this device's clock unless it is all there is).
+   */
+  private contestTime(lease: FolderLease, requestedAt: number): number {
+    let remaining = typeof lease.retryAfterMs === "number" && Number.isFinite(lease.retryAfterMs) ? lease.retryAfterMs : lease.expiresAt ? Date.parse(lease.expiresAt) - Date.now() : 0;
+    if (!Number.isFinite(remaining) || remaining <= 0) return 0;
+    remaining = Math.min(remaining, this.leaseTtlMs);
+    return requestedAt + remaining + 50 + Math.random() * Math.min(2000, Math.max(50, this.leaseTtlMs / 10));
   }
 
   private async releaseLease(handle: ProjectHandle): Promise<void> {
@@ -589,53 +660,44 @@ export class NotebookServiceImpl implements NotebookService {
     await Promise.all([...this.projects.values()].map((handle) => this.releaseLease(handle)));
   }
 
-  /** Renews leases, hands the writing role over, and adopts folders that arrived. */
+  /**
+   * Renews leases and hands the writing role over. Only renewal is awaited:
+   * each project's marker check and lease call run independently and are
+   * bounded to a third of the lease, so neither discovery nor one slow
+   * project or provider call delays another project's renewal. The
+   * lifecycle work that follows (role changes, marker repair) runs detached.
+   */
   private tick(): Promise<void> {
     if (this.ticking || !this.started || this.releasing) return this.ticking ?? Promise.resolve();
     this.ticking = (async () => {
       try {
-        await this.loading?.catch(() => undefined);
-        await this.loadStoredProjects();
-        let rebound = false;
-        // Projects are renewed independently with bounded concurrency: one
-        // slow project (or a long lifecycle lock) must not let the others lapse.
-        const pending = [...this.projects.values()];
-        const worker = async () => {
-          for (let handle = pending.shift(); handle; handle = pending.shift()) {
-            if (!this.started || this.releasing) return;
-            const key = `project:${handle.projectId}`;
-            // The renewal itself never queues behind the lifecycle lock.
-            // Only while the folder still carries this project's marker: an
-            // installation that cannot write here must let its lease lapse so
-            // another one can take the folder over.
+        const budgetMs = Math.max(100, Math.floor(this.leaseTtlMs / 3));
+        await Promise.all([...this.projects.values()].map(async (handle) => {
+          if (!this.started || this.releasing) return;
+          // Only while the folder still carries this project's marker: an
+          // installation that cannot write here must let its lease lapse so
+          // another one can take the folder over.
+          const renew = async (): Promise<Lease | undefined> => {
             const renewable = !handle.revoked && handle.runtime && handle.folderId && this.projects.get(handle.projectId) === handle &&
               this.matchesMarker(handle, await readMarker(handle.root).catch(() => null));
-            const renewed = renewable ? await this.lease(handle) : undefined;
-            // A project whose lock is held (takedown, join...) does the rest next tick.
-            if (this.locks.has(key)) continue;
-            const current = handle;
-            await this.locked(key, async () => {
-              if (!current.revoked && await this.rebindMovedRoot(current)) {
-                rebound = true;
-                return;
-              }
-              if (!current.revoked) await this.repairMissingMarker(current.projectId, current.root);
-              if (current.revoked) {
-                const marker = await readMarker(current.root).catch(() => null);
-                if (this.matchesMarker(current, marker)) {
-                  const reason = this.deps.host.store.getDocMeta(current.manifestDocId)?.readOnlyReason;
-                  if (reason === "access-revoked" || reason === "document-deleted") recordNotebookLifecycle(this.lifecycleDirectory, marker, "revoked");
-                  await this.repairEndedMarker(current.root, marker);
-                }
-              } else await this.checkLease(current, renewed);
-            }).catch((error) => this.logger.warn(`Shared notebook ${current.name}: lifecycle/lease check will retry.`, error));
-          }
-        };
-        await Promise.all(Array.from({ length: Math.min(6, pending.length) }, worker));
-        if (!this.started || this.releasing) return;
-        // A rebound project starts again at its new folder, as at startup.
-        if (rebound && this.started && !this.releasing) await this.loadStoredProjects();
-        if (this.started && !this.releasing) await this.adoptMarkers();
+            return renewable ? await this.lease(handle) : undefined;
+          };
+          // A renewal that does not answer in time counts as unavailable: the
+          // lifecycle check below must not wait for it again.
+          const unanswered: Lease = { outcome: "unavailable", contended: false };
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const renewed = await Promise.race([
+            renew().catch(() => unanswered),
+            new Promise<Lease>((resolve) => {
+              timer = setTimeout(() => resolve(unanswered), budgetMs);
+              timer.unref?.();
+            }),
+          ]);
+          clearTimeout(timer);
+          if (!this.started || this.releasing) return;
+          const check: Promise<void> = this.lifecycleCheck(handle, renewed).finally(() => this.lifecycleChecks.delete(check));
+          this.lifecycleChecks.add(check);
+        }));
       } catch (error) {
         this.logger.warn("Shared notebooks: the writer lease check failed.", error);
       } finally {
@@ -643,6 +705,31 @@ export class NotebookServiceImpl implements NotebookService {
       }
     })();
     return this.ticking;
+  }
+
+  /** One project's role and marker upkeep after its renewal; skipped while its lifecycle lock is held. */
+  private async lifecycleCheck(current: ProjectHandle, renewed: Lease | undefined): Promise<void> {
+    const key = `project:${current.projectId}`;
+    // A project whose lock is held (takedown, join...) does the rest next tick.
+    if (this.locks.has(key) || !this.started || this.releasing) return;
+    let rebound = false;
+    await this.locked(key, async () => {
+      if (!current.revoked && await this.rebindMovedRoot(current)) {
+        rebound = true;
+        return;
+      }
+      if (!current.revoked) await this.repairMissingMarker(current.projectId, current.root);
+      if (current.revoked) {
+        const marker = await readMarker(current.root).catch(() => null);
+        if (this.matchesMarker(current, marker)) {
+          const reason = this.deps.host.store.getDocMeta(current.manifestDocId)?.readOnlyReason;
+          if (reason === "access-revoked" || reason === "document-deleted") recordNotebookLifecycle(this.lifecycleDirectory, marker, "revoked");
+          await this.repairEndedMarker(current.root, marker);
+        }
+      } else await this.checkLease(current, renewed);
+    }).catch((error) => this.logger.warn(`Shared notebook ${current.name}: lifecycle/lease check will retry.`, error));
+    // A rebound project starts again at its new folder, as at startup (discovery, not renewal).
+    if (rebound && this.started && !this.releasing) void this.discover();
   }
 
   /**
@@ -1135,10 +1222,15 @@ export class NotebookServiceImpl implements NotebookService {
   powerChanged(onBattery: boolean): void {
     if (this.onBattery === onBattery) return;
     this.onBattery = onBattery;
+    // The next discovery pass is waited out at the new power scale.
+    this.scheduleDiscovery();
     for (const handle of this.projects.values()) handle.runtime?.powerChanged();
   }
 
   resumed(): void {
+    // Leases lapsed during sleep: renew or contest now, not at the old schedule.
+    for (const handle of this.projects.values()) handle.nextContestAt = 0;
+    void this.tick();
     for (const handle of this.projects.values()) handle.runtime?.resumed();
   }
 
@@ -1164,6 +1256,14 @@ export class NotebookServiceImpl implements NotebookService {
       void this.revoke(projectId).catch((error) => this.logger.warn("Could not finish notebook revocation.", error));
     } else if (kind === EventKind.RoleChanged && aboutMe && isRole(data.role)) {
       this.setRole(projectId, data.role);
+    } else if (kind === EventKind.FolderLeaseReleased && scope === "user") {
+      // The holder gave the lease up: a refused follower claims it now, not at the old expiry.
+      const handle = this.projects.get(projectId);
+      if (handle && !handle.writer) {
+        handle.leaseReleases = (handle.leaseReleases ?? 0) + 1;
+        handle.nextContestAt = 0;
+        void Promise.resolve(this.ticking).catch(() => undefined).then(() => this.tick());
+      }
     }
   }
 
@@ -1253,22 +1353,35 @@ export class NotebookServiceImpl implements NotebookService {
       if (handle.runtime && !(await handle.runtime.whenIdle(this.joinTimeoutMs))) {
         throw new ControlError(503, "unavailable", "This notebook is still syncing changes. Retry taking it down in a moment.");
       }
-      if (!(await api.version()).guardedProjectDeletion) throw new ControlError(409, "update-required", "Update the collaboration server before taking down this notebook safely.");
+      const version = await api.version();
+      if (!version.guardedProjectDeletion || !version.takedownFence) throw new ControlError(409, "update-required", "Update the collaboration server before taking down this notebook safely.");
       if (!handle.runtime) throw new ControlError(503, "offline", "Open and sync this notebook before taking it down.");
-      const sequence = await handle.runtime.prepareLocalConversion();
+      // The server stops accepting document and comment writes once the fence
+      // is up; if the takedown is abandoned from here on, the fence is lifted.
+      let fenced = false;
+      let deleted = false;
       try {
-        await api.deleteProject(projectId, sequence);
-      } catch (error) {
-        // A lost response or a local cleanup failure can be retried safely.
-        if (!(error instanceof ApiClientError)) throw error;
-        if (error.status !== 404) {
-          if (!error.transient) throw error;
-          const gone = await api.getProject(projectId).then(
-            () => false,
-            (checkError: unknown) => checkError instanceof ApiClientError && checkError.status === 404,
-          );
-          if (!gone) throw error;
+        const sequence = await handle.runtime.prepareLocalConversion(() => { fenced = true; return api.closeProject(projectId); });
+        try {
+          await api.deleteProject(projectId, sequence);
+        } catch (error) {
+          // A lost response or a local cleanup failure can be retried safely.
+          if (!(error instanceof ApiClientError)) throw error;
+          if (error.status !== 404) {
+            if (!error.transient) throw error;
+            const gone = await api.getProject(projectId).then(
+              () => false,
+              (checkError: unknown) => checkError instanceof ApiClientError && checkError.status === 404,
+            );
+            if (!gone) throw error;
+          }
         }
+        deleted = true;
+      } catch (error) {
+        if (fenced && !deleted) await api.reopenProject(projectId).catch((reopenError: unknown) => {
+          this.logger.warn(`Shared notebook ${handle.name}: could not lift the takedown fence; changes stay paused until the next takedown attempt or its removal.`, reopenError);
+        });
+        throw error;
       }
       await this.removeLocally(handle);
     });
@@ -1666,6 +1779,9 @@ export class NotebookServiceImpl implements NotebookService {
     if (existing?.projectId) await authorize(existing.projectId, existing.manifestDocId);
     const name = (requestedName?.trim() || existing?.name || notebook).slice(0, 200);
     const previous = new Map((existing?.files ?? []).map((file) => [file.path, file]));
+    // Transcripts kept in the hidden local location become `.transcript`
+    // companions beside their recordings first, so the walk shares them.
+    const transcripts = album ? null : await convertLocalTranscripts(root, guard);
     const { entries: everything, skipped, complete } = await walkNotebook(root);
     if (!complete) throw new ControlError(409, "scan-incomplete", "The notebook folder could not be read completely. Wait for its files to finish syncing and try again.");
     // An album shares its top-level photos; anything else in the folder stays local.
@@ -1679,6 +1795,9 @@ export class NotebookServiceImpl implements NotebookService {
         files.push(before?.kind === "folder" ? before : { path: item.relative, kind: "folder", fileId: randomId("fil") });
         continue;
       }
+      // An open SQLite database (WAL/SHM/journal beside it) cannot be read
+      // consistently; the scan shares it once it is closed.
+      if (isActiveSqliteDatabase(root, item.relative)) continue;
       const absolute = path.join(root, ...item.relative.split("/"));
       let bytes: Uint8Array | null = await readIfExists(absolute);
       if (!bytes) continue;
@@ -1800,52 +1919,64 @@ export class NotebookServiceImpl implements NotebookService {
       const hub = this.deps.host.acquire(manifestDocId, { kind: "manifest", projectId });
       let synced = false;
       try {
-        hub.applyLocalChange(
-          "manifest",
-          (doc) => {
-            const map = doc.getMap<unknown>(ManifestKeys.files);
-            for (const file of files) {
-              const entry: ManifestEntry = {
-                fileId: file.fileId,
-                path: file.path,
-                kind: file.kind,
-                ...(file.kind === "doc" ? { docId: file.docId, docKind: file.docKind } : {}),
-                ...(file.kind === "blob" ? { blobHash: file.blobHash, mime: file.mime } : {}),
-                ...(file.size !== undefined ? { size: file.size } : {}),
-                createdBy: accountId,
-                createdAt: plan.startedAt,
-                updatedAt: plan.startedAt,
-              };
-              map.set(file.fileId, entryRecord(entry));
-            }
-            if (target.pdfLive) doc.getMap<unknown>(ManifestKeys.settings).set(PDF_LIVE_SETTING, true);
-            if (album) {
-              const settings = doc.getMap<unknown>(ManifestKeys.settings);
-              if (album.direct) settings.set(AlbumSettingKeys.direct, true);
-              settings.set(AlbumSettingKeys.keepLocation, album.keepLocation);
-              settings.set(AlbumSettingKeys.sharePrompts, album.sharePrompts);
-              const photos = doc.getMap<unknown>(ManifestKeys.photos);
-              for (const file of files) {
-                const details = album.photos.get(manifestPathKey(file.path));
-                const photo: AlbumPhotoRecord = {
-                  fileId: file.fileId,
-                  addedBy: accountId,
-                  updatedAt: plan.startedAt,
-                  ...(details?.caption?.trim() ? { caption: details.caption.trim().slice(0, 2000) } : {}),
-                  ...(album.sharePrompts && details?.prompt ? { prompt: details.prompt } : {}),
-                  ...(album.sharePrompts && details?.model ? { model: details.model } : {}),
-                };
-                photos.set(file.fileId, JSON.parse(JSON.stringify(photo)));
+        const manifestEntry = (file: PlannedFile): ManifestEntry => ({
+          fileId: file.fileId,
+          path: file.path,
+          kind: file.kind,
+          ...(file.kind === "doc" ? { docId: file.docId, docKind: file.docKind } : {}),
+          ...(file.kind === "blob" ? { blobHash: file.blobHash, mime: file.mime } : {}),
+          ...(file.size !== undefined ? { size: file.size } : {}),
+          createdBy: accountId,
+          createdAt: plan.startedAt,
+          updatedAt: plan.startedAt,
+        });
+        // Several transactions, each far below the server's update limit: one
+        // update over it is never sent, and the share would never sync.
+        const batches = splitManifestBatches(files, (file) => manifestEntryBytes(manifestEntry(file)) + (album ? 1024 : 0));
+        for (const [index, batch] of (batches.length ? batches : [[]] as PlannedFile[][]).entries()) {
+          hub.applyLocalChange(
+            "manifest",
+            (doc) => {
+              const map = doc.getMap<unknown>(ManifestKeys.files);
+              for (const file of batch) map.set(file.fileId, entryRecord(manifestEntry(file)));
+              if (album) {
+                const photos = doc.getMap<unknown>(ManifestKeys.photos);
+                for (const file of batch) {
+                  const details = album.photos.get(manifestPathKey(file.path));
+                  const photo: AlbumPhotoRecord = {
+                    fileId: file.fileId,
+                    addedBy: accountId,
+                    updatedAt: plan.startedAt,
+                    ...(details?.caption?.trim() ? { caption: details.caption.trim().slice(0, 2000) } : {}),
+                    ...(album.sharePrompts && details?.prompt ? { prompt: details.prompt } : {}),
+                    ...(album.sharePrompts && details?.model ? { model: details.model } : {}),
+                  };
+                  photos.set(file.fileId, JSON.parse(JSON.stringify(photo)));
+                }
               }
-            }
-          },
-          { source: "import" },
-        );
+              if (index > 0) return;
+              if (target.pdfLive) doc.getMap<unknown>(ManifestKeys.settings).set(PDF_LIVE_SETTING, true);
+              if (album) {
+                const settings = doc.getMap<unknown>(ManifestKeys.settings);
+                if (album.direct) settings.set(AlbumSettingKeys.direct, true);
+                settings.set(AlbumSettingKeys.keepLocation, album.keepLocation);
+                settings.set(AlbumSettingKeys.sharePrompts, album.sharePrompts);
+              }
+            },
+            { source: "import" },
+          );
+        }
 
-        synced = await waitUntil(() => hub.isClosed || !!hub.readOnlyReason || this.deps.host.api !== api || !this.started ||
+        synced = await waitUntil(() => hub.isClosed || !!hub.readOnlyReason || this.deps.host.api !== api || !this.started || !!hub.syncBlockedDetail ||
           (hub.pendingCount === 0 && hubHasState(this.deps.host, hub, "manifest") && hub.getStatus().state === "saved-remote"), this.shareSyncTimeoutMs);
         if (hub.isClosed || hub.readOnlyReason) throw new ControlError(409, "access-changed", "Project access changed before sharing completed; the checkpoint was preserved.");
         await checkWriteGuard(guard);
+        // Without the file list on the server no other device can open this
+        // share. Installing the marker now would report a share that does not
+        // exist; the checkpoint stays so a retry only has to send the list again.
+        if (!synced) throw new ControlError(503, "share-unfinished", hub.syncBlockedDetail
+          ? `The notebook's file list could not be sent to the server: ${hub.syncBlockedDetail} The share was not finished; try again.`
+          : "The notebook's file list has not reached the server yet. The share was not finished; try again when the connection is steady.");
         // The layout as it is on disk now: the materializer starts from it and
         // treats anything that differs (edits during the share) as new edits.
         const state = emptyState();
@@ -1885,6 +2016,8 @@ export class NotebookServiceImpl implements NotebookService {
         installedMarker = marker;
         await checkWriteGuard(guard);
         this.deps.host.store.upsertProject({ projectId, name, localRoot: root, role: "owner" });
+        // Their transcripts are shared companions now; a stale local copy must not outrank later edits.
+        for (const sidecar of transcripts?.sidecars ?? []) await fs.rm(sidecar, { force: true }).catch(() => undefined);
       } finally {
         this.deps.host.release(manifestDocId);
       }
@@ -2074,7 +2207,7 @@ export class NotebookServiceImpl implements NotebookService {
     return handle.runtime;
   }
 
-  async fileOp(projectId: string, request: FileOpRequest): Promise<{ paths: string[] }> {
+  async fileOp(projectId: string, request: FileOpRequest): Promise<import("../../../src/lib/collab/local-api").FileOpResult> {
     if (!request || typeof request !== "object") throw new ControlError(400, "bad-request", "A file operation is required.");
     try {
       return await this.runningProject(projectId).fileOp(request);
@@ -2121,6 +2254,9 @@ export class NotebookServiceImpl implements NotebookService {
       };
     router.add("GET", decodeURIComponent(ControlRoutes.fileBlob(":projectId")), wrap(async (request) => ({
       body: await this.runningProject(request.params.projectId).readBlob(request.query.get("path") ?? ""),
+    })));
+    router.add("GET", decodeURIComponent(ControlRoutes.fileEntries(":projectId")), wrap(async (request) => ({
+      body: await this.runningProject(request.params.projectId).listEntries(),
     })));
     router.add("POST", ControlRoutes.share, wrap(async (request) => ({ body: await this.share(request.body as ShareNotebookRequest) })));
     router.add("GET", ControlRoutes.pdfResolve, wrap(async (request) => {

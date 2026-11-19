@@ -118,13 +118,14 @@ test("review: medium findings through the host", { timeout: 300_000 }, async (t)
       await until(() => existsSync(path.join(root, "_ink", "final.pdf", "page-0001.aaaaaa.ink")), "the ink to move on disk again");
       assert.equal(readFileSync(path.join(root, "_ink", "final.pdf", "page-0001.aaaaaa.ink"), "utf8"), INK);
 
-      // Deleting a file on purpose takes its ink along; a change of type drops it.
+      // Deleting a file on purpose takes its ink along; a change of type that would drop ink is refused (finding 20).
       const deleted = await owner.router.call("POST", ControlRoutes.files(shared.projectId), { op: "delete", path: "final.pdf" });
       assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
       const retyped = await owner.router.call("POST", ControlRoutes.files(shared.projectId), { op: "rename", path: "other.pdf", to: "other.png" });
-      assert.equal(retyped.status, 200, JSON.stringify(retyped.body));
+      assert.equal(retyped.status, 409, JSON.stringify(retyped.body));
       const remaining = manifestPaths(owner, shared.projectId);
-      assert.ok(!remaining.some((entry) => entry.startsWith("_ink/")), remaining.join(", "));
+      assert.ok(remaining.includes("other.pdf") && remaining.includes("_ink/other.pdf/page-0001.aaaaaa.ink"), remaining.join(", "));
+      assert.ok(!remaining.some((entry) => entry.startsWith("_ink/final.pdf")), remaining.join(", "));
     });
 
     await scenario("R32: a shared notebook folder renamed while Libera runs continues at its new name", async (peer) => {

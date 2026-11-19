@@ -16,7 +16,6 @@ import { removeDataDir, startServerProcess } from "../support/server-process.ts"
 
 const MARKER = ".libera-shared.json";
 const markerAt = (root) => JSON.parse(readFileSync(path.join(root, MARKER), "utf8"));
-const stateAt = (root) => JSON.parse(readFileSync(path.join(root, ".libera/collab/state.json"), "utf8"));
 const observe = (name, value) => console.log(`FOLLOWUP ${name} ${JSON.stringify(value)}`);
 
 function textOf(peer, file) {
@@ -226,9 +225,12 @@ test("remaining notebook sync interactions", { timeout: 300_000 }, async (t) => 
         writeFileSync(target, `version ${version}\n`);
         await until(() => textOf(owner, `${name}/note.md`) === `version ${version}\n`, `version ${version} imported`);
         await acked(owner, docId);
+        // Findings 2/28: the writer adopts a disk edit's hash after the import, so each version must be recorded before the next lands.
+        await until(() => Object.values(owner.service.project(id).state.layout).some((item) => item.docId === docId && item.hash === sha256(Buffer.from(`version ${version}\n`))), `version ${version} recorded`);
       }
       await owner.service.project(id).whenIdle();
-      const record = Object.values(stateAt(root).layout).find((item) => item.docId === docId);
+      // The state file is saved on a 2 s debounce (finding 28's later adoption), so read the live record.
+      const record = Object.values(owner.service.project(id).state.layout).find((item) => item.docId === docId);
       assert.equal(record.previous.length, 8);
       assert.ok(!record.previous.some((item) => item.hash === sha256(Buffer.from(first))));
       const staging = path.join(root, ".cloud-delivery");

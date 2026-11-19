@@ -230,7 +230,12 @@ export function readProjectBlob(projectId: string, relative: string, config?: Ho
   return hostJson(`${ControlRoutes.fileBlob(projectId)}?path=${encodeURIComponent(relative)}`, { config });
 }
 
-export function fileOp(projectId: string, request: FileOpRequest, config?: HostClientConfig | null): Promise<{ paths: string[] }> {
+/** A shared notebook's authoritative file list: the manifest at the layout's paths, not what the disk holds yet. */
+export function listProjectEntries(projectId: string, config?: HostClientConfig | null): Promise<import("./local-api").FileListResponse> {
+  return hostJson(ControlRoutes.fileEntries(projectId), { config });
+}
+
+export function fileOp(projectId: string, request: FileOpRequest, config?: HostClientConfig | null): Promise<import("./local-api").FileOpResult> {
   return hostJson(ControlRoutes.files(projectId), { method: "POST", body: request, config });
 }
 

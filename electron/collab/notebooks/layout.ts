@@ -9,11 +9,8 @@
 
 import type * as Y from "yjs";
 
-import { isPlainId, ManifestKeys, manifestPathKey, MAX_SEGMENT_BYTES, utf8ByteLength, type DocKind, type ManifestEntry, type ManifestEntryKind } from "../../../src/lib/collab/protocol/schema";
+import { ManifestKeys, manifestEntryShapeError, manifestPathKey, MAX_SEGMENT_BYTES, utf8ByteLength, type DocKind, type ManifestEntry, type ManifestEntryKind } from "../../../src/lib/collab/protocol/schema";
 import { isShareablePath } from "./fs-ops";
-
-const ENTRY_KINDS: readonly ManifestEntryKind[] = ["doc", "blob", "folder"];
-const DOC_KINDS: readonly DocKind[] = ["markdown", "latex", "text"];
 
 /** Reads and validates the manifest's files map. Malformed records are skipped. */
 export function readManifest(doc: Y.Doc): Map<string, ManifestEntry> {
@@ -27,17 +24,12 @@ export function readManifest(doc: Y.Doc): Map<string, ManifestEntry> {
 }
 
 function parseEntry(fileId: string, value: unknown): ManifestEntry | null {
-  if (typeof value !== "object" || value === null) return null;
-  // Ids become file names (base files), so a malformed one is never trusted.
-  if (!isPlainId(fileId)) return null;
+  if (manifestEntryShapeError(fileId, value) !== null) return null;
   const record = value as Record<string, unknown>;
-  if (typeof record.path !== "string" || !ENTRY_KINDS.includes(record.kind as ManifestEntryKind)) return null;
   const kind = record.kind as ManifestEntryKind;
-  if (kind === "doc" && (!isPlainId(record.docId) || !DOC_KINDS.includes(record.docKind as DocKind))) return null;
-  if (kind === "blob" && (typeof record.blobHash !== "string" || !/^[0-9a-f]{64}$/.test(record.blobHash))) return null;
   return {
     fileId,
-    path: record.path,
+    path: record.path as string,
     kind,
     ...(kind === "doc" ? { docId: record.docId as string, docKind: record.docKind as DocKind } : {}),
     ...(kind === "blob" ? { blobHash: record.blobHash as string } : {}),
@@ -52,6 +44,38 @@ function parseEntry(fileId: string, value: unknown): ManifestEntry | null {
 /** The plain JSON stored for an entry (the server requires plain JSON values). */
 export function entryRecord(entry: ManifestEntry): Record<string, unknown> {
   return JSON.parse(JSON.stringify(entry)) as Record<string, unknown>;
+}
+
+/**
+ * Budget for the entries one manifest transaction carries. A Yjs update cannot
+ * be split afterwards and the server refuses one over SyncLimits.maxUpdateBytes
+ * (4 MiB), so a big batch (initial share, a folder rename or delete) is written
+ * as several transactions, each far below that.
+ */
+export const MANIFEST_BATCH_BYTES = 256 * 1024;
+
+/** Groups items so that each group's estimated size stays within `budget` (an item over it gets a group of its own). */
+export function splitManifestBatches<T>(items: readonly T[], sizeOf: (item: T) => number, budget: number = MANIFEST_BATCH_BYTES): T[][] {
+  const groups: T[][] = [];
+  let current: T[] = [];
+  let bytes = 0;
+  for (const item of items) {
+    const size = sizeOf(item);
+    if (current.length > 0 && bytes + size > budget) {
+      groups.push(current);
+      current = [];
+      bytes = 0;
+    }
+    current.push(item);
+    bytes += size;
+  }
+  if (current.length > 0) groups.push(current);
+  return groups;
+}
+
+/** Rough bytes an entry adds to a manifest update (its JSON plus Yjs bookkeeping). */
+export function manifestEntryBytes(entry: ManifestEntry): number {
+  return utf8ByteLength(JSON.stringify(entry)) * 2 + 64;
 }
 
 export interface Layout {

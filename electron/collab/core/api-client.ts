@@ -44,6 +44,7 @@ import type {
   MarkNotificationsReadRequest,
   Member,
   NotificationInfo,
+  ProjectClosingResponse,
   ProjectSummary,
   ReattachThreadRequest,
   RefreshRequest,
@@ -313,6 +314,16 @@ export class ApiClient {
 
   deleteProject(projectId: string, expectedManifestSeq?: number): Promise<void> {
     return this.request("DELETE", ApiRoutes.project(projectId), expectedManifestSeq === undefined ? {} : { body: { expectedManifestSeq } });
+  }
+
+  /** Starts a takedown: the server refuses later document updates and comment writes and reports every document's final sequence. */
+  closeProject(projectId: string): Promise<ProjectClosingResponse> {
+    return this.request("POST", ApiRoutes.projectClosing(projectId), { body: {} });
+  }
+
+  /** Lifts the takedown fence after an abandoned takedown. */
+  reopenProject(projectId: string): Promise<void> {
+    return this.request("DELETE", ApiRoutes.projectClosing(projectId), {});
   }
 
   /** Takes or renews the writer lease of a synced folder (granted: false when another installation holds it). */

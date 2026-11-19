@@ -395,6 +395,11 @@ export class DocHub implements CompactionTarget {
     return this.pendingLocal.size;
   }
 
+  /** Why this document can never fully sync (an update over the size limit was skipped), if it can't. */
+  get syncBlockedDetail(): string | undefined {
+    return this.unsendableDetail;
+  }
+
   get replicaCount(): number {
     let count = 0;
     for (const replica of this.replicas) if (!replica.isDetached) count += 1;
@@ -494,8 +499,13 @@ export class DocHub implements CompactionTarget {
           replica.post({ t: "error", docId: this.docId, message: "Send attach before updates" });
           return;
         }
-        this.applyReplicaUpdate(replica, message.subdoc, message.update, message.provenance);
-        if (message.seq !== undefined) this.ackReplicaUpdate(replica, message.seq);
+        // Acknowledged only when the whole update was integrated (and, once
+        // persisted, durable): the replica clears its unsaved state on an ack.
+        if (this.applyReplicaUpdate(replica, message.subdoc, message.update, message.provenance)) {
+          if (message.seq !== undefined) this.ackReplicaUpdate(replica, message.seq);
+        } else {
+          replica.post({ t: "resync", docId: this.docId, subdoc: message.subdoc });
+        }
         break;
       case "awareness":
         try {
@@ -535,18 +545,19 @@ export class DocHub implements CompactionTarget {
     replica.attached = true;
   }
 
-  private applyReplicaUpdate(replica: ReplicaConnection, subdoc: Subdoc, update: Uint8Array, provenance?: Provenance): void {
+  /** Applies a replica update; false when any part of it was dropped. */
+  private applyReplicaUpdate(replica: ReplicaConnection, subdoc: Subdoc, update: Uint8Array, provenance?: Provenance): boolean {
     const doc = this.docs.get(subdoc);
     if (!doc) {
       replica.post({ t: "error", docId: this.docId, message: `Unknown sub-document ${subdoc}` });
-      return;
+      return false;
     }
     const hadPending = doc.store.pendingStructs !== null || doc.store.pendingDs !== null;
     try {
       Y.applyUpdate(doc, update, { kind: "replica", replica, provenance } satisfies Origin);
     } catch (error) {
       replica.post({ t: "error", docId: this.docId, message: `Invalid update: ${String(error)}` });
-      return;
+      return false;
     }
     if (!hadPending && (doc.store.pendingStructs !== null || doc.store.pendingDs !== null)) {
       // The update depends on state the hub does not have: the replica built
@@ -559,7 +570,9 @@ export class DocHub implements CompactionTarget {
         docId: this.docId,
         message: `Dropped an update for ${subdoc} that depends on discarded state; rebuild from the hub's state.`,
       });
+      return false;
     }
+    return true;
   }
 
   /** Acks a replica's update once every local update (this one included) is in SQLite. */
@@ -945,13 +958,31 @@ export class DocHub implements CompactionTarget {
     this.status.changed();
   }
 
-  /** Stops a removed file without discarding its text or unacknowledged local edits. */
+  /**
+   * Stops a removed file without discarding its text or unacknowledged local edits.
+   * The tombstone is permanent: call it for a deletion the server confirmed, never
+   * for a removal from the local manifest (see reviveDeleted).
+   */
   markDeleted(): void {
     if (this.closed || this.meta.readOnlyReason === "document-deleted") return;
     this.store.updateDocMeta(this.docId, { readOnlyReason: "document-deleted" });
     this.stopSyncing();
     this.refreshMeta();
     this.broadcast({ t: "closed", docId: this.docId, reason: "document-deleted" });
+    this.status.changed(true);
+  }
+
+  /**
+   * The current manifest lists this document again. A tombstone is only right
+   * for a deletion the server confirmed, and that ends the entry for good; one
+   * that outlived a rolled-back optimistic delete (or was written by an
+   * earlier version on a mere local removal) must not lock a live file.
+   */
+  reviveDeleted(): void {
+    if (this.closed || this.meta.readOnlyReason !== "document-deleted") return;
+    this.store.updateDocMeta(this.docId, { readOnlyReason: null });
+    this.refreshMeta();
+    this.link?.reopen();
     this.status.changed(true);
   }
 

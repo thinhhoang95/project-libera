@@ -7,6 +7,7 @@ import { homeDirectory, joinPath } from "@/lib/runtime-path";
 import path from "node:path";
 import { StorageError } from "@/lib/storage/errors";
 import { filePathFromParts, notebookPath as notebookFolderPath, splitFilePath } from "@/lib/storage/paths";
+import { listSharedAuthorityEntries, readSharedAuthorityEntry } from "@/lib/storage/shared-source";
 import { parseLatexAux, type LatexAuxData } from "./aux-file";
 import { parseBiberLog, parseBibtexLog, parseLatexLog, type LatexLogEntry, type LatexLogSeverity } from "./log-parser";
 import { isCompilableLatexPath, resolveLatexEngine, type LatexEngine, type LatexEngineSetting } from "./project";
@@ -96,6 +97,10 @@ const MAX_SNAPSHOTS = 3;
 const MAX_LOG_CHARACTERS = 400_000;
 const MAX_OUTPUT_CHARACTERS = 40_000;
 const OVERRIDE_EXTENSIONS = /\.(tex|sty|cls)$/i;
+/** What TeX and BibTeX/biber read from a shared notebook, taken from the host's manifest rather than the working folder. */
+const SHARED_SOURCE_EXTENSIONS = /\.(tex|sty|cls|bib|bst)$/i;
+/** A notebook with more of these than this is not staged in full; the rest resolve from the working folder. */
+const MAX_SHARED_SOURCES = 300;
 const SNAPSHOT_ID = /^[a-z0-9]{6,40}$/;
 
 const buildLocks = new Map<string, Promise<unknown>>();
@@ -259,8 +264,40 @@ async function modifiedAt(file: string) {
   }
 }
 
+/**
+ * The files of a shared notebook that TeX can reach from the main file's
+ * folder (and the notebook's bibliographies), as the host has them: a working
+ * folder that OneDrive has not caught up with would mix revisions with the
+ * editor's drafts. Files the manifest does not list are left to the working
+ * folder, as is everything when there is no shared authority.
+ */
+async function sharedSources(paths: BuildPaths, request: LatexBuildRequest) {
+  const { notebook } = splitFilePath(request.rootPath);
+  const entries = await listSharedAuthorityEntries(notebook);
+  if (!entries) return { root: null as string | null, files: [] as Array<{ relative: string; bytes: Buffer }> };
+  const drafts = request.drafts ?? {};
+  const sourcePrefix = `${paths.rootDirectoryPath}/`;
+  const notebookPrefix = `${notebook}/`;
+  const wanted = new Map<string, (typeof entries)[number]>();
+  const considered = entries.filter((entry) => entry.kind !== "folder" && SHARED_SOURCE_EXTENSIONS.test(entry.path) && entry.path !== request.rootPath && typeof drafts[entry.path] !== "string");
+  for (const entry of considered) if (entry.path.startsWith(sourcePrefix)) wanted.set(entry.path.slice(sourcePrefix.length), entry);
+  // BIBINPUTS also covers the notebook folder, where the generated references.bib lives.
+  for (const entry of considered) {
+    const rest = entry.path.startsWith(notebookPrefix) ? entry.path.slice(notebookPrefix.length) : "";
+    if (rest && !rest.includes("/") && /\.(bib|bst)$/i.test(rest) && !wanted.has(rest)) wanted.set(rest, entry);
+  }
+  const files: Array<{ relative: string; bytes: Buffer }> = [];
+  for (const [relative, entry] of [...wanted].slice(0, MAX_SHARED_SOURCES)) {
+    const bytes = await readSharedAuthorityEntry(entry);
+    if (bytes) files.push({ relative, bytes });
+  }
+  const rootEntry = entries.find((entry) => entry.path === request.rootPath);
+  const root = rootEntry ? await readSharedAuthorityEntry(rootEntry) : null;
+  return { root: root ? root.toString("utf8") : null, files };
+}
+
 /** Write unsaved drafts into the work folder and remove the previous ones. */
-async function stageSources(paths: BuildPaths, request: LatexBuildRequest) {
+export async function stageSources(paths: BuildPaths, request: LatexBuildRequest) {
   const drafts = request.drafts ?? {};
   const manifestPath = path.join(paths.buildDirectory, "overrides.json");
   const previous = (await readJson<string[]>(manifestPath)) ?? [];
@@ -270,8 +307,9 @@ async function stageSources(paths: BuildPaths, request: LatexBuildRequest) {
     if (relativeInside(paths.workDirectory, target) !== null) await rm(target, { force: true });
   }
 
+  const shared = await sharedSources(paths, request);
   const rootDraft = drafts[request.rootPath];
-  const rootSource = typeof rootDraft === "string" ? rootDraft : await readFile(paths.rootAbsolute, "utf8").catch(() => {
+  const rootSource = typeof rootDraft === "string" ? rootDraft : shared.root ?? await readFile(paths.rootAbsolute, "utf8").catch(() => {
     throw new StorageError("The main LaTeX file could not be read.", 404);
   });
   await writeFile(rootTexFile(paths), rootSource, "utf8");
@@ -287,6 +325,14 @@ async function stageSources(paths: BuildPaths, request: LatexBuildRequest) {
     await mkdir(path.dirname(target), { recursive: true });
     await writeFile(target, content, "utf8");
     overrides.push(relative.split(path.sep).join("/"));
+  }
+
+  for (const { relative, bytes } of shared.files) {
+    const target = path.resolve(paths.workDirectory, relative);
+    if (relativeInside(paths.workDirectory, target) === null || overrides.includes(relative)) continue;
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, bytes);
+    overrides.push(relative);
   }
 
   await writeFile(manifestPath, JSON.stringify(overrides), "utf8");
@@ -404,8 +450,9 @@ export async function compileLatexDocument(request: LatexBuildRequest, signal: A
       openout_any: "p",
       shell_escape: "f",
       // The notebook folder too, so a document in a subfolder finds the notebook's generated references.bib.
-      BIBINPUTS: `${paths.sourceDirectory}${listSeparator}${paths.notebookDirectory !== paths.sourceDirectory ? `${paths.notebookDirectory}${listSeparator}` : ""}`,
-      BSTINPUTS: `${paths.sourceDirectory}${listSeparator}`,
+      // The work folder first: a shared notebook's bibliographies are staged there from the host.
+      BIBINPUTS: `${paths.workDirectory}${listSeparator}${paths.sourceDirectory}${listSeparator}${paths.notebookDirectory !== paths.sourceDirectory ? `${paths.notebookDirectory}${listSeparator}` : ""}`,
+      BSTINPUTS: `${paths.workDirectory}${listSeparator}${paths.sourceDirectory}${listSeparator}`,
     });
     const pdfPath = path.join(paths.workDirectory, `${paths.jobName}.pdf`);
     const compileStartedAt = Date.now() - 1000;

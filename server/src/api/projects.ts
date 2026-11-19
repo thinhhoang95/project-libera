@@ -10,6 +10,7 @@ import type { ServerContext } from "../context.js";
 import type { DB } from "../db/types.js";
 import { HttpError } from "../http/errors.js";
 import { newId } from "../ids.js";
+import { closingFenceActive } from "../sync/closing.js";
 import {
   ApiRoutes,
   bindActor,
@@ -19,6 +20,7 @@ import {
   type AuditEntry,
   type FolderLease,
   type Member,
+  type ProjectClosingResponse,
   type ProjectKind,
   type ProjectSummary,
   type Role,
@@ -204,15 +206,25 @@ export function registerProjectRoutes(app: FastifyInstance, context: ServerConte
     await requireProjectAction(db, projectId, accountId, "delete-project", actor);
     const body = z.object({ expectedManifestSeq: z.number().int().nonnegative().optional() }).parse(request.body ?? {});
     const { docs, members } = await db.transaction().execute(async (trx) => {
+      // Lock order, shared with persistUpdate (sync/store.ts): every document
+      // row first (the manifest's included), then memberships. The manifest
+      // alone, then the cascade into memberships, deadlocked with an update
+      // that held its membership row and waited for the manifest row.
+      const docs = await trx.selectFrom("documents").select(["id", "kind", "last_server_seq"])
+        .where("project_id", "=", projectId).orderBy("id").forUpdate().execute();
+      const members = await trx.selectFrom("memberships").select("account_id")
+        .where("project_id", "=", projectId).orderBy("account_id").forUpdate().execute();
+      // A fence that lapsed (sync/closing.ts) may have let writes in after the owner's export.
+      const fence = await trx.selectFrom("projects").select("closing_at").where("id", "=", projectId).executeTakeFirst();
+      if (fence?.closing_at && !closingFenceActive(fence.closing_at)) {
+        throw new HttpError("conflict", "Changes were paused for this takedown too long, so the pause ended. Take the notebook down again.");
+      }
       if (body.expectedManifestSeq !== undefined) {
-        const manifest = await trx.selectFrom("documents").select("last_server_seq")
-          .where("project_id", "=", projectId).where("kind", "=", "manifest").forUpdate().executeTakeFirst();
+        const manifest = docs.find((doc) => doc.kind === "manifest");
         if (!manifest || manifest.last_server_seq !== body.expectedManifestSeq) {
           throw new HttpError("conflict", "The notebook changed after its local export. Export its current files before taking it down.");
         }
       }
-      const docs = await trx.selectFrom("documents").select("id").where("project_id", "=", projectId).execute();
-      const members = await trx.selectFrom("memberships").select("account_id").where("project_id", "=", projectId).execute();
       // Reviews reference revisions without ON DELETE CASCADE. Remove them
       // first, then let the project's foreign keys erase all dependent rows.
       await trx.deleteFrom("reviews").where("project_id", "=", projectId).execute();
@@ -226,6 +238,34 @@ export function registerProjectRoutes(app: FastifyInstance, context: ServerConte
     for (const member of members) publish(context, "user", member.account_id, EventKind.ProjectDeleted, { projectId });
     publish(context, "project", projectId, EventKind.ProjectDeleted, { projectId });
     for (const doc of docs) notifyRooms(context, "documentDeleted", (rooms) => rooms.documentDeleted(doc.id));
+    return reply.status(204).send();
+  });
+
+  // Takedown fence: refuse every later document update and comment write, then
+  // report where each document ended, so the owner exports state taken after it.
+  app.post(route(ApiRoutes.projectClosing, "projectId"), async (request): Promise<ProjectClosingResponse> => {
+    const { accountId } = await requireAccount(context, request);
+    const { projectId } = projectParams.parse(request.params);
+    const actor = bindActor(accountId, undefined);
+    await requireProjectAction(db, projectId, accountId, "delete-project", actor);
+    return db.transaction().execute(async (trx) => {
+      // Same order as persistUpdate and the takedown itself: documents, then memberships.
+      const docs = await trx.selectFrom("documents").select(["id", "kind", "last_server_seq"])
+        .where("project_id", "=", projectId).where("deleted_at", "is", null).orderBy("id").forUpdate().execute();
+      const member = await trx.selectFrom("memberships").select("role")
+        .where("project_id", "=", projectId).where("account_id", "=", accountId).forShare().executeTakeFirst();
+      if (!member) throw new HttpError("forbidden", "Your notebook access changed before this change could be saved.");
+      // Raised, or renewed by a retried takedown (a lapsed fence holds again from now).
+      await trx.updateTable("projects").set({ closing_at: new Date() }).where("id", "=", projectId).execute();
+      return { docs: docs.map((doc) => ({ docId: doc.id, kind: doc.kind, serverSeq: doc.last_server_seq })) };
+    });
+  });
+
+  app.delete(route(ApiRoutes.projectClosing, "projectId"), async (request, reply) => {
+    const { accountId } = await requireAccount(context, request);
+    const { projectId } = projectParams.parse(request.params);
+    await requireProjectAction(db, projectId, accountId, "delete-project", bindActor(accountId, undefined));
+    await db.updateTable("projects").set({ closing_at: null }).where("id", "=", projectId).execute();
     return reply.status(204).send();
   });
 
@@ -328,16 +368,35 @@ export function registerProjectRoutes(app: FastifyInstance, context: ServerConte
       return { folderId: body.folderId, holder: taken.holder, granted: true, expiresAt: iso(taken.expires_at), ttlMs: grantedTtlMs, contended: taken.contended_at !== null };
     }
     // Held by another installation: remember that the folder has contenders,
-    // so its holder learns it at the next renewal.
+    // so its holder learns it at the next renewal. The timestamp is only ever
+    // read as set or not (the `contended` flag), so it is written once, not on
+    // every refused attempt; a refusal is a read, and tells the follower how
+    // long until the lease runs out so it asks again then.
     const current = await db
-      .updateTable("folder_leases")
-      .set({ contended_at: now })
+      .selectFrom("folder_leases")
+      .select(["holder", "expires_at", "contended_at"])
       .where("project_id", "=", projectId)
       .where("account_id", "=", accountId)
       .where("folder_id", "=", body.folderId)
-      .returning(["holder", "expires_at"])
       .executeTakeFirst();
-    return { folderId: body.folderId, holder: current?.holder ?? null, granted: false, expiresAt: current ? iso(current.expires_at) : null, contended: true };
+    if (current && current.contended_at === null) {
+      await db
+        .updateTable("folder_leases")
+        .set({ contended_at: now })
+        .where("project_id", "=", projectId)
+        .where("account_id", "=", accountId)
+        .where("folder_id", "=", body.folderId)
+        .where("contended_at", "is", null)
+        .execute();
+    }
+    return {
+      folderId: body.folderId,
+      holder: current?.holder ?? null,
+      granted: false,
+      expiresAt: current ? iso(current.expires_at) : null,
+      ...(current ? { retryAfterMs: Math.max(0, current.expires_at.getTime() - now.getTime()) } : {}),
+      contended: true,
+    };
   });
 
   app.delete(route(ApiRoutes.folderLease, "projectId"), async (request, reply) => {
@@ -345,13 +404,17 @@ export function registerProjectRoutes(app: FastifyInstance, context: ServerConte
     const { projectId } = projectParams.parse(request.params);
     const query = folderLeaseQuery.parse(request.query);
     await requireProjectAction(db, projectId, accountId, "read");
-    await db
+    const released = await db
       .deleteFrom("folder_leases")
       .where("project_id", "=", projectId)
       .where("account_id", "=", accountId)
       .where("folder_id", "=", query.folderId)
       .where("holder", "=", query.holder)
+      .returning("folder_id")
       .execute();
+    // The account's other installations hold off contesting a live lease; tell
+    // them this one is free now instead of leaving them to wait out its expiry.
+    if (released.length > 0) publish(context, "user", accountId, EventKind.FolderLeaseReleased, { projectId, folderId: query.folderId });
     return reply.status(204).send();
   });
 

@@ -26,6 +26,7 @@ import { StorageError } from "@/lib/storage/errors";
 import { MARKDOWN_ASSETS_DIR, MARKDOWN_EXTENSIONS } from "@/lib/storage/constants";
 import type { MarkdownImageAssetPayload } from "@/lib/types";
 import { assertNotSharedItem, isSharedNotebookPath } from "@/lib/collab/shared-notebook";
+import { readSharedAuthorityBytes } from "@/lib/storage/shared-source";
 import { markdownImageSources, rewriteMarkdownImageSources } from "@/lib/markdown-image-sources";
 import { isInkBlockRenderingName } from "@/lib/ink/block";
 import { legacyPythonSidecarPath, ownsPythonFigureSource, parsePythonFigureSource, previousPythonFigureSources, pythonFigureFolder, pythonFigureSourcePrefix, pythonSidecarPath, withPreviousPythonFigureSources } from "@/lib/python/sidecar";
@@ -490,7 +491,7 @@ export async function copyMarkdownImageAssets(from: string, to: string, markdown
       const movedImage = batch ? batch.moved.get(rawFileSourcePath(source) ?? "") : undefined;
       if (movedImage) { imageSources[source] = rawFileUrl(movedImage); continue; }
       let asset;
-      try { asset = await getMarkdownImageAssetBySource(from, source); }
+      try { asset = await getMarkdownImageAssetBySource(from, source, { authoritative: true }); }
       catch (error) {
         // An already missing image must not prevent moving the note itself.
         if ((error as NodeJS.ErrnoException).code === "ENOENT") {
@@ -500,7 +501,8 @@ export async function copyMarkdownImageAssets(from: string, to: string, markdown
           if (target) imageSources[source] = `/api/markdown-assets/raw?document=${encodeURIComponent(target.documentPath)}&asset=${encodeURIComponent(target.assetPath)}`;
           continue;
         }
-        if (error instanceof StorageError) continue;
+        // A host that cannot answer (409 and up) is not a missing image: the copy waits rather than leave a stale or absent one.
+        if (error instanceof StorageError && error.status < 409) continue;
         throw error;
       }
       const target = markdownAssetSourceTarget(from, source);
@@ -563,7 +565,20 @@ export async function writeMarkdownImageAsset(
   };
 }
 
-export async function getMarkdownImageAsset(documentPath: string, assetPath: string) {
+/**
+ * `authoritative`: the bytes of an asset of a shared notebook come from the
+ * collaboration host, which can be ahead of this disk (a copy must not mix a
+ * current note with stale images). Without it the disk is read, as a viewer does.
+ */
+export type MarkdownAssetRead = { authoritative?: boolean };
+
+async function readAssetBytes(libraryPath: string, absolutePath: string, read: MarkdownAssetRead): Promise<Buffer<ArrayBuffer>> {
+  const authority = read.authoritative ? await readSharedAuthorityBytes(libraryPath) : null;
+  // Copied into an ArrayBuffer-backed Buffer: the body type a Response accepts.
+  return authority ? Buffer.from(authority) : await readFile(absolutePath);
+}
+
+export async function getMarkdownImageAsset(documentPath: string, assetPath: string, read: MarkdownAssetRead = {}) {
   await ensureAdminRoot();
   const { notebook, name } = splitFilePath(documentPath);
   assertMarkdownFileName(name);
@@ -575,7 +590,7 @@ export async function getMarkdownImageAsset(documentPath: string, assetPath: str
   // An ink block's rendering (lib/ink/block.ts) is the one SVG a note shows;
   // it is written by Libera from strokes and served with scripts disabled.
   if (isInkBlockRenderingName(fileName)) {
-    return { body: await readFile(asset.targetPath), contentType: "image/svg+xml", assetPath: asset.normalized, fileName };
+    return { body: await readAssetBytes(`${notebook}/${asset.normalized}`, asset.targetPath, read), contentType: "image/svg+xml", assetPath: asset.normalized, fileName };
   }
   const fileType = assertSupportedFileName(fileName);
 
@@ -584,7 +599,7 @@ export async function getMarkdownImageAsset(documentPath: string, assetPath: str
   }
 
   return {
-    body: await readFile(asset.targetPath),
+    body: await readAssetBytes(`${notebook}/${asset.normalized}`, asset.targetPath, read),
     contentType: getContentType(fileName, fileType),
     assetPath: asset.normalized,
     fileName,
@@ -594,6 +609,7 @@ export async function getMarkdownImageAsset(documentPath: string, assetPath: str
 export async function getMarkdownImageAssetBySource(
   documentPath: string,
   imageSource: string,
+  read: MarkdownAssetRead = {},
 ) {
   const source = imageSource.trim();
 
@@ -605,7 +621,7 @@ export async function getMarkdownImageAssetBySource(
     const url = new URL(source, "http://libera.local");
     const sourceDocumentPath = url.searchParams.get("document") ?? documentPath;
     const assetPath = url.searchParams.get("asset") ?? "";
-    return getMarkdownImageAsset(sourceDocumentPath, assetPath);
+    return getMarkdownImageAsset(sourceDocumentPath, assetPath, read);
   }
 
   if (source.startsWith("/api/files/raw/")) {
@@ -614,7 +630,7 @@ export async function getMarkdownImageAssetBySource(
     assertImageFileName(name);
 
     return {
-      body: await readFile(filePathFromParts(notebook, pathParts)),
+      body: await readAssetBytes(rawPath, filePathFromParts(notebook, pathParts), read),
       contentType: getContentType(name, "image"),
       assetPath: rawPath,
       fileName: name,
@@ -625,7 +641,7 @@ export async function getMarkdownImageAssetBySource(
     throw new StorageError("Only local Markdown images can be converted.");
   }
 
-  return getMarkdownImageAsset(documentPath, markdownAssetSourceTarget(documentPath, source)?.assetPath ?? source);
+  return getMarkdownImageAsset(documentPath, markdownAssetSourceTarget(documentPath, source)?.assetPath ?? source, read);
 }
 
 export async function pruneUnusedMarkdownImageAssets(

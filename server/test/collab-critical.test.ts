@@ -14,6 +14,8 @@ for (const kind of ["blob", "folder"] as const) test(`R19: an offline ${kind} re
   try {
     await client.open(docId);
     const entry = { fileId: id, kind, path: kind === "blob" ? "photo.png" : "folder", ...(kind === "blob" ? { blobHash: "a".repeat(64) } : {}) };
+    // The server only accepts a blob entry whose blob was uploaded to the project.
+    if (kind === "blob") await env.db.insertInto("blobs").values({ project_id: env.project.id, hash: "a".repeat(64), size: 1, mime: "image/png" }).onConflict((oc) => oc.doNothing()).execute();
     await client.acked(client.edit(docId, "manifest", (doc) => doc.getMap(ManifestKeys.files).set(id, entry)));
     Y.applyUpdate(offline, Y.encodeStateAsUpdate(client.doc(docId, "manifest")));
     const base = Y.encodeStateVector(offline);

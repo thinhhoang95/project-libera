@@ -130,6 +130,8 @@ export interface VersionResponse {
   projectCreationKeys?: boolean;
   /** Project deletion can be fenced against the manifest sequence exported locally. */
   guardedProjectDeletion?: boolean;
+  /** Server can fence a project's writes for a takedown (ApiRoutes.projectClosing). */
+  takedownFence?: boolean;
   /** Server makes PDF documents on `open`. Live PDFs need it, and older servers refuse those opens. */
   livePdfs?: boolean;
   protocolVersion: number;
@@ -169,6 +171,11 @@ export interface FolderLeaseRequest {
   ttlMs: number;
 }
 
+/** What a takedown fence froze: every live document of the project and its final sequence. */
+export interface ProjectClosingResponse {
+  docs: Array<{ docId: string; kind: DocKind | "manifest" | "pdf"; serverSeq: number }>;
+}
+
 export interface FolderLease {
   folderId: string;
   /** The installation holding the lease, or null when it is free. */
@@ -178,6 +185,8 @@ export interface FolderLease {
   expiresAt: string | null;
   /** The lifetime the server granted (after clamping); absent from older servers. Clients must not derive it from `expiresAt` and their own wall clock. */
   ttlMs?: number;
+  /** On a refusal: how long until the holder's lease runs out (the server's own clock); followers contest again then. */
+  retryAfterMs?: number;
   /** Another installation has asked for this lease while it was held: the folder is seen by more than one. */
   contended: boolean;
 }
@@ -717,6 +726,12 @@ export const ApiRoutes = {
   notificationsRead: "/v1/notifications/read",
   audit: (projectId: string) => `/v1/projects/${encodeURIComponent(projectId)}/audit`,
   folderLease: (projectId: string) => `/v1/projects/${encodeURIComponent(projectId)}/folder-lease`,
+  /**
+   * POST (owner) → ProjectClosingResponse: starts a takedown by refusing every later document
+   * update and comment write, and answers with each document's final sequence. DELETE lifts the
+   * fence when the takedown is abandoned.
+   */
+  projectClosing: (projectId: string) => `/v1/projects/${encodeURIComponent(projectId)}/closing`,
   /** POST AlbumActivityRequest → 204: tells the album's other members about new photos. */
   albumActivity: (projectId: string) => `/v1/projects/${encodeURIComponent(projectId)}/album-activity`,
   commands: "/v1/commands",

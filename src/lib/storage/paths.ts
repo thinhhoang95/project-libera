@@ -1,6 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { statSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   directoryModeStatePath,
@@ -50,9 +52,12 @@ export async function ensureAdminRoot() {
 }
 
 export function assertSafeSegment(segment: string, label: string) {
-  const trimmed = segment.trim();
+  // Only the end is trimmed: the shared manifest accepts a name that starts
+  // with whitespace but never one that ends with it (manifestPathError), so
+  // trimming the start here would route that name to a different file.
+  const trimmed = segment.trimEnd();
 
-  if (!trimmed) {
+  if (!segment.trim()) {
     throw new StorageError(`${label} is required.`);
   }
 
@@ -67,6 +72,19 @@ export function assertSafeSegment(segment: string, label: string) {
   }
 
   return trimmed;
+}
+
+/**
+ * A sidecar's file name (`<name>.json`). One more suffix on a name at the
+ * 255-byte limit cannot be created by the file system, so say so plainly
+ * instead of failing with ENAMETOOLONG deep inside a save.
+ */
+export function sidecarName(name: string, suffix = ".json") {
+  if (Buffer.byteLength(name + suffix) > 255) {
+    throw new StorageError("This file name is too long to keep its annotations.");
+  }
+
+  return name + suffix;
 }
 
 export function assertSafeUserSegment(segment: string, label: string) {
@@ -176,6 +194,17 @@ export function getStateRoot() {
   return getAdminRoot();
 }
 
+/**
+ * Where process (PID) lock files live: this machine's temp directory, keyed by
+ * a hash of the library path. A lock inside the synced library would travel
+ * through OneDrive and be judged by a PID that means nothing on another
+ * computer, and two devices could each hold their own copy of it.
+ */
+export function getLocalLockDir() {
+  const key = createHash("sha256").update(getAdminRoot()).digest("hex").slice(0, 16);
+  return path.join(tmpdir(), "libera-locks", key);
+}
+
 function notebookRootPath(safeNotebook: string) {
   const folder = getLinkedFolder(safeNotebook);
 
@@ -258,7 +287,7 @@ export function pdfAnnotationsPath(notebook: string, nameOrParts: string | strin
   const parts = Array.isArray(nameOrParts) ? nameOrParts : [nameOrParts];
   if (!parts.length) throw new StorageError("PDF annotation path is invalid.");
   const safeParts = parts.map((part) => assertSafeUserSegment(part, "File path segment"));
-  return path.join(pdfAnnotationsDirectoryPath(notebook, safeParts.slice(0, -1)), `${safeParts.at(-1)}.json`);
+  return path.join(pdfAnnotationsDirectoryPath(notebook, safeParts.slice(0, -1)), sidecarName(safeParts.at(-1) as string));
 }
 
 /** A path-scoped sidecar of an audio file, like a PDF's annotations: `<dir>/by-path/<folders>/<name>.json`. */
@@ -266,7 +295,7 @@ function audioSidecarPath(directory: string, notebook: string, pathParts: string
   if (!pathParts.length) throw new StorageError("Audio sidecar path is invalid.");
   const safeParts = pathParts.map((part) => assertSafeUserSegment(part, "File path segment"));
   return notebookSystemPath(assertSafeSegment(notebook, "Notebook name"), directory, "by-path",
-    ...safeParts.slice(0, -1), `${safeParts.at(-1)}.json`);
+    ...safeParts.slice(0, -1), sidecarName(safeParts.at(-1) as string));
 }
 
 /** A voice memo's transcript. */
@@ -296,7 +325,7 @@ export function definitionsPath(notebook: string, pathParts: string[]) {
   if (!pathParts.length) throw new StorageError("Definitions path is invalid.");
   const safeParts = pathParts.map((part) => assertSafeUserSegment(part, "File path segment"));
   return notebookSystemPath(assertSafeSegment(notebook, "Notebook name"), DEFINITIONS_DIR, "by-path",
-    ...safeParts.slice(0, -1), `${safeParts.at(-1)}.json`);
+    ...safeParts.slice(0, -1), sidecarName(safeParts.at(-1) as string));
 }
 
 /** The folder holding the definitions of everything inside a notebook folder. */
@@ -310,7 +339,7 @@ export function pdfOutlinePath(notebook: string, pathParts: string[]) {
   if (!pathParts.length) throw new StorageError("PDF outline path is invalid.");
   const safeParts = pathParts.map((part) => assertSafeUserSegment(part, "File path segment"));
   return notebookSystemPath(assertSafeSegment(notebook, "Notebook name"), PDF_OUTLINES_DIR, "by-path",
-    ...safeParts.slice(0, -1), `${safeParts.at(-1)}.json`);
+    ...safeParts.slice(0, -1), sidecarName(safeParts.at(-1) as string));
 }
 
 /** The folder holding the generated outlines of every PDF inside a notebook folder. */
@@ -369,7 +398,7 @@ export function imageAnnotationsPath(notebook: string, nameOrParts: string | str
   const parts = Array.isArray(nameOrParts) ? nameOrParts : [nameOrParts];
   if (!parts.length) throw new StorageError("Image annotation path is invalid.");
   const safeParts = parts.map((part) => assertSafeUserSegment(part, "File path segment"));
-  return path.join(imageAnnotationsDirectoryPath(notebook, safeParts.slice(0, -1)), `${safeParts.at(-1)}.json`);
+  return path.join(imageAnnotationsDirectoryPath(notebook, safeParts.slice(0, -1)), sidecarName(safeParts.at(-1) as string));
 }
 
 export function legacyFlatImageAnnotationsPath(notebook: string, name: string) {

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { jsonError, requireAuth } from "@/lib/api";
 import { StorageError, toStorageError } from "@/lib/storage/errors";
-import { deleteTranscript, editTranscriptSegments, readTranscript, renameTranscriptSpeakers } from "@/lib/storage/transcripts";
+import { deleteTranscript, editTranscriptSegments, readTranscript, renameTranscriptSpeakers, transcriptVersion } from "@/lib/storage/transcripts";
 import { getTranscriptionJobs } from "@/lib/transcription/jobs";
 import type { TranscriptPayload } from "@/lib/transcription/types";
 
@@ -15,7 +15,7 @@ function handleError(error: unknown) {
 
 async function payload(path: string): Promise<TranscriptPayload> {
   const { transcript, stale, shared } = await readTranscript(path);
-  return { path, transcript, stale, shared, job: getTranscriptionJobs().get(path) };
+  return { path, transcript, version: transcriptVersion(transcript), stale, shared, job: getTranscriptionJobs().get(path) };
 }
 
 /** A recording's transcript, and the transcription in progress if there is one. */
@@ -52,8 +52,9 @@ export async function PATCH(request: NextRequest) {
   const authError = requireAuth(request);
   if (authError) return authError;
   try {
-    const body = (await request.json()) as { path?: string; speakers?: Record<string, unknown>; segments?: unknown };
-    if (body.segments !== undefined) await editTranscriptSegments(body.path ?? "", body.segments);
+    const body = (await request.json()) as { path?: string; speakers?: Record<string, unknown>; segments?: unknown; baseVersion?: unknown };
+    // `baseVersion`: the payload version the reader corrected; without it the edit applies to whatever is latest.
+    if (body.segments !== undefined) await editTranscriptSegments(body.path ?? "", body.segments, typeof body.baseVersion === "string" ? body.baseVersion : undefined);
     const names = Object.fromEntries(Object.entries(body.speakers ?? {}).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
     if (Object.keys(names).length || body.segments === undefined) await renameTranscriptSpeakers(body.path ?? "", names);
     return NextResponse.json(await payload(body.path ?? ""));

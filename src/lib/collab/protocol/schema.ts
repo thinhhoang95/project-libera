@@ -248,6 +248,30 @@ export function isPlainId(value: unknown): value is string {
   return typeof value === "string" && /^[A-Za-z0-9_-]{1,200}$/.test(value);
 }
 
+const MANIFEST_ENTRY_KINDS: readonly ManifestEntryKind[] = ["doc", "blob", "folder"];
+const MANIFEST_DOC_KINDS: readonly DocKind[] = ["markdown", "latex", "text"];
+
+/**
+ * The shape every manifest entry must have: one definition for the server's
+ * validation of an update and the desktop's parse of the manifest, so the
+ * server never accepts an entry a desktop would silently skip. Returns a
+ * message, or null when the entry is well formed (its path is judged apart,
+ * by manifestPathError).
+ */
+export function manifestEntryShapeError(fileId: string, value: unknown): string | null {
+  if (!isPlainId(fileId)) return "The file id is not a valid id.";
+  if (typeof value !== "object" || value === null) return "The entry must be an object.";
+  const record = value as Record<string, unknown>;
+  if (typeof record.path !== "string") return "The entry has no path.";
+  if (!MANIFEST_ENTRY_KINDS.includes(record.kind as ManifestEntryKind)) return "The entry's kind is not doc, blob or folder.";
+  if (record.kind === "doc") {
+    if (!isPlainId(record.docId)) return "The document id is not a valid id.";
+    if (!MANIFEST_DOC_KINDS.includes(record.docKind as DocKind)) return "The document's kind is not markdown, latex or text.";
+  }
+  if (record.kind === "blob" && (typeof record.blobHash !== "string" || !/^[0-9a-f]{64}$/.test(record.blobHash))) return "The blob hash is not a SHA-256 hex digest.";
+  return null;
+}
+
 /**
  * Validates a manifest path. Returns an error message, or null when the path
  * is safe to materialize on Windows, macOS and Linux.
@@ -266,6 +290,25 @@ export function manifestPathError(path: string): string | null {
     if (/[. ]$/.test(segment)) return "A path segment may not end with a dot or space.";
     if (segment.startsWith(".libera")) return "Paths starting with .libera are reserved.";
   }
+  return null;
+}
+
+/** The longest suffix Libera adds to a file's name for a sidecar (`<name>.transcript`, `<name>.json`). */
+const SIDECAR_SUFFIX_BYTES = ".transcript".length;
+
+/**
+ * manifestPathError plus room for sidecar names, for names being created now.
+ * Existing entries may sit at the full segment limit and stay valid (the
+ * server keeps validating with manifestPathError alone).
+ *
+ * Whitespace: a segment may start with whitespace (it ends with neither
+ * whitespace nor a dot); src/lib/storage/paths.ts therefore trims only the end.
+ */
+export function manifestNewNameError(path: string): string | null {
+  const problem = manifestPathError(path);
+  if (problem) return problem;
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  if (utf8ByteLength(name) + SIDECAR_SUFFIX_BYTES > MAX_SEGMENT_BYTES) return "The name is too long to keep room for its transcript and annotation files.";
   return null;
 }
 

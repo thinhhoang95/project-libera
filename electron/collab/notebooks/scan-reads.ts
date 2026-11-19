@@ -2,7 +2,7 @@
 // changed file must stay quiet before it is imported, how much one scan may
 // read, and the back-off for a walk that cannot finish.
 
-import { readIfExists, SLOW_READ } from "./fs-ops";
+import { readIfExists, SLOW_READ, statIfExists } from "./fs-ops";
 
 /**
  * The collaboration server's default blob limit (server MAX_BLOB_BYTES). The
@@ -19,7 +19,11 @@ export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
  */
 export const IMPORT_QUIET_MS = 3000;
 
-/** Reads of different paths that may be outstanding at once (a timed-out read keeps running). */
+/**
+ * Reads of different paths that may be outstanding at once in one notebook (a
+ * timed-out read keeps running). The count is per notebook: a stalled provider
+ * under one notebook must not make the scans of the others defer forever.
+ */
 export const MAX_OUTSTANDING_READS = 4;
 
 /** Bytes one scan reads of files it has not shared yet; the rest wait for the next scan. */
@@ -37,16 +41,28 @@ interface Flight {
   mtimeMs: number;
 }
 
-const flights = new Map<string, Flight>();
+/** Reads of callers that name no notebook share this pool. */
+const SHARED_POOL = {};
+const pools = new WeakMap<object, Map<string, Flight>>();
+
+function poolOf(owner: object): Map<string, Flight> {
+  let pool = pools.get(owner);
+  if (!pool) {
+    pool = new Map();
+    pools.set(owner, pool);
+  }
+  return pool;
+}
 
 /**
  * readWithin with one read per path: a read given up on keeps running, and
  * the next scan joins it instead of starting another. The result is used only
  * while the file still has the size and mtime it had when that read began;
  * otherwise this answers SLOW_READ until the old read ends. At most
- * MAX_OUTSTANDING_READS paths are read at a time.
+ * MAX_OUTSTANDING_READS paths are read at a time per `owner` (the notebook).
  */
-export async function readShared(absolute: string, ms: number, observed: { size: number; mtimeMs: number }): Promise<Buffer | null | typeof SLOW_READ> {
+export async function readShared(absolute: string, ms: number, observed: { size: number; mtimeMs: number }, owner: object = SHARED_POOL): Promise<Buffer | null | typeof SLOW_READ> {
+  const flights = poolOf(owner);
   let flight = flights.get(absolute);
   if (flight && (flight.size !== observed.size || flight.mtimeMs !== observed.mtimeMs)) return SLOW_READ;
   if (!flight) {
@@ -69,6 +85,12 @@ export async function readShared(absolute: string, ms: number, observed: { size:
     const bytes = await Promise.race([flight.promise, slow]);
     // The file changed while it was read: those bytes are not one version.
     if (bytes && bytes !== SLOW_READ && bytes.byteLength !== observed.size) return SLOW_READ;
+    // A rewrite that kept the length is invisible to the length check; the
+    // stat taken after the read must still be the one the read began under.
+    if (bytes && bytes !== SLOW_READ) {
+      const after = await statIfExists(absolute);
+      if (!after || after.size !== observed.size || after.mtimeMs !== observed.mtimeMs) return SLOW_READ;
+    }
     return bytes;
   } finally {
     clearTimeout(timer);
@@ -76,10 +98,21 @@ export async function readShared(absolute: string, ms: number, observed: { size:
 }
 
 /** Milliseconds until a file counts as quiet (0: it has not changed for `quietMs`). */
+/**
+ * How far past `now` a change time may be and still mean "changed just now":
+ * a scan takes `now` before it walks, so a file written during the walk is
+ * later than that, and file times carry fractions of the millisecond `now`
+ * rounds down.
+ */
+const RECENT_FUTURE_MS = 60_000;
+
 export function quietWaitMs(entry: { mtimeMs: number; ctimeMs?: number }, now: number, quietMs = IMPORT_QUIET_MS): number {
-  // A time in the future (a copy from a skewed clock) says nothing about when it changed.
+  // An mtime can be anything (a copy keeps its source's; a skewed clock writes
+  // a future one), so one in the future says nothing about when it changed.
   const modified = entry.mtimeMs <= now ? entry.mtimeMs : 0;
-  const changed = entry.ctimeMs !== undefined && entry.ctimeMs <= now ? entry.ctimeMs : 0;
+  // The ctime is this system's own clock: past `now` only because the file
+  // changed after `now` was taken, which is as recent as it gets.
+  const changed = entry.ctimeMs === undefined || entry.ctimeMs > now + RECENT_FUTURE_MS ? 0 : Math.min(entry.ctimeMs, now);
   return Math.max(0, quietMs - (now - Math.max(modified, changed)));
 }
 

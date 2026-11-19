@@ -473,4 +473,6 @@ export const EventKind = {
   ProjectDeleted: "project.deleted",
   Notification: "notification.created",
   PdfDocumentCreated: "pdf-document.created",
+  /** A writer lease was given up (user scope: {projectId, folderId}); the account's other installations may claim it now. */
+  FolderLeaseReleased: "folder-lease.released",
 } as const;

@@ -401,6 +401,38 @@ export interface FileBlobResponse {
   contentBase64: string | null;
 }
 
+/**
+ * What a file operation did: the Libera paths it touched and, for a create or a
+ * blob write, the file's id. A create answers with the path the layout gave
+ * the new file, which is not the requested one when another file took it.
+ */
+export interface FileOpResult {
+  paths: string[];
+  fileId?: string;
+}
+
+/**
+ * One entry of a shared notebook's file list (GET /projects/:id/file-entries):
+ * the manifest, not the disk, so a follower's list is current before the
+ * cloud delivers the files, and a deleted file is absent even while its old
+ * copy is still on disk.
+ */
+export interface FileListEntry {
+  fileId: string;
+  /** Relative to the notebook root, as the layout places it (suffixed on a case clash). */
+  path: string;
+  kind: "doc" | "blob" | "folder";
+  docId?: string;
+  docKind?: "markdown" | "latex" | "text";
+  blobHash?: string;
+  size?: number;
+  updatedAt: number;
+}
+
+export interface FileListResponse {
+  entries: FileListEntry[];
+}
+
 export interface FileOpRequest {
   /**
    * `write-blob` adds a binary file (an upload, a pasted image, an edited
@@ -603,7 +635,8 @@ export type HostEvent =
       projectId: string;
       notebook: string;
       added: string[];
-      moves: { from: string; to: string }[];
+      /** `fileId` is the file's identity across the move, so a swap or a chain of renames is told apart from one file moving on. */
+      moves: { from: string; to: string; fileId?: string }[];
       removed: string[];
     }
   /**
@@ -687,6 +720,7 @@ export const ControlRoutes = {
   docEdits: (docId: string) => `/docs/${encodeURIComponent(docId)}/edits`,
   docSuggestions: (docId: string) => `/docs/${encodeURIComponent(docId)}/suggestions`,
   fileBlob: (projectId: string) => `/projects/${encodeURIComponent(projectId)}/file-blob`,
+  fileEntries: (projectId: string) => `/projects/${encodeURIComponent(projectId)}/file-entries`,
   files: (projectId: string) => `/projects/${encodeURIComponent(projectId)}/files`,
   reconciliations: "/reconciliations",
   reconciliation: (id: string) => `/reconciliations/${encodeURIComponent(id)}`,

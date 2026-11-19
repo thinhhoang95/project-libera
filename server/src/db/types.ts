@@ -39,6 +39,8 @@ export interface ProjectsTable {
   kind: ColumnType<ProjectKind, ProjectKind | undefined, ProjectKind>;
   created_at: CreatedAt;
   deleted_at: NullableTime;
+  /** Takedown in progress: writes are refused (see migration 011). */
+  closing_at: NullableTime;
 }
 
 export interface ProjectCreationsTable {

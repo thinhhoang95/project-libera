@@ -192,18 +192,37 @@ export async function checkWriteGuard(guard?: WriteGuard): Promise<void> {
   if (guard && !(await guard.canCommit())) throw new WriteCancelledError();
 }
 
+/** Longest a content guard waits on the disk before it refuses the commit (a stalled provider). */
+export const guardTimings = { readMs: 10_000 };
+
 /** Fence the exact destination observation across IO and busy-file retries. */
 export function contentGuard(absolute: string, expected: string | null, guard: WriteGuard): WriteGuard {
   return { root: guard.root, canCommit: async () => {
     if (!(await guard.canCommit())) return false;
     await resolveInside(guard.root, toRelative(guard.root, absolute));
-    const before = await statIfExists(absolute);
-    const bytes = await readIfExists(absolute);
-    // A file replaced or rewritten while it was being read and hashed is not
-    // the observation that hash describes: the longest part of the check-then-act window.
-    const after = await statIfExists(absolute);
-    if (before?.mtimeMs !== after?.mtimeMs || before?.size !== after?.size || before?.ino !== after?.ino) return false;
-    return (bytes === null ? null : sha256(bytes)) === expected;
+    // Bounded: a provider that stalls must not hold the project queue (and
+    // with it stopping). Nothing is committed on a timeout; the caller retries later.
+    const observation = (async () => {
+      const before = await statIfExists(absolute);
+      const bytes = await readIfExists(absolute);
+      // A file replaced or rewritten while it was being read and hashed is not
+      // the observation that hash describes: the longest part of the check-then-act window.
+      const after = await statIfExists(absolute);
+      if (before?.mtimeMs !== after?.mtimeMs || before?.size !== after?.size || before?.ino !== after?.ino) return false;
+      return (bytes === null ? null : sha256(bytes)) === expected;
+    })();
+    // A read given up on must not surface later as an unhandled rejection.
+    observation.catch(() => undefined);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const slow = new Promise<false>((resolve) => {
+      timer = setTimeout(() => resolve(false), guardTimings.readMs);
+      timer.unref?.();
+    });
+    try {
+      return await Promise.race([observation, slow]);
+    } finally {
+      clearTimeout(timer);
+    }
   } };
 }
 
@@ -390,6 +409,43 @@ async function moveExclusive(from: string, to: string, guard?: WriteGuard): Prom
   await claimName(to);
   try { await renameWithRetry(from, to, guard); }
   catch (error) { await fs.rm(to, { force: true }).catch(() => undefined); throw error; }
+}
+
+/**
+ * Moves `from` to exactly `to` and never replaces anything there: when `to`
+ * exists, or appears while the move runs, DestinationTakenError is thrown and
+ * `from` is left where it is. A case-only rename on a case-insensitive volume
+ * reports the destination as taken (both names are one file), so callers that
+ * allow those use movePath for that case.
+ */
+export async function movePathExclusive(from: string, to: string, guard?: WriteGuard): Promise<void> {
+  await ensureDirectory(path.dirname(to), guard);
+  await moveExclusive(from, to, guard);
+}
+
+/**
+ * Publishes new bytes at exactly `absolute` without ever replacing a file
+ * there: the bytes are staged in a temp file, then hard-linked into place
+ * (exclusive), or, without hard links, renamed over a name claimed with an
+ * empty file. Throws DestinationTakenError when the name is already in use.
+ */
+export async function writeFileExclusive(absolute: string, bytes: Uint8Array, guard?: WriteGuard): Promise<Stats> {
+  const directory = path.dirname(absolute);
+  await ensureDirectory(directory, guard);
+  const temporary = path.join(directory, `${TEMP_PREFIX}${randomBytes(6).toString("hex")}`);
+  try {
+    await checkWriteGuard(guard);
+    await fs.writeFile(temporary, bytes, { flag: "wx" });
+    await checkWriteGuard(guard);
+    if (!await linkExclusive(temporary, absolute)) {
+      await claimName(absolute);
+      try { await renameWithRetry(temporary, absolute, guard); }
+      catch (error) { await fs.rm(absolute, { force: true }).catch(() => undefined); throw error; }
+    }
+  } finally {
+    await fs.rm(temporary, { force: true }).catch(() => undefined);
+  }
+  return fs.lstat(absolute);
 }
 
 /** Moves `from` into `directory` under a free name derived from `name`; the name is claimed exclusively. */

@@ -5,7 +5,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { apiRequest } from "@/components/libera/api-client";
 import { beginAiActivity } from "@/lib/ai-activity";
 import { subscribeHostEvents } from "@/lib/collab/ui/bridge";
-import type { AudioPeaksPayload, TranscriptionJob, TranscriptionSetupStatus, TranscriptPayload, TranscriptSegment } from "@/lib/transcription/types";
+import type { AudioPeaksPayload, TranscriptionJob, TranscriptionSetupStatus, TranscriptPayload, TranscriptProgressPayload, TranscriptSegment } from "@/lib/transcription/types";
 
 const ACTIVE_STATES = new Set<TranscriptionJob["state"]>(["queued", "decoding", "diarizing", "transcribing", "saving"]);
 
@@ -28,8 +28,11 @@ export function useTranscript(path: string) {
     pathRef.current = path;
   }, [path]);
 
+  // The version of the transcript last shown, sent with corrections so the server refuses to replace a newer one.
+  const versionRef = useRef<string | undefined>(undefined);
   const apply = useCallback((next: TranscriptPayload) => {
     if (next.path !== pathRef.current) return;
+    versionRef.current = next.version;
     setLoaded(next);
     setError("");
   }, []);
@@ -54,11 +57,29 @@ export function useTranscript(path: string) {
   const active = isJobActive(payload?.job);
   // Light the workspace glow for as long as this recording is being transcribed.
   useEffect(() => (active ? beginAiActivity() : undefined), [active]);
+  // While a job runs only its status is polled (no transcript, no recording
+  // read); the full transcript is fetched once, when the job has finished.
   useEffect(() => {
     if (!active) return;
-    const timer = window.setInterval(() => void refresh(), 1000);
-    return () => window.clearInterval(timer);
-  }, [active, refresh]);
+    let finished = false;
+    let polling = false;
+    const timer = window.setInterval(() => {
+      if (polling || finished) return;
+      polling = true;
+      apiRequest<TranscriptProgressPayload>(`/api/transcripts/progress?path=${encodeURIComponent(path)}`).then((progress) => {
+        if (finished || progress.path !== pathRef.current) return;
+        setLoaded((previous) => (previous?.path === progress.path ? { ...previous, job: progress.job } : previous));
+        if (!isJobActive(progress.job)) {
+          finished = true;
+          void refresh();
+        }
+      }, fail).finally(() => { polling = false; });
+    }, 1000);
+    return () => {
+      finished = true;
+      window.clearInterval(timer);
+    };
+  }, [active, fail, path, refresh]);
 
   const send = useCallback(
     (init: RequestInit, query = "") => apiRequest<TranscriptPayload>(`/api/transcripts${query}`, init).then(apply, fail),
@@ -75,7 +96,7 @@ export function useTranscript(path: string) {
     renameSpeaker: (index: number, name: string) => send({ method: "PATCH", body: JSON.stringify({ path, speakers: { [index]: name } }) }),
     /** The reader's corrections, saved once the editing ends; `keepalive` lets the save outlive a closing window. */
     saveSegments: (segments: TranscriptSegment[], { keepalive = false } = {}) => {
-      const body = JSON.stringify({ path, segments });
+      const body = JSON.stringify({ path, segments, baseVersion: versionRef.current });
       // A keepalive request may carry at most 64 KB; a longer transcript is sent as usual.
       return apiRequest<TranscriptPayload>("/api/transcripts", { method: "PATCH", keepalive: keepalive && body.length < 60_000, body }).then(apply, (failure: unknown) => {
         fail(failure);

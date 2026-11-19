@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { readIfExists, sha256, statIfExists, writeFileAtomic, type WriteGuard } from "../../../electron/collab/notebooks/fs-ops";
+import { DestinationTakenError, readIfExists, sha256, statIfExists, writeFileAtomic, writeFileExclusive, type WriteGuard } from "../../../electron/collab/notebooks/fs-ops";
 
 /**
  * A path-only host event cannot authorize deleting either path. Transfer an
@@ -20,7 +20,9 @@ export async function copyLifecycleSidecar(source: string, target: string, root:
     return saved !== null && sha256(saved) === hash && await statIfExists(target) === null && await matchesSource(saved);
   } };
   if (await readIfExists(target) !== null) return false;
-  await writeFileAtomic(target, bytes, guard);
+  // Exclusive at the filesystem call: a save or a cloud arrival under this name between the checks above and now is kept, not replaced.
+  try { await writeFileExclusive(target, bytes, guard); }
+  catch (error) { if (error instanceof DestinationTakenError) return false; throw error; }
   return true;
 }
 

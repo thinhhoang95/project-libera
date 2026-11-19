@@ -30,6 +30,7 @@ import {
 } from "../protocol.js";
 import { DocumentMissingError, type Room, type RoomMember } from "./room.js";
 import type { SyncServer } from "./server.js";
+import { ProjectClosingError } from "./store.js";
 import { SyncTimings } from "./timings.js";
 
 /** A document open on this socket. `role` is updated in place by membershipChanged. */
@@ -59,6 +60,14 @@ export class Session implements RoomMember {
   readonly docs = new Map<string, OpenDoc>();
   /** Open documents per project, for project-scoped events. */
   readonly projectDocs = new Map<string, number>();
+  /**
+   * Per `docId/subdoc`: the clientSeq whose write failed on this socket. Later
+   * pipelined updates depend on it and cannot integrate until the client
+   * resends it, so they are refused as retryable instead of being probed
+   * (the probe would reject them as `invalid-update` and the host would roll
+   * the sub-document back and discard its queue).
+   */
+  private readonly failedWrites = new Map<string, number>();
 
   private badFrames = 0;
   private chain: Promise<void> = Promise.resolve();
@@ -359,9 +368,27 @@ export class Session implements RoomMember {
     const open = this.docs.get(message.docId);
     if (!open) return this.sendReject(message, "not-open", "Open the document first.");
     // Not awaited: frames after this one are handled while it waits its turn.
+    const failedKey = `${message.docId}/${message.subdoc}`;
     open.room.queue
-      .run(() => this.server.applyClientUpdate(this, open, message))
+      .run(async () => {
+        const failedSeq = this.failedWrites.get(failedKey);
+        if (failedSeq !== undefined) {
+          if (message.clientSeq > failedSeq) {
+            this.sendError("internal", "An earlier update could not be saved; resend from it.", message.docId);
+            return;
+          }
+          // The client is resending from the failed update (or earlier).
+          this.failedWrites.delete(failedKey);
+        }
+        await this.server.applyClientUpdate(this, open, message);
+      })
       .catch((error: unknown) => {
+        this.failedWrites.set(failedKey, Math.min(message.clientSeq, this.failedWrites.get(failedKey) ?? Infinity));
+        // A takedown fence is expected, not a fault: the client keeps the update queued and resends it.
+        if (error instanceof ProjectClosingError) {
+          this.server.context.log.info({ docId: message.docId }, "Update refused: the project is being taken down");
+          return this.sendError("internal", error.message, message.docId);
+        }
         this.server.context.log.error({ err: error, docId: message.docId }, "Sync update failed");
         this.server.reportError(error, "update", {
           docId: message.docId,
@@ -403,6 +430,7 @@ export class Session implements RoomMember {
     const open = this.docs.get(docId);
     if (!open) return;
     this.docs.delete(docId);
+    for (const key of [...this.failedWrites.keys()]) if (key.startsWith(`${docId}/`)) this.failedWrites.delete(key);
     const count = (this.projectDocs.get(open.projectId) ?? 1) - 1;
     if (count > 0) this.projectDocs.set(open.projectId, count);
     else this.projectDocs.delete(open.projectId);

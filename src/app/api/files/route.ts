@@ -80,11 +80,15 @@ export async function PATCH(request: NextRequest) {
     const body = (await request.json()) as {
       path?: string;
       content?: string;
+      /** The textVersion of the text the editor opened; a save is refused (409) when the file is another. */
+      baseVersion?: string;
       destinationNotebook?: string;
       destinationName?: string;
       destinationDirectory?: string;
       copy?: boolean;
       archive?: boolean;
+      /** The shared file the caller saw at `path`; a rename of another file there is refused. */
+      fileId?: string;
     };
 
     if (body.archive) {
@@ -105,7 +109,7 @@ export async function PATCH(request: NextRequest) {
 
     if (body.destinationDirectory) {
       if (isSharedNotebookPath(body.path ?? "")) {
-        return NextResponse.json(await moveSharedFile(body.path ?? "", body.destinationDirectory, body.destinationName));
+        return NextResponse.json(await moveSharedFile(body.path ?? "", body.destinationDirectory, body.destinationName, { expectedFileId: body.fileId }));
       }
       if (isSharedNotebookPath(body.destinationDirectory)) throw new StorageError("Moving files between shared and other notebooks is not supported. Use Copy to create a separate file in the destination notebook.", 409);
       return NextResponse.json(
@@ -122,7 +126,7 @@ export async function PATCH(request: NextRequest) {
         const current = splitFilePath(body.path ?? "");
         const notebook = body.destinationNotebook ? assertSafeSegment(body.destinationNotebook, "Notebook name") : current.notebook;
         const parent = notebook === current.notebook ? current.pathParts.slice(0, -1) : [];
-        return NextResponse.json(await moveSharedFile(body.path ?? "", [notebook, ...parent].join("/"), body.destinationName));
+        return NextResponse.json(await moveSharedFile(body.path ?? "", [notebook, ...parent].join("/"), body.destinationName, { expectedFileId: body.fileId }));
       }
       if (isSharedNotebookPath(body.destinationNotebook ?? "")) throw new StorageError("Moving files between shared and other notebooks is not supported. Use Copy to create a separate file in the destination notebook.", 409);
       return NextResponse.json(
@@ -137,7 +141,7 @@ export async function PATCH(request: NextRequest) {
     // A shared notebook's text documents are saved through the shared document;
     // only a text file it holds as a file arrives here, and is replaced whole.
     if (isSharedNotebookPath(body.path ?? "")) return NextResponse.json(await saveSharedFileText(body.path ?? "", body.content ?? ""));
-    return NextResponse.json(await updateMarkdownFile(body.path ?? "", body.content ?? ""));
+    return NextResponse.json(await updateMarkdownFile(body.path ?? "", body.content ?? "", typeof body.baseVersion === "string" ? body.baseVersion : undefined));
   } catch (error) {
     return handleError(error);
   }
@@ -152,8 +156,8 @@ export async function DELETE(request: NextRequest) {
 
   try {
     const filePath = request.nextUrl.searchParams.get("path") ?? "";
-    const remove = isSharedNotebookPath(filePath) ? deleteSharedFile : deleteFile;
-    return NextResponse.json(await remove(filePath));
+    const fileId = request.nextUrl.searchParams.get("fileId") || undefined;
+    return NextResponse.json(isSharedNotebookPath(filePath) ? await deleteSharedFile(filePath, { expectedFileId: fileId }) : await deleteFile(filePath));
   } catch (error) {
     return handleError(error);
   }

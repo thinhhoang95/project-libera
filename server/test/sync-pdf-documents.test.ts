@@ -223,6 +223,7 @@ describe("shared PDF documents", () => {
     const { client, docId, fileId } = await openPdf();
     await client.open(manifest.id);
     const entry = { fileId, path: "paper.pdf", kind: "blob", blobHash: "a".repeat(64), createdBy: env.owner.id, createdAt: 1, updatedAt: 1 };
+    await env.db.insertInto("blobs").values({ project_id: env.project.id, hash: "a".repeat(64), size: 1, mime: "application/pdf" }).onConflict((oc) => oc.doNothing()).execute();
     await client.acked(client.edit(manifest.id, "manifest", (doc) => doc.getMap(ManifestKeys.files).set(fileId, entry)));
     await client.acked(client.edit(manifest.id, "manifest", (doc) => doc.getMap(ManifestKeys.files).set(fileId, { ...entry, path: "renamed.pdf" })));
     assert.equal((await env.db.selectFrom("documents").select("deleted_at").where("id", "=", docId).executeTakeFirstOrThrow()).deleted_at, null, "a rename keeps the document");
@@ -418,6 +419,7 @@ describe("shared PDF documents", () => {
     const fileId = nextFile();
     const docId = pdfDocId(env.project.id, fileId);
     const entry = { fileId, path: "never-opened.pdf", kind: "blob", blobHash: "a".repeat(64), createdBy: env.owner.id, createdAt: 1, updatedAt: 1 };
+    await env.db.insertInto("blobs").values({ project_id: env.project.id, hash: "a".repeat(64), size: 1, mime: "application/pdf" }).onConflict((oc) => oc.doNothing()).execute();
     await client.acked(client.edit(manifestId, "manifest", (doc) => doc.getMap(ManifestKeys.files).set(fileId, entry)));
     const stale = await env.connect();
     await stale.open(manifestId);

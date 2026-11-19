@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { access, copyFile, cp, link, lstat, mkdir, readdir, readFile, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { DestinationTakenError, movePathExclusive } from "../../../electron/collab/notebooks/fs-ops";
 import { StorageError } from "@/lib/storage/errors";
 import { assertFileContentHash, assertFileSignature } from "./file-signature";
 
@@ -119,8 +120,14 @@ export async function moveWithoutReplacing(currentPath: string, nextPath: string
     return;
   }
   if (await holdsFiles(nextPath)) throw new StorageError("A record of another file is already at the destination, so it was left where it is.", 409);
+  // Only empty folders are cleared; the move itself publishes exclusively, so a record that arrives after the check above is kept, not removed.
   await rm(nextPath, { force: true, recursive: true });
-  await movePath(currentPath, nextPath);
+  try { await movePathExclusive(currentPath, nextPath); }
+  catch (error) {
+    if (error instanceof DestinationTakenError) throw new StorageError("A record of another file is already at the destination, so it was left where it is.", 409);
+    if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+    await movePath(currentPath, nextPath);
+  }
 }
 
 /** Throws when something that is not a folder is in the way of creating the folders above a path. */

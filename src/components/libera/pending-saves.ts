@@ -2,6 +2,7 @@
 
 import { useSyncExternalStore } from "react";
 import { registerStateFlusher } from "./deferred-save";
+import { movesOverlap } from "@/lib/collab/ui/tree-changes";
 
 /*
  * Ink and annotation changes wait in memory until the person saves, as a
@@ -316,6 +317,23 @@ export const pendingSaves = {
         if (next) void unsavedJournal.movePath(path, next);
       }
     });
+  },
+
+  /**
+   * Several files moved at once (one host event): their unsaved changes follow
+   * each file to its own destination. When a destination is also another
+   * move's source (a swap), one at a time would merge two files' changes under
+   * one path, so every file first goes to a name of its own, then to its destination.
+   */
+  moveUnsavedMany(moves: readonly { from: string; to: string; sources?: Record<string, string> }[]) {
+    const list = moves.filter((move) => move.from !== move.to);
+    if (!movesOverlap(list)) {
+      for (const move of list) this.moveUnsaved(move.from, move.to, { sources: move.sources });
+      return;
+    }
+    const staging = (index: number) => `${list[index].to}\0moving-${index}`;
+    list.forEach((move, index) => this.moveUnsaved(move.from, staging(index)));
+    list.forEach((move, index) => this.moveUnsaved(staging(index), move.to, { sources: move.sources }));
   },
 
   /** Close without saving: the unsaved changes are dropped, here and in the journal. */

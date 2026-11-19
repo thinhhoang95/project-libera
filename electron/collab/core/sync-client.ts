@@ -181,6 +181,14 @@ const PROBE_MAX_MS = 30_000;
 /** The reconnect ceiling then: above PROBE_MAX_MS, so the probe is what notices the server first. */
 const LONG_OUTAGE_RECONNECT_MAX_MS = 120_000;
 
+/**
+ * A welcomed connection must stay up this long before the reconnect backoff
+ * starts over. A server that welcomes and then drops quickly (a proxy or
+ * overloaded node) otherwise gets a fresh short backoff and a reopen of every
+ * registered document on every flap.
+ */
+export const STABLE_CONNECTION_MS = 30_000;
+
 export class SyncClient {
   readonly url: string;
   private readonly options: SyncClientOptions;
@@ -209,8 +217,8 @@ export class SyncClient {
   private nudgeTimer: TimerHandle | null = null;
   private refreshTimer: TimerHandle | null = null;
   private probeTimer: TimerHandle | null = null;
-  /** Whether the current socket reached `open` (a refused connection never does). */
-  private socketOpened = false;
+  /** clock.now() when the current socket was welcomed; null before. */
+  private welcomedAt: number | null = null;
   /** Reachability probes run so far (diagnostics, tests). */
   probeCount = 0;
   /** When the current run of unanswered probes began (clock.now()); null while none failed. */
@@ -384,14 +392,12 @@ export class SyncClient {
     socket.binaryType = "arraybuffer";
     this.socket = socket;
     this.welcomed = false;
-    this.socketOpened = false;
     this.connectTimer = this.clock.setTimeout(() => {
       this.connectTimer = null;
       if (this.socket === socket && !this.welcomed) this.drop("connect timeout");
     }, this.options.connectTimeoutMs ?? 15_000);
     socket.onopen = () => {
       if (this.socket !== socket) return;
-      this.socketOpened = true;
       this.sendRaw(socket, {
         type: MessageType.Hello,
         protocolVersion: PROTOCOL_VERSION,
@@ -452,7 +458,11 @@ export class SyncClient {
 
   private handleClose(socket: WebSocketLike, code: number, reason: string): void {
     if (this.socket !== socket) return;
-    const unreachable = !this.socketOpened;
+    // A socket that opened but never completed the Libera handshake (connect
+    // timeout, closed before welcome) counts like one that never opened.
+    const unreachable = !this.welcomed;
+    if (this.welcomedAt !== null && this.clock.now() - this.welcomedAt >= STABLE_CONNECTION_MS) this.attempt = 0;
+    this.welcomedAt = null;
     this.detachSocket(socket);
     this.socket = null;
     this.welcomed = false;
@@ -775,7 +785,7 @@ export class SyncClient {
     if (this.connectTimer) this.clock.clearTimeout(this.connectTimer);
     this.connectTimer = null;
     this.welcomed = true;
-    this.attempt = 0;
+    this.welcomedAt = this.clock.now();
     this.authFailures = 0;
     this.probeFailingSince = null;
     this.lastBackoffMs = null;

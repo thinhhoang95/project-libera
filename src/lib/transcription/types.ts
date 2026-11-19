@@ -97,10 +97,18 @@ export type SpeechModelsStatus = {
 export type TranscriptPayload = {
   path: string;
   transcript: Transcript | null;
+  /** Identifies this transcript's content; send it back as `baseVersion` when saving corrections. */
+  version: string;
   /** The audio changed after the transcript was made. */
   stale: boolean;
   /** In a shared notebook: the members see this transcript too. */
   shared?: boolean;
+  job: TranscriptionJob | null;
+};
+
+/** GET /api/transcripts/progress?path=… : the job's status only, polled while it runs. */
+export type TranscriptProgressPayload = {
+  path: string;
   job: TranscriptionJob | null;
 };
 

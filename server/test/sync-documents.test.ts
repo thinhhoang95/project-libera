@@ -311,7 +311,7 @@ describe("sync documents", () => {
     const client = await env.connect();
     const opened = await client.open(env.project.manifestDocId);
     assert.deepEqual(opened.subdocs.map((entry) => entry.subdoc), ["manifest"]);
-    const entry = (path: string) => ({ fileId: "f1", path, kind: "doc", createdBy: env.owner.id, createdAt: 1, updatedAt: 1 });
+    const entry = (path: string) => ({ fileId: "f1", path, kind: "folder", createdBy: env.owner.id, createdAt: 1, updatedAt: 1 });
     for (const path of ["../escape.md", "/abs.md", "notes/con.md", ".libera/x.md"]) {
       const rejected = await client.rejected(
         client.edit(env.project.manifestDocId, "manifest", setEntry(ManifestKeys.files, "f1", entry(path))),
