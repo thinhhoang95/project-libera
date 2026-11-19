@@ -252,6 +252,42 @@ test("Edit requires a fresh read, forgives common slips, preserves line endings,
   });
 });
 
+test("ApplyEdit puts a missed Edit's new_string on the closest passage once, while the file is unchanged", async () => {
+  await withLibrary(async (root) => {
+    const file = path.join(root, "Research/methods.md");
+    const original = "# Methods\n\nWe sampled 120 participants from three regional clinics over six months.\nEach participant completed the survey twice.\n\n# Results\n";
+    await writeFile(file, original);
+    const { context } = makeContext("notebook");
+    await call(context, "Read", { file_path: "Research/methods.md" });
+    const missed = await call(context, "Edit", {
+      file_path: "Research/methods.md",
+      old_string: "We sampled 112 participants from three regional clinic over six months.\nEach participant completed the survey twice.",
+      new_string: "We sampled 120 participants from four clinics.",
+    });
+    assert.equal(missed.isError, true);
+    assert.match(missed.text, /lines 3-4[\s\S]*call ApplyEdit with edit_id "edit-1"[\s\S]*“We sampled 120 participants fr…” on line 3 through “…nt completed the survey twice\.” on line 4/);
+    assert.equal(await readFile(file, "utf8"), original, "a missed Edit changes nothing");
+
+    const applied = await call(context, "ApplyEdit", { edit_id: "edit-1" });
+    assert.equal(applied.isError, false, applied.text);
+    assert.equal(await readFile(file, "utf8"), "# Methods\n\nWe sampled 120 participants from four clinics.\n\n# Results\n");
+    assert.match((await call(context, "ApplyEdit", { edit_id: "edit-1" })).text, /no pending edit "edit-1"/);
+
+    // The id lapses once the file changes.
+    await call(context, "Read", { file_path: "Research/methods.md" });
+    const again = await call(context, "Edit", { file_path: "Research/methods.md", old_string: "We sampled 120 participants from for clinics.", new_string: "We sampled 120 people from four clinics." });
+    assert.match(again.text, /edit_id "edit-2"/);
+    await writeFile(file, "Changed by the user.\n");
+    assert.match((await call(context, "ApplyEdit", { edit_id: "edit-2" })).text, /changed since edit-2 was offered/);
+    assert.equal(await readFile(file, "utf8"), "Changed by the user.\n");
+
+    // No id for replace_all, or when the hint is only similar lines.
+    await call(context, "Read", { file_path: "Research/ideas/atlas.md" });
+    assert.doesNotMatch((await call(context, "Edit", { file_path: "Research/ideas/atlas.md", old_string: "Project Atlas notez and more words here.", new_string: "x", replace_all: true })).text, /ApplyEdit/);
+    assert.doesNotMatch((await call(context, "Edit", { file_path: "Research/ideas/atlas.md", old_string: "Atlas notez.", new_string: "x" })).text, /ApplyEdit/);
+  });
+});
+
 test("undo restores originals, removes created files, gives back unsaved drafts, and skips files edited afterwards", async () => {
   await withLibrary(async (root) => {
     const snapshots = new RunSnapshots("undo-run-0001");

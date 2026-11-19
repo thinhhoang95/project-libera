@@ -8061,6 +8061,9 @@
         "replacements": "{count, plural, other {# lần thay thế}}",
         "edited": "Đã chỉnh sửa"
       },
+      "applyEdit": {
+        "describe": "Áp dụng chỉnh sửa vào đoạn gần nhất"
+      },
       "write": {
         "describe": "Đang ghi {path}",
         "describeUnknown": "Đang ghi một tệp",

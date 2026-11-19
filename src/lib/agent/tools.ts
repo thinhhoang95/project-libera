@@ -59,6 +59,8 @@ export type ToolContext = {
   /** Unsaved editor drafts by library path. Dropped once the agent writes the file. */
   drafts: Map<string, string>;
   fileState: Map<string, FileState>;
+  /** Edits whose old_string was not found, kept so ApplyEdit can put them on the closest passage. Created on first use. */
+  pendingEdits?: PendingEdits;
   tasks: AgentTask[];
   snapshots: RunSnapshots;
   changed: Map<string, { created: boolean }>;
@@ -121,6 +123,10 @@ export type ToolResult = {
   detail?: string;
 };
 
+/** A failed Edit kept for ApplyEdit: new_string, and the passage it would replace in the file as it was. */
+export type PendingEdit = { path: string; hash: string; start: number; end: number; removed: string; newString: string };
+export type PendingEdits = { next: number; edits: Map<string, PendingEdit> };
+
 export type AgentTool = {
   name: string;
   /** "write" changes files; "comment" changes only Libera's review comments. Both run one at a time. */
@@ -129,6 +135,8 @@ export type AgentTool = {
   parameters: Record<string, unknown>;
   /** Plain-language activity line for the UI, in the interface language (`t` translates `agentServer` messages). */
   describe(args: Record<string, unknown>, t: AgentT): string;
+  /** The text a call removes and adds, shown in the activity line before it runs. */
+  previewDiff?(args: Record<string, unknown>, context: ToolContext): { removed: string; added: string } | undefined;
   run(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult>;
 };
 
@@ -904,32 +912,71 @@ const PASSAGE_HINT_NEEDLE_CHARS = 600;
 const PASSAGE_HINT_BUDGET = 60_000_000;
 const PASSAGE_HINT_RATIO = 0.75;
 
+/** At most this many lines of the closest passage are shown. */
+const PASSAGE_HINT_MAX_LINES = 40;
+
+/**
+ * Where old_string most nearly occurs: the [start, end) range of content with
+ * the fewest differing characters. Long old_strings are located by their
+ * first and last PASSAGE_HINT_NEEDLE_CHARS characters; `certain` is false when
+ * the end could only be estimated from the length.
+ */
+export function closestRange(content: string, oldString: string): { start: number; end: number; ratio: number; certain: boolean } | null {
+  const needle = canonicalForMatch(oldString).text;
+  if (needle.length < MIN_PASSAGE_HINT_CHARS) return null;
+  const head = needle.slice(0, PASSAGE_HINT_NEEDLE_CHARS);
+  const haystack = canonicalForMatch(content);
+  if (haystack.text.length * head.length > PASSAGE_HINT_BUDGET) return null;
+  const match = approximateMatch(head, haystack.text);
+  if (!match || match.ratio < PASSAGE_HINT_RATIO || match.end <= match.start) return null;
+  let end = match.end;
+  let ratio = match.ratio;
+  let certain = true;
+  if (needle.length > head.length) {
+    // Where the tail lands, searched just past the head.
+    const tail = needle.slice(-PASSAGE_HINT_NEEDLE_CHARS);
+    const to = Math.min(haystack.text.length, match.start + Math.ceil(needle.length * 1.25) + 50);
+    const tailMatch = approximateMatch(tail, haystack.text.slice(match.start, to));
+    if (tailMatch && tailMatch.ratio >= PASSAGE_HINT_RATIO && match.start + tailMatch.end > match.end) {
+      end = match.start + tailMatch.end;
+      ratio = Math.min(ratio, tailMatch.ratio);
+    } else {
+      end = Math.min(haystack.text.length, match.end + needle.length - head.length);
+      certain = false;
+    }
+  }
+  return { start: haystack.starts[match.start], end: haystack.ends[Math.max(match.start, end - 1)], ratio, certain };
+}
+
+/** Widen [start, end) so it does not cut a word in half. */
+function widenToWords(content: string, start: number, end: number) {
+  const word = /[\p{L}\p{N}\p{M}_]/u;
+  while (start > 0 && word.test(content[start - 1]) && word.test(content[start])) start--;
+  while (end < content.length && end > 0 && word.test(content[end - 1]) && word.test(content[end])) end++;
+  return { start, end };
+}
+
 /**
  * Where old_string most nearly occurs, for the not-found error: the passage
  * with the fewest differing characters, as numbered lines to copy from. Only
- * a hint; edits themselves never match approximately.
+ * a hint; Edit never matches approximately. `range` is set when the whole
+ * passage is shown and its ends are known, so ApplyEdit can replace it.
  */
-function closestPassage(content: string, oldString: string) {
-  const needle = canonicalForMatch(oldString).text;
-  if (needle.length < MIN_PASSAGE_HINT_CHARS) return null;
-  const compared = needle.slice(0, PASSAGE_HINT_NEEDLE_CHARS);
-  const haystack = canonicalForMatch(content);
-  if (haystack.text.length * compared.length > PASSAGE_HINT_BUDGET) return null;
-  const match = approximateMatch(compared, haystack.text);
-  if (!match || match.ratio < PASSAGE_HINT_RATIO || match.end <= match.start) return null;
-  const endIndex = Math.min(haystack.text.length, match.end + needle.length - compared.length) - 1;
-  const start = haystack.starts[match.start];
-  const end = haystack.ends[Math.max(match.start, endIndex)];
+function closestPassage(content: string, oldString: string): { text: string; range: { start: number; end: number } | null } | null {
+  const found = closestRange(content, oldString);
+  if (!found) return null;
   const lines = splitLines(content);
-  const first = lineOfOffset(content, start);
-  const last = Math.min(lines.length, lineOfOffset(content, end), first + 40);
-  const percent = Math.round(match.ratio * 100);
-  return `\nThe closest passage (about ${percent}% the same) is at ${first === last ? `line ${first}` : `lines ${first}-${last}`}. If it is the text you mean, copy old_string from it exactly:\n${lines.slice(first - 1, last).map((line, index) => numberLine(first + index, line)).join("\n")}`;
+  const first = lineOfOffset(content, found.start);
+  const lastOfRange = lineOfOffset(content, found.end - 1);
+  const last = Math.min(lines.length, lastOfRange, first + PASSAGE_HINT_MAX_LINES - 1);
+  const percent = Math.round(found.ratio * 100);
+  const text = `\nThe closest passage (about ${percent}% the same) is at ${first === last ? `line ${first}` : `lines ${first}-${last}`}. If it is the text you mean, copy old_string from it exactly:\n${lines.slice(first - 1, last).map((line, index) => numberLine(first + index, line)).join("\n")}`;
+  return { text, range: found.certain && last === lastOfRange ? widenToWords(content, found.start, found.end) : null };
 }
 
 export function closestLines(content: string, oldString: string) {
   const passage = closestPassage(content, oldString);
-  if (passage) return passage;
+  if (passage) return passage.text;
   const firstLine = oldString.split(/\r?\n/).map((line) => line.trim()).find(Boolean);
   if (!firstLine) return "";
   const lines = splitLines(content);
@@ -1097,7 +1144,6 @@ Usage:
   },
   describe: (args, t) => args.file_path === undefined || args.file_path === null ? t("tools.edit.describeUnknown") : t("tools.edit.describe", { path: String(args.file_path) }),
   async run(args, context) {
-    const t = agentT(context);
     const resolved = await resolve(context, requireString(args, "file_path"));
     const oldString = requireString(args, "old_string", { allowEmpty: true });
     const newString = requireString(args, "new_string", { allowEmpty: true });
@@ -1115,30 +1161,113 @@ Usage:
     if (oldString === newString) throw new ToolError("old_string and new_string are identical; there is nothing to change.");
     const target = findEditTarget(current.content, oldString, newString);
     if (!target.matches.length) {
-      throw new ToolError(`old_string was not found in ${resolved.path}. Check whitespace and line breaks, and copy the text from your latest Read without line numbers.${closestLines(current.content, oldString)}`);
+      throw new ToolError(`old_string was not found in ${resolved.path}. Check whitespace and line breaks, and copy the text from your latest Read without line numbers.${notFoundHint(context, resolved.path, current.content, oldString, newString, replaceAll)}`);
     }
     if (target.matches.length > 1 && !replaceAll) {
       const lines = target.matches.slice(0, 10).map((match) => lineOfOffset(current.content, match.index));
       throw new ToolError(`old_string matches ${target.matches.length} places in ${resolved.path} (lines ${lines.join(", ")}${target.matches.length > 10 ? ", …" : ""}). Add surrounding lines to make it unique, or set replace_all to true.`);
     }
-    const replacement = current.content.includes("\r\n") ? target.newString.replace(/\r?\n/g, "\r\n") : target.newString;
-    let next = "";
-    let cursor = 0;
-    for (const match of replaceAll ? target.matches : target.matches.slice(0, 1)) {
-      next += current.content.slice(cursor, match.index) + replacement;
-      cursor = match.index + match.length;
+    return replaceMatches(context, resolved, current, replaceAll ? target.matches : target.matches.slice(0, 1), target.newString, target.note);
+  },
+  previewDiff: (args) => typeof args.old_string === "string" && typeof args.new_string === "string"
+    ? { removed: args.old_string, added: args.new_string }
+    : undefined,
+};
+
+/** Replace each match with newString (in the file's line endings) and write the file. */
+async function replaceMatches(context: ToolContext, resolved: ResolvedPath, current: { content: string; fromDraft: boolean; shared?: ResolvedDoc }, matches: Match[], newString: string, note?: string): Promise<ToolResult> {
+  const t = agentT(context);
+  const replacement = current.content.includes("\r\n") ? newString.replace(/\r?\n/g, "\r\n") : newString;
+  let next = "";
+  let cursor = 0;
+  for (const match of matches) {
+    next += current.content.slice(cursor, match.index) + replacement;
+    cursor = match.index + match.length;
+  }
+  next += current.content.slice(cursor);
+  const suggested = await writeAgentFile(context, resolved, next, current);
+  const firstStart = matches[0].index;
+  const count = matches.length;
+  const snippet = snippetAround(next, firstStart, firstStart + replacement.length);
+  if (suggested) {
+    const text = [suggestionNote(resolved, suggested), note, `Proposed region (the file still reads as before):\n${snippet}`].filter(Boolean).join("\n");
+    return ok(text, t("tools.edit.suggested"), snippet);
+  }
+  const text = [`Edited ${resolved.path}${count > 1 ? ` (${count} replacements)` : ""}.`, note, `Edited region:\n${snippet}`].filter(Boolean).join("\n");
+  return ok(text, count > 1 ? t("tools.edit.replacements", { count }) : t("tools.edit.edited"), snippet);
+}
+
+/** Pending edits kept per run; older ones are dropped past this. */
+const MAX_PENDING_EDITS = 5;
+
+function quoteEnd(text: string, fromStart: boolean) {
+  const flat = text.replace(/\s+/g, " ").trim();
+  if (flat.length <= 40) return `“${flat}”`;
+  return fromStart ? `“${flat.slice(0, 30)}…”` : `“…${flat.slice(-30)}”`;
+}
+
+/**
+ * The not-found hint for Edit. When the closest passage is shown whole, the
+ * edit is kept under an id: if that passage is what the model meant,
+ * ApplyEdit puts new_string there without the model sending it again.
+ */
+function notFoundHint(context: ToolContext, filePath: string, content: string, oldString: string, newString: string, replaceAll: boolean) {
+  const passage = closestPassage(content, oldString);
+  if (!passage) return closestLines(content, oldString);
+  if (!passage.range || replaceAll) return passage.text;
+  const { start, end } = passage.range;
+  const store = context.pendingEdits ??= { next: 1, edits: new Map() };
+  const id = `edit-${store.next++}`;
+  store.edits.set(id, { path: filePath, hash: hashContent(content), start, end, removed: content.slice(start, end), newString });
+  while (store.edits.size > MAX_PENDING_EDITS) store.edits.delete(store.edits.keys().next().value!);
+  const removed = content.slice(start, end);
+  const firstLine = lineOfOffset(content, start);
+  const lastLine = lineOfOffset(content, end - 1);
+  const span = firstLine === lastLine
+    ? `${quoteEnd(removed, true)} on line ${firstLine}${removed.replace(/\s+/g, " ").trim().length > 40 ? ` through ${quoteEnd(removed, false)}` : ""}`
+    : `${quoteEnd(removed, true)} on line ${firstLine} through ${quoteEnd(removed, false)} on line ${lastLine}`;
+  return `${passage.text}\nIf that passage is what you meant to replace, call ApplyEdit with edit_id "${id}" instead: it replaces the passage from ${span} with your new_string, so you do not send it again. Check the passage first; if it is not the text you meant, retry Edit instead.`;
+}
+
+const applyEditTool: AgentTool = {
+  name: "ApplyEdit",
+  kind: "write",
+  description: `Applies an Edit whose old_string was not found to the closest passage that Edit's error showed, using the new_string you already sent.
+
+Usage:
+- Use only an edit_id from an Edit error in this conversation, and only when the passage that error showed is the text you meant to replace. It replaces exactly that passage, which differs from your old_string; new_string is used as you sent it.
+- If the passage is not what you meant, do not use the id: retry Edit with old_string copied from the file.
+- An edit_id works once, and only while the file is unchanged since the error.`,
+  parameters: {
+    type: "object",
+    properties: {
+      edit_id: { type: "string", description: "The edit_id from the Edit error, e.g. \"edit-1\"." },
+    },
+    required: ["edit_id"],
+    additionalProperties: false,
+  },
+  describe: (_args, t) => t("tools.applyEdit.describe"),
+  previewDiff: (args, context) => {
+    const pending = typeof args.edit_id === "string" ? context.pendingEdits?.edits.get(args.edit_id) : undefined;
+    return pending ? { removed: pending.removed, added: pending.newString } : undefined;
+  },
+  async run(args, context) {
+    const id = requireString(args, "edit_id");
+    const pending = context.pendingEdits?.edits.get(id);
+    if (!pending) throw new ToolError(`There is no pending edit "${id}". An edit_id comes from an Edit error in this conversation and works once; make the change with Edit.`);
+    context.pendingEdits!.edits.delete(id);
+    const resolved = await resolve(context, pending.path);
+    assertWritable(context, resolved, { creating: false });
+    const sharedDoc = await assertSharedWritable(context, resolved);
+    const current = await readCurrentText(context, resolved);
+    if (!current) return missingFileError(context, resolved);
+    if (sharedDoc && !current.shared) await readSharedText(resolved.path, { doc: sharedDoc }).catch(sharedToolError);
+    const state = context.fileState.get(resolved.path);
+    if (hashContent(current.content) !== pending.hash || state?.hash !== pending.hash) {
+      throw new ToolError(`${resolved.path} changed since ${id} was offered, so it was not applied. Read the file again and make the change with Edit.`);
     }
-    next += current.content.slice(cursor);
-    const suggested = await writeAgentFile(context, resolved, next, current);
-    const firstStart = target.matches[0].index;
-    const count = replaceAll ? target.matches.length : 1;
-    const snippet = snippetAround(next, firstStart, firstStart + replacement.length);
-    if (suggested) {
-      const text = [suggestionNote(resolved, suggested), target.note, `Proposed region (the file still reads as before):\n${snippet}`].filter(Boolean).join("\n");
-      return ok(text, t("tools.edit.suggested"), snippet);
-    }
-    const text = [`Edited ${resolved.path}${count > 1 ? ` (${count} replacements)` : ""}.`, target.note, `Edited region:\n${snippet}`].filter(Boolean).join("\n");
-    return ok(text, count > 1 ? t("tools.edit.replacements", { count }) : t("tools.edit.edited"), snippet);
+    return replaceMatches(context, resolved, current, [{ index: pending.start, length: pending.end - pending.start }], pending.newString,
+      `Replaced the closest passage to your old_string (${id}).`);
   },
 };
 
@@ -1309,7 +1438,7 @@ Usage:
 };
 
 // References and ReadComments are read-only, so every permission gets them.
-export const ALL_TOOLS: AgentTool[] = [globTool, grepTool, readTool, readCommentsTool, editTool, writeTool, taskCreateTool, taskUpdateTool, skillTool, referencesTool];
+export const ALL_TOOLS: AgentTool[] = [globTool, grepTool, readTool, readCommentsTool, editTool, applyEditTool, writeTool, taskCreateTool, taskUpdateTool, skillTool, referencesTool];
 
 export function toolsForPermission(permission: AgentPermission) {
   return ALL_TOOLS.filter((tool) => tool.kind === "read" || permission !== "read-only");

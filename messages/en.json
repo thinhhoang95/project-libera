@@ -8061,6 +8061,9 @@
         "replacements": "{count, plural, one {# replacement} other {# replacements}}",
         "edited": "Edited"
       },
+      "applyEdit": {
+        "describe": "Applying the edit to the closest passage"
+      },
       "write": {
         "describe": "Writing {path}",
         "describeUnknown": "Writing a file",

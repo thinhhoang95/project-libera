@@ -99,9 +99,8 @@ async function runPrepared(prepared: PreparedCall, context: ToolContext, emit: (
   const name = tool?.name ?? call.function.name;
   const t = agentT(context);
   const summary = tool && !prepared.error ? tool.describe(prepared.args, t) : t("runner.calling", { name });
-  const diff = tool?.name === "Edit" && typeof prepared.args.old_string === "string" && typeof prepared.args.new_string === "string"
-    ? { removed: shorten(prepared.args.old_string, 4_000), added: shorten(prepared.args.new_string, 4_000) }
-    : undefined;
+  const preview = tool && !prepared.error ? tool.previewDiff?.(prepared.args, context) : undefined;
+  const diff = preview ? { removed: shorten(preview.removed, 4_000), added: shorten(preview.added, 4_000) } : undefined;
   emit({ type: "tool_started", id: call.id, name, summary, ...(diff ? { diff } : {}) });
   if (prepared.error || !tool) {
     const message = prepared.error ?? "Unknown tool.";

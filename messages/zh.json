@@ -8061,6 +8061,9 @@
         "replacements": "{count, plural, other {# 处替换}}",
         "edited": "已编辑"
       },
+      "applyEdit": {
+        "describe": "将编辑应用到最接近的段落"
+      },
       "write": {
         "describe": "正在写入 {path}",
         "describeUnknown": "正在写入文件",
