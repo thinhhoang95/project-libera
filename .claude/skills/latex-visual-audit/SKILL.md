@@ -93,6 +93,9 @@ widgets.ts (not just the diff) once per round: every `WidgetType` subclass must 
 click it. Any widget lacking one is a bug to fix on the round branch, since the user could not edit that command.
 
 Compare `out-base/summary.txt` with `out-merged/summary.txt`. If a merge broke a test, fix it on the round branch.
+Read each agent's `git diff --stat` before merging: round 10's front-matter agent committed a debug test file. Build
+times in the summaries are only comparable under the same load (another session's collab tests made every file ~4.5×
+slower in round 10); to judge a slowdown, time a few papers back to back from the main checkout and the round worktree.
 Check a couple of the papers in the running app if a dev server is available.
 
 ## 6. Write up

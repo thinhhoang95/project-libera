@@ -203,3 +203,61 @@ Notable: hep-ex 2611.16454 (ATLAS: 15 collaboration style files with kvoptions b
 astro-ph.SR 2611.19628 (AASTeX 7 authors in an `\input` file, footnotes inside `\citep` notes), astro-ph.HE 2611.21043 (REVTeX
 bbl with `\natexlab`), math.QA 2611.13129 (`\mathchar'26` barred d), eess.SP 2611.19192 (user environments wrapping floats).
 50 were asked for; arXiv's listing API hung and 14 small categories came back empty (see the write-up).
+
+## 2026-11-19, round 10 (50 papers, docs/audits/2026-11-19-latex-visual-paper-review-10.md)
+
+- astro-ph.IM: 2611.19899
+- cond-mat.dis-nn: 2611.14200
+- cond-mat.other: 2611.01099
+- cond-mat.quant-gas: 2611.07657
+- cond-mat.supr-con: 2611.12476
+- cs.AR: 2611.19101
+- cs.CG: 2611.00364
+- cs.DM: 2611.13813
+- cs.FL: 2610.23463
+- cs.GR: 2611.08763
+- cs.IR: 2611.19106
+- cs.MA: 2611.19054
+- cs.MS: 2610.07867
+- cs.NE: 2611.08483
+- cs.SC: 2610.02934
+- cs.SD: 2611.14774
+- cs.SI: 2611.09126
+- eess.AS: 2611.12375
+- eess.IV: 2611.15670
+- math.AC: 2611.10064
+- math.AT: 2611.11463
+- math.GN: 2610.31059
+- math.HO: 2610.08565
+- math.KT: 2610.27016
+- math.SG: 2611.04089
+- math.SP: 2611.09610
+- nlin.AO: 2610.25113
+- nlin.CD: 2610.35979
+- nlin.PS: 2610.37990
+- nlin.SI: 2610.32149
+- nucl-ex: 2611.08473
+- physics.acc-ph: 2610.25648
+- physics.ao-ph: 2611.09573
+- physics.app-ph: 2611.12588
+- physics.atom-ph: 2611.07764
+- physics.bio-ph: 2611.05428
+- physics.class-ph: 2610.26075
+- physics.data-an: 2611.00103
+- physics.geo-ph: 2610.38921
+- physics.hist-ph: 2609.14600
+- physics.ins-det: 2611.12369
+- physics.med-ph: 2611.05340
+- physics.soc-ph: 2611.10574
+- physics.space-ph: 2610.30517
+- q-bio.BM: 2610.24806
+- q-bio.GN: 2610.17699
+- q-bio.QM: 2611.04037
+- q-fin.CP: 2610.16524
+- q-fin.PR: 2607.17502
+- q-fin.ST: 2610.13044
+
+Notable: nlin.SI 2610.32149 (`\def\equationautorefname~#1\null` blanked the document), physics.med-ph 2611.05340 (4300
+`\csname` data macros, `\@ifundefined`), nucl-ex 2611.08473 (ALICE: `cernphprep` title page, own `orcidlink.sty`, 950 iD marks),
+physics.space-ph 2610.30517 (AGU `agujournal2019`), physics.ins-det 2611.12369 (IOP `iopjournal`), cs.DM 2611.13813 (`\def\PRoof` used
+as an environment, `\def\[`), physics.hist-ph 2609.14600 (book with `subappendices`, `\label{LISTING\thelstlisting}`).
