@@ -217,7 +217,7 @@ function scanRig(root: string, entries: WalkEntry[], layout: Record<string, Part
     state: { layout, externalAdoptionRequired: false },
     stopped: false, missingSince: new Map(), baselineMissing: new Set(), verified: new Map(), entries: new Map(), docs: new Map(), retired: new Map(),
     dirtyPaths: new Set(), verifyAll: true,
-    manifestReady: () => true, rootAvailable: async () => true, noticeMissedEvents: () => {}, readEntries: () => new Map(),
+    manifestReady: () => true, manifestCaughtUp: () => true, rootAvailable: async () => true, noticeMissedEvents: () => {}, readEntries: () => new Map(),
     walk: async () => ({ entries, skipped: [], complete: true }),
     scheduleScan: () => {}, scheduleRetry: () => {}, saveSoon: () => {}, createFromDisk: async () => null,
   });

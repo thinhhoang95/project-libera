@@ -77,6 +77,7 @@ function rig(root: string, entries: WalkEntry[], options: { fence?: boolean; wal
     dirtyPaths: new Set(),
     verifyAll: false,
     manifestReady: () => true,
+    manifestCaughtUp: () => true,
     rootAvailable: async () => true,
     noticeMissedEvents: () => {},
     readEntries: () => new Map(),

@@ -511,8 +511,9 @@ export class SharedProject {
       }),
       hub.onStatus(() => {
         if (this.noteCaughtUp(hub)) {
-          // The manifest is the gate for every document's write too.
+          // The manifest is the gate for every document's write too, and for the scan.
           this.scheduleManifest(30);
+          this.scheduleScan(30);
           for (const runtime of this.docs.values()) this.scheduleWrite(runtime);
         }
         if (!this.manifestWasReady && this.manifestReady()) this.scheduleManifest(30);
@@ -2188,6 +2189,10 @@ export class SharedProject {
   /** Turns differences between the folder and the layout into document edits and manifest operations. */
   private async scan(): Promise<void> {
     if (!this.manifestReady() || this.follower) { this.missingSince.clear(); return; }
+    // Judged against a cached manifest older than the server's, a file the
+    // server already has looks new and one it moved looks deleted. The
+    // manifest's catch-up schedules a scan (status listener in start()).
+    if (!this.manifestCaughtUp()) { this.missingSince.clear(); return; }
     if (!(await this.rootAvailable())) {
       this.missingSince.clear();
       return;
