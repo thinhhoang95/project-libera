@@ -37,7 +37,7 @@ import { InvalidUpdateError, Room, SERVER_ORIGIN } from "./room.js";
 import { Session, type OpenDoc } from "./session.js";
 import { findPersisted, loadDocument, persistUpdate, UpdateAccessChangedError, type PersistInput } from "./store.js";
 import { SyncTimings } from "./timings.js";
-import { actorForUpdate, annotationViolation, manifestViolation, sanitizeProvenance } from "./validate.js";
+import { actorForUpdate, annotationViolation, manifestViolation, newManifestReferences, sanitizeProvenance, type ManifestReferences } from "./validate.js";
 
 /** An unwritten PDF document younger than this is a client that just opened one; it stays. */
 const EMPTY_PDF_GRACE_MS = 10 * 60_000;
@@ -377,6 +377,19 @@ export class SyncServer {
         room.discardShadow(subdoc);
         return session.sendReject(message, "invalid-update", violation);
       }
+      // An entry that points at a document or blob this project does not have
+      // could never be opened by a client (finding 35). Only references this
+      // update introduces are looked up.
+      if (room.projectKind === "notebook") {
+        const references = newManifestReferences(room.shadow(subdoc), changed, room.live(subdoc));
+        let unresolved: string | null;
+        try { unresolved = await this.unresolvedReference(room.projectId, references); }
+        catch (error) { room.discardShadow(subdoc); throw error; }
+        if (unresolved) {
+          room.discardShadow(subdoc);
+          return session.sendReject(message, "invalid-update", unresolved);
+        }
+      }
       const previousFiles = manifestFileIdsAfter(room.live(subdoc));
       const addedFiles = [...manifestFileIdsAfter(room.shadow(subdoc))].filter((id) => !previousFiles.has(id));
       if (addedFiles.length) {
@@ -447,6 +460,31 @@ export class SyncServer {
       session,
     );
     stopFanout();
+  }
+
+  /**
+   * A message naming the first newly referenced document or blob that does not
+   * belong to the project (or whose document kind differs from the entry's), or
+   * null. A deleted document passes here: the deleted-document check names it.
+   */
+  private async unresolvedReference(projectId: string, references: ManifestReferences): Promise<string | null> {
+    if (references.docs.size > 0) {
+      const rows = await this.context.db.selectFrom("documents").select(["id", "kind"])
+        .where("project_id", "=", projectId).where("id", "in", [...references.docs.keys()]).execute();
+      const found = new Map(rows.map((row) => [row.id, row.kind]));
+      for (const [id, kind] of references.docs) {
+        const actual = found.get(id);
+        if (actual === undefined) return `files: document ${id} is not a document of this project.`;
+        if (actual !== kind) return `files: document ${id} is a ${actual} document, not ${kind}.`;
+      }
+    }
+    if (references.blobs.size > 0) {
+      const rows = await this.context.db.selectFrom("blobs").select("hash")
+        .where("project_id", "=", projectId).where("hash", "in", [...references.blobs]).execute();
+      const found = new Set(rows.map((row) => row.hash));
+      for (const hash of references.blobs) if (!found.has(hash)) return `files: blob ${hash} has not been uploaded to this project.`;
+    }
+    return null;
   }
 
   /**

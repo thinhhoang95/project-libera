@@ -9,11 +9,8 @@
 
 import type * as Y from "yjs";
 
-import { isPlainId, ManifestKeys, manifestPathKey, MAX_SEGMENT_BYTES, utf8ByteLength, type DocKind, type ManifestEntry, type ManifestEntryKind } from "../../../src/lib/collab/protocol/schema";
+import { ManifestKeys, manifestEntryShapeError, manifestPathKey, MAX_SEGMENT_BYTES, utf8ByteLength, type DocKind, type ManifestEntry, type ManifestEntryKind } from "../../../src/lib/collab/protocol/schema";
 import { isShareablePath } from "./fs-ops";
-
-const ENTRY_KINDS: readonly ManifestEntryKind[] = ["doc", "blob", "folder"];
-const DOC_KINDS: readonly DocKind[] = ["markdown", "latex", "text"];
 
 /** Reads and validates the manifest's files map. Malformed records are skipped. */
 export function readManifest(doc: Y.Doc): Map<string, ManifestEntry> {
@@ -27,17 +24,12 @@ export function readManifest(doc: Y.Doc): Map<string, ManifestEntry> {
 }
 
 function parseEntry(fileId: string, value: unknown): ManifestEntry | null {
-  if (typeof value !== "object" || value === null) return null;
-  // Ids become file names (base files), so a malformed one is never trusted.
-  if (!isPlainId(fileId)) return null;
+  if (manifestEntryShapeError(fileId, value) !== null) return null;
   const record = value as Record<string, unknown>;
-  if (typeof record.path !== "string" || !ENTRY_KINDS.includes(record.kind as ManifestEntryKind)) return null;
   const kind = record.kind as ManifestEntryKind;
-  if (kind === "doc" && (!isPlainId(record.docId) || !DOC_KINDS.includes(record.docKind as DocKind))) return null;
-  if (kind === "blob" && (typeof record.blobHash !== "string" || !/^[0-9a-f]{64}$/.test(record.blobHash))) return null;
   return {
     fileId,
-    path: record.path,
+    path: record.path as string,
     kind,
     ...(kind === "doc" ? { docId: record.docId as string, docKind: record.docKind as DocKind } : {}),
     ...(kind === "blob" ? { blobHash: record.blobHash as string } : {}),
