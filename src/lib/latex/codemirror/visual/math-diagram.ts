@@ -209,6 +209,15 @@ function readTikzArrow(text: string, from: number): { arrow: Arrow; end: number 
     if (!group) return null;
     options = splitOptions(group.content);
     end = group.end;
+    // The older `\arrow[hook]{r}{f}`: options, then the direction and the label in groups (2611.09610).
+    const next = skipSpaces(text, end);
+    const direction = text[next] === "{" ? readGroup(text, next) : null;
+    if (direction && DIRECTIONS.test(direction.content.trim())) {
+      options.push(direction.content.trim());
+      end = direction.end;
+      const label = readGroup(text, skipSpaces(text, end));
+      if (label) { older = label.content; end = label.end; }
+    }
   } else if (text[at] === "{") {
     const group = readGroup(text, at);
     if (!group) return null;

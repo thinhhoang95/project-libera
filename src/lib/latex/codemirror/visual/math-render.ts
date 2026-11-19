@@ -27,6 +27,9 @@ export const KATEX_MACROS: Record<string, string> = {
   // LaTeX's text box and old slanted switch in formulas (`$\left[ \mbox{UNK} \right]$`, `$\text{\sl N}$`).
   "\\mbox": "\\text{#1}",
   "\\sl": "\\it",
+  // The Scandinavian slashed o in a formula (`$(A,\o)$` with its `\newcommand{\o}` commented out, 2611.10064): LaTeX sets the letter.
+  "\\o": "\\text{ø}",
+  "\\O": "\\text{Ø}",
   // LaTeX 2e's font switches in a text box (`\text{\normalfont (EGCC)}`, `\text{\itshape for all}`, 2611.14951), as the old
   // two-letter switches KaTeX has. `\mdseries` and `\scshape` have none: those formulas stay source.
   "\\normalfont": "\\rm", "\\upshape": "\\rm", "\\rmfamily": "\\rm",
@@ -864,8 +867,16 @@ export function forKatex(latex: string) {
   if (out.includes("\\ensuremath")) out = ensuremathInText(out);
   out = colorsForKatex(out);
   out = siunitxForKatex(out);
+  // extarrows' long arrows with room for labels (`\xlongrightarrow{j^*}`, 2610.27016): KaTeX's stretchy arrows, which take the same `[below]{above}`.
+  if (out.includes("\\x")) out = out.replace(EXTARROWS, (_, name: string) => EXTARROWS_MAP[name]);
   return out;
 }
+
+const EXTARROWS_MAP: Record<string, string> = {
+  "\\xlongrightarrow": "\\xrightarrow", "\\xlongleftarrow": "\\xleftarrow", "\\xLongrightarrow": "\\xRightarrow", "\\xLongleftarrow": "\\xLeftarrow",
+  "\\xlongleftrightarrow": "\\xleftrightarrow", "\\xLongleftrightarrow": "\\xLeftrightarrow",
+};
+const EXTARROWS = new RegExp(`(${Object.keys(EXTARROWS_MAP).map((name) => name.replace("\\", "\\\\")).join("|")})(?![A-Za-z@])`, "g");
 
 /** The class of a part of a formula shown as its source (a row KaTeX rejects): the one `\htmlClass` KaTeX is trusted with. */
 const SOURCE_CLASS = "cm-vis-math-source";
