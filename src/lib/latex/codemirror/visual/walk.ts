@@ -433,6 +433,9 @@ const THEOREM_STYLE_CLASSES ={ plain: "cm-vis-thm-plain", definition: "cm-vis-th
 /** Layout commands in user environment code that draw nothing worth showing. */
 const LAYOUT_NOISE = /\\(?:begingroup|endgroup|par|noindent|indent|medskip|smallskip|bigskip|hfill|vfill|null|ignorespaces|unskip|relax|nopagebreak|newline|centering|raggedright|raggedleft|normalfont|itshape|upshape|bfseries|mdseries|rmfamily|sffamily|ttfamily)(?![A-Za-z])|\\[vh]space\*?\s*\{[^}]*\}|\\color\s*\{\s*black\s*\}|\\(?:begin|end)\s*\{[^}]*\}(?:\[[^\]]*\])?|\\item(?:\[([^\]]*)\])?/g;
 
+/** IOP's back-matter commands and the headings they print. */
+const IOP_BACK_MATTER: Record<string, string> = { ack: "Acknowledgments", funding: "Funding", data: "Data availability statement" };
+
 /** What a reference list is headed: the book classes' "Bibliography", else "References". */
 function bibliographyHeading(defs: LatexDefinitions) {
   return /^(?:book|report|memoir|scrbook|scrreprt)$/.test(defs.documentClass ?? "") ? "Bibliography" : "References";
@@ -765,7 +768,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
   // AASTeX's front matter, which the class prints without `\maketitle`: a title block over its lines. A walk that starts
   // inside them leaves them to the walk that draws the block.
   // (From the file's start without a body start: the run is the one right before the abstract, wherever that is.)
-  const aastexFront = AASTEX.test(defs.documentClass ?? "") ? aastexFrontMatterIn(doc, Math.max(0, env.preambleEnd), defs.documentClass!) : null;
+  const aastexFront = FRONT_RUN_CLASS.test(defs.documentClass ?? "") ? aastexFrontMatterIn(doc, Math.max(0, env.preambleEnd), defs.documentClass!) : null;
   const aastexTitle = aastexFront && aloneOnLines(doc, aastexFront.from, aastexFront.to) ? aastexFront : null;
   if (aastexTitle && aastexTitle.from < from && from < aastexTitle.to) consumed.push([aastexTitle.from, aastexTitle.to]);
 
@@ -1207,7 +1210,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       if (aastexTitle && ref.from === aastexTitle.from && ref.to <= aastexTitle.to && ref.from >= from) {
         const span = aloneOnLines(doc, aastexTitle.from, aastexTitle.to)!;
         consumed.push([span.from, span.to]);
-        if (structural) emit({ kind: "title", from: span.from, to: span.to, reveal: "strict", replaces: [{ from: span.from, to: span.to, block: true, widget: new TitleWidget(aastexTitle.title, aastexTitle.author, null, span.to - span.from, null, aastexTitle.notes) }] });
+        if (structural) emit({ kind: "title", from: span.from, to: span.to, reveal: "strict", replaces: [{ from: span.from, to: span.to, block: true, widget: new TitleWidget(aastexTitle.title, aastexTitle.author, null, span.to - span.from, null, aastexTitle.notes, aastexTitle.details) }] });
         return false;
       }
       // A node starting before an `\iffalse`'s `\fi` and running past it (`\iffalse \section{A} \fi more`): only what follows is drawn.
@@ -2551,6 +2554,19 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       if (span) {
         if (structural) emit({ kind: "env-header", from: span.from, to: span.to, reveal: "line", wholeLine: true, replaces: [{ from: span.from, to: span.to, widget: new EnvironmentHeaderWidget("abstract", "Acknowledgments", null, null, 0) }] });
         return false;
+      }
+    }
+    // IOP's back matter (physics.ins-det 2611.12369): `\ack{…}`, `\funding{…}` and `\data{…}` print a headed paragraph.
+    if (Object.hasOwn(IOP_BACK_MATTER, text.slice(1)) && defs.documentClass === "iopjournal" && !hasDirectError(node) && !macroAt(defs, text.slice(1), node.from)) {
+      const argument = commandArguments(node).find((arg) => !arg.optional);
+      const inner = argument && argumentInner(argument.node);
+      if (argument && inner && !read(state, ctrl.to, argument.node.from).trim()) {
+        emit({
+          kind: "style", from: node.from, to: node.to, reveal: "touch",
+          replaces: structural ? [{ from: node.from, to: inner.from, widget: new EnvironmentHeaderWidget("theorem", IOP_BACK_MATTER[text.slice(1)], null, null, 0, inner.from - node.from) }, { from: inner.to, to: node.to }] : [],
+          marks: [{ from: inner.from, to: inner.to, class: "cm-vis-acknowledgments" }],
+        });
+        return undefined;
       }
     }
     // biblatex's `\printbibliography[title=…]`: the References list, on its own lines only.
@@ -5108,7 +5124,16 @@ function frontMatterParts(text: string): { title: string | null; author: string 
 /** AASTeX's front matter commands: the title block's, its metadata (printed small or not at all), and space. */
 const AASTEX_DECLARATIONS = /^(?:title|shorttitle|shortauthors|author|affiliation|altaffiliation|email|correspondingauthor|collaboration|nocollaboration|received|revised|accepted|published|submitjournal|journalinfo|doi|watermark|setwatermarkfontsize|AuthorCollaborationLimit|keywords|vspace|vskip|and|thanks)$/;
 
-type AastexFrontMatter = { from: number; to: number; title: string | null; author: string | null; notes: Array<[string, string]> };
+/**
+ * The classes that print their title block from the commands before the abstract, with no `\maketitle`: AASTeX, AGU (`\authors`,
+ * `\affiliation{1}{…}`, `\correspondingauthor`, `keypoints`; physics.space-ph 2610.30517), IOP (`\author`, `\affil`, `\email`;
+ * physics.ins-det 2611.12369) and the Open Journal of Astrophysics (astro-ph.IM 2611.19899).
+ */
+const FRONT_RUN_CLASS = /^(?:aastex\d*|emulateapj|agujournal\d*|iopjournal|openjournal)$/;
+const AGU_DECLARATIONS = /^(?:title|authors|affiliation|correspondingauthor|authorrunninghead|journalname|vspace|vskip|thanks)$/;
+const IOP_DECLARATIONS = /^(?:articletype|title|author|affil|email|keywords|orcid|vspace|vskip|thanks|ead)$/;
+
+type AastexFrontMatter = { from: number; to: number; title: string | null; author: string | null; notes: Array<[string, string]>; details?: FrontDetailsView | null };
 
 /**
  * AASTeX's front matter (2611.08676), which the class prints without `\maketitle`: the run of `\title`, `\author[orcid=…]{…}`,
@@ -5118,6 +5143,9 @@ type AastexFrontMatter = { from: number; to: number; title: string | null; autho
  * something else comes right before the abstract, or the run has no title or author.
  */
 function aastexFrontMatter(text: string, documentClass: string, whole = false): AastexFrontMatter | null {
+  const agu = /^agujournal/.test(documentClass);
+  const iop = documentClass === "iopjournal";
+  const declarations = agu ? AGU_DECLARATIONS : iop ? IOP_DECLARATIONS : AASTEX_DECLARATIONS;
   type Declaration = { name: string; optional: string | null; groups: string[] };
   type Run = { start: number; end: number; items: Declaration[] };
   let run: Run | null = null;
@@ -5142,7 +5170,16 @@ function aastexFrontMatter(text: string, documentClass: string, whole = false): 
         end = group.end;
       }
     }
-    if (command && AASTEX_DECLARATIONS.test(command[1])) {
+    // AGU's `\begin{keypoints} \item … \end{keypoints}`: its items, one declaration.
+    const keypoints = agu && command?.[1] === "begin" && item.groups[0] === "keypoints" ? /\\end\s*\{keypoints\}/.exec(text.slice(end)) : null;
+    if (keypoints) {
+      end += keypoints.index + keypoints[0].length;
+      item.name = "keypoints";
+      item.groups = text.slice(start, end).replace(/^\\begin\s*\{keypoints\}/, "").replace(/\\end\s*\{keypoints\}$/, "").split(/\\item(?![A-Za-z@])/).slice(1).map((point) => stripTexComments(point).trim()).filter(Boolean);
+      run ??= { start, end, items: [] };
+      run.items.push(item);
+      run.end = end;
+    } else if (command && declarations.test(command[1])) {
       run ??= { start, end, items: [] };
       run.items.push(item);
       run.end = end;
@@ -5161,23 +5198,30 @@ function aastexFrontMatter(text: string, documentClass: string, whole = false): 
   run ??= held;
   if (!run) return null;
   // Before AASTeX 7 every `\email` is printed; since, only `\email[show]{…}`.
-  const allEmails = /^aastex6\d*$/.test(documentClass) || documentClass === "emulateapj";
+  const allEmails = /^aastex6\d*$/.test(documentClass) || documentClass === "emulateapj" || iop;
   let title: string | null = null;
   const authors: Array<{ name: string; places: string[] }> = [];
   const emails: string[] = [];
   const notes: Array<[string, string]> = [];
   const keywords: string[] = [];
+  // AGU's and IOP's affiliations are numbered lines after the authors, not each author's own.
+  const places: FrontDetailsView["places"] = [];
   for (const item of run.items) {
     const last = item.groups.at(-1);
     if (last === undefined) continue;
-    if (item.name === "title") title = last;
-    else if (item.name === "author") authors.push({ name: last, places: [] });
+    if (item.name === "title") title = last.replace(/\\vspace\*?\s*\{[^{}]*\}/g, "").trim();
+    else if (item.name === "authors") authors.push({ name: last, places: [] });
+    else if (item.name === "author") authors.push({ name: iop ? last.replace(/\\orcid\s*\{[^{}]*\}/g, "").trim() : last, places: [] });
+    else if (agu && item.name === "affiliation") places.push({ label: item.groups.length > 1 ? `${item.groups[0]} ` : "", latex: last, editable: false });
+    else if (iop && item.name === "affil") places.push({ label: "", latex: last, editable: false });
+    else if (item.name === "keypoints") item.groups.forEach((point, index) => notes.push([`Key Point ${index + 1}`, point]));
+    else if (item.name === "articletype") notes.push(["Article type", last]);
     else if (item.name === "affiliation" || item.name === "altaffiliation") {
       // An affiliation is its author's: one before any author is not read.
       if (!authors.length) return null;
       authors.at(-1)!.places.push(last);
     } else if (item.name === "email") { if (allEmails || /^\s*show\s*$/.test(item.optional ?? "")) emails.push(last); }
-    else if (item.name === "correspondingauthor") notes.push(["Corresponding author", last]);
+    else if (item.name === "correspondingauthor") notes.push(["Corresponding author", agu && item.groups.length > 1 ? `${item.groups[0]} (${last})` : last]);
     else if (item.name === "collaboration") notes.push(["Collaboration", last]);
     else if (item.name === "keywords") keywords.push(last);
   }
@@ -5186,7 +5230,7 @@ function aastexFrontMatter(text: string, documentClass: string, whole = false): 
   if (emails.length) notes.push([emails.length > 1 ? "Emails" : "Email", emails.join(", ")]);
   if (keywords.length) notes.push(["Keywords", keywords.join(", ")]);
   const author = authors.length ? authors.map(({ name, places }) => [name, ...places.map((place) => `{\\small ${place}}`)].join(" \\\\ ")).join(" \\and ") : null;
-  return { from: run.start, to: run.end, title, author, notes };
+  return { from: run.start, to: run.end, title, author, notes, details: places.length ? { subtitle: null, authorLines: [], places, notes: [] } : null };
 }
 
 /** AASTeX's front matter in the body (cached per document version), at document positions; null when there is none. */

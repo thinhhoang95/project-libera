@@ -103,7 +103,7 @@ function finish(text: string | null): string | null {
 }
 
 /** natbib's author-year label ends in `(1972)`, `(1972a)` or `(1972{\natexlab{a}})`. */
-export const AUTHOR_YEAR_LABEL = /\(\s*\d{4}(?:[a-z]|\{?\\natexlab\s*\{[a-z]?\}\}?)?\s*\)|\(\s*\)\}?\s*$/;
+export const AUTHOR_YEAR_LABEL = /\(\s*\d{4}(?:[a-z]|\{?\\natexlab\s*\{[a-z]?\}\}?)?\s*\)|[A-Za-z.}]\s*\(\s*\)/;
 
 /** The markup of REVTeX's `.bbl` entries. */
 export const REVTEX_ENTRY = /\\(?:bibinfo|bibfield|BibitemOpen|BibitemShut)(?![A-Za-z@])/;
