@@ -208,6 +208,11 @@ class FakeHost {
         return this.send(response, 200, { applied: true, text });
       }
     }
+    // Folder renames list the manifest's entries first (finding 15, P4c), to move per-file records.
+    if (request.method === "GET" && segments[0] === "projects" && segments[2] === "file-entries") {
+      const entries = [...this.docs.values()].map((doc) => ({ fileId: doc.fileId, path: doc.path.replace(/^Shared\//, ""), kind: "doc", docId: doc.docId, docKind: "markdown", updatedAt: 0 }));
+      return this.send(response, 200, { entries });
+    }
     if (request.method === "POST" && segments[0] === "projects" && segments[2] === "files") {
       if (!this.canModifyFiles) return this.send(response, 403, { error: { code: "forbidden", message: "Your role cannot add, rename or delete files." } });
       const op = body as FileOpRequest;
