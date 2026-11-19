@@ -170,7 +170,8 @@ function redefinedBrackets(input: Pick<Input, "length" | "read">) {
   const head = input.read(0, Math.min(input.length, PREAMBLE_LIMIT));
   if (head === lastBracketHead) return lastBracketKey;
   lastBracketHead = head;
-  lastBracketKey = head.includes("\\") && REDEFINED_BRACKETS.test(head) ? "[]" : "";
+  // A commented-out redefinition (`%\renewcommand{\[}{\begin{equation}}` in a template) leaves `\[ … \]` display math.
+  lastBracketKey = head.includes("\\") && REDEFINED_BRACKETS.test(head) && REDEFINED_BRACKETS.test(head.replace(/(^|[^\\])%[^\n]*/g, "$1")) ? "[]" : "";
   return lastBracketKey;
 }
 /** The input with `\[` and `\]` read as `\,` (a `\\` is skipped, so `\\[2pt]` stays a line break). */

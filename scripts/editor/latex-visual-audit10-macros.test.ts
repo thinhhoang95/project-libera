@@ -290,3 +290,16 @@ hello
   const { view, done } = await mountText(doc);
   try { assert.ok(!(view.contentDOM.textContent ?? "").includes("\\begin{center}")); } finally { done(); }
 });
+
+test("a commented-out redefinition of \\[ leaves \\[ … \\] display math; a real one does not (cs.DM 2611.13813)", () => {
+  const brackets = (preamble: string) => {
+    const doc = `\\documentclass{article}\n${preamble}\n\\begin{document}\nSee \\[ x^2 \\] here.\n\\end{document}\n`;
+    const state = EditorState.create({ doc, extensions: [latexLanguageSupport("main.tex", "tree")] });
+    const tree = ensureSyntaxTree(state, doc.length, 5000)!;
+    let found = false;
+    tree.iterate({ enter: (node) => { if (node.name === "BracketMath") found = true; } });
+    return found;
+  };
+  assert.equal(brackets("%\\def\\[{\\left[}\n% \\renewcommand{\\]}{\\right]}"), true);
+  assert.equal(brackets("\\def\\[{\\left[}\n\\def\\]{\\right]}"), false);
+});
