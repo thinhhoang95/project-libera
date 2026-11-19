@@ -306,6 +306,8 @@ export function readSiunitx(source: string, at: number, config?: SiunitxConfig):
   const perMode = options.get("per-mode")?.trim() ?? "power";
   if (perMode !== "power" && perMode !== "symbol" && perMode !== "fraction") return null;
   const units = (text: string | null) => (text === null ? null : siunitxUnits(text, perMode, config));
+  // A quantity with an empty unit (`\qty{0.11}{}`, 2611.19101) is its number alone, as siunitx sets it.
+  const unitOfQuantity = (text: string | null) => (text !== null && !text.trim() ? { latex: "", close: true } : units(text));
   const quantity = (number: string, unit: { latex: string; close: boolean }) => {
     const shown = hasPlusMinus(number) && !unit.close ? `\\left(${number}\\right)` : number;
     return `${shown}${unit.close ? "" : "\\,"}${unit.latex}`;
@@ -337,7 +339,7 @@ export function readSiunitx(source: string, at: number, config?: SiunitxConfig):
   if (command === "SI" || command === "qty") {
     const number = group();
     const pre = command === "SI" ? optional() : null;
-    const unit = units(group());
+    const unit = unitOfQuantity(group());
     const value = number === null ? null : siunitxNumber(number);
     const before = pre === null ? "" : units(pre)?.latex;
     if (value === null || !unit || before === undefined || before === null) return null;
@@ -345,7 +347,7 @@ export function readSiunitx(source: string, at: number, config?: SiunitxConfig):
   }
   if (command === "qtyproduct" || command === "numproduct") {
     const text = group();
-    const unit = command === "qtyproduct" ? units(group()) : null;
+    const unit = command === "qtyproduct" ? unitOfQuantity(group()) : null;
     if (text === null || (command === "qtyproduct" && !unit)) return null;
     const values = text.split(/\s*x\s*|\s*\\times\s*/).map((part) => siunitxNumber(part.trim()));
     if (values.length < 2 || values.some((value) => value === null)) return null;
@@ -358,7 +360,7 @@ export function readSiunitx(source: string, at: number, config?: SiunitxConfig):
   const first = group();
   const second = ranged ? group() : null;
   const withUnit = command.startsWith("SI") || command.startsWith("qty");
-  const unit = withUnit ? units(group()) : null;
+  const unit = withUnit ? unitOfQuantity(group()) : null;
   if (first === null || (ranged && second === null) || (withUnit && !unit)) return null;
   const values = (ranged ? [first, second!] : first.split(";")).map((part) => siunitxNumber(part.trim()));
   if (values.some((value) => value === null)) return null;
