@@ -6,6 +6,7 @@ import { mkdtemp, mkdir, readFile, rename, rm, stat, utimes, writeFile } from "n
 import path from "node:path";
 import os from "node:os";
 import { extractNotebookLinkDestinations, forgetNotebookLinkReads, resetNotebookLinkReadCache, setNotebookLinkClock } from "../../src/lib/storage/notebook-links";
+import { createSidebarSearchStore } from "../../src/components/libera/sidebar-search-store";
 import { getTree } from "../../src/lib/storage/tree";
 import { updateMarkdownFile } from "../../src/lib/storage/files";
 import { markdownLinkWorkspacePath } from "../../src/lib/markdown-file-links";
@@ -177,14 +178,14 @@ test("panel highlights related notebooks in both grouped and ungrouped sections"
   const noop = async () => {};
   const props: import("../../src/components/libera/notebook-panel").NotebookPanelProps = {
     tree, selectedNotebookName: "Alpha", activeTabId: "", expanded: new Set<string>(),
-    fileInteractions: {}, query: "", searchResults: [], uploadInputRef: { current: null },
+    fileInteractions: {}, searchStore: createSidebarSearchStore(), uploadInputRef: { current: null },
     onDuplicateMarkdown: noop, onCopyFile: noop, onArchiveFile: noop,
     onArchiveFolder: noop, onCreateFolder: noop, onCreateMarkdown: noop,
     onCreateSlides: noop, onCreateNotebook: noop, onCreateNotebookGroup: noop,
     onDeleteNotebook: noop, onDeleteNotebookGroup: noop, onDeleteFile: noop,
     onDeleteFolder: noop, onDownloadFile: noop, onDownloadNotebook: noop,
     onEditNotebook: noop, onEditNotebookGroup: noop, onMoveFile: noop,
-    onOpenFile: noop, onQueryChange: noop, onRenameFolder: noop, onRenameFile: noop,
+    onOpenFile: noop, onRenameFolder: noop, onRenameFile: noop,
     onSelectNotebook: noop, onSelectSearchResult: noop, onStartUpload: noop,
     onToggleFileStar: noop, onEditFileTags: noop, onToggleNotebook: noop, onUploadChange: noop,
     onUploadFiles: noop, onUpdateNotebookViewOptions: noop,
@@ -231,7 +232,7 @@ test("panel highlights files that link to the open file, with counts on collapse
   const noop = async () => {};
   const props = {
     tree, selectedNotebookName: "Alpha", activeTabId: "", expanded: new Set(["Alpha"]),
-    fileInteractions: {}, query: "", searchResults: [], uploadInputRef: { current: null },
+    fileInteractions: {}, searchStore: createSidebarSearchStore(), uploadInputRef: { current: null },
   } as unknown as import("../../src/components/libera/notebook-panel").NotebookPanelProps;
   const render = (activeTabId: string) => new JSDOM(renderToStaticMarkup(createElement(NotebookPanel,
     new Proxy({ ...props, activeTabId }, { get: (target, key) => key in target ? target[key as keyof typeof target] : noop }),

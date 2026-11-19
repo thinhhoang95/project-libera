@@ -1,4 +1,5 @@
 import type { FormEvent, RefObject } from "react";
+import type { SidebarSearchStore } from "./sidebar-search-store";
 import type { EditorScrollState } from "@/lib/reflow-scroll-anchor";
 import type { SynctexTextHint } from "@/lib/latex/synctex-text";
 import type { CitationSnippet } from "@/lib/references/occurrences";
@@ -363,11 +364,10 @@ export type LiberaWorkspace = {
   noteDialog: NoteDialogState | null;
   noteDialogSubmitting: boolean;
   password: string;
-  query: string;
+  sidebarSearch: SidebarSearchStore;
   fileInteractions: Record<string, string>;
   files: LiberaFileNode[];
   recentFiles: LiberaFileNode[];
-  searchResults: SearchResult[];
   selectedNotebook?: LiberaNotebookNode;
   selectedNotebookName: string;
   tabs: OpenTab[];
@@ -455,7 +455,6 @@ export type LiberaWorkspace = {
   setActiveTabId: (tabId: string) => void;
   setActiveTabViewState: (viewState: OpenTabViewState, tabId?: string) => void;
   setPassword: (password: string) => void;
-  setQuery: (query: string) => void;
   startScreenshotSnip: () => void;
   swapTabs: (sourceTabId: string, targetTabId: string) => void;
   startUpload: (notebook: string) => void;
