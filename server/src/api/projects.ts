@@ -328,16 +328,35 @@ export function registerProjectRoutes(app: FastifyInstance, context: ServerConte
       return { folderId: body.folderId, holder: taken.holder, granted: true, expiresAt: iso(taken.expires_at), ttlMs: grantedTtlMs, contended: taken.contended_at !== null };
     }
     // Held by another installation: remember that the folder has contenders,
-    // so its holder learns it at the next renewal.
+    // so its holder learns it at the next renewal. The timestamp is only ever
+    // read as set or not (the `contended` flag), so it is written once, not on
+    // every refused attempt; a refusal is a read, and tells the follower how
+    // long until the lease runs out so it asks again then.
     const current = await db
-      .updateTable("folder_leases")
-      .set({ contended_at: now })
+      .selectFrom("folder_leases")
+      .select(["holder", "expires_at", "contended_at"])
       .where("project_id", "=", projectId)
       .where("account_id", "=", accountId)
       .where("folder_id", "=", body.folderId)
-      .returning(["holder", "expires_at"])
       .executeTakeFirst();
-    return { folderId: body.folderId, holder: current?.holder ?? null, granted: false, expiresAt: current ? iso(current.expires_at) : null, contended: true };
+    if (current && current.contended_at === null) {
+      await db
+        .updateTable("folder_leases")
+        .set({ contended_at: now })
+        .where("project_id", "=", projectId)
+        .where("account_id", "=", accountId)
+        .where("folder_id", "=", body.folderId)
+        .where("contended_at", "is", null)
+        .execute();
+    }
+    return {
+      folderId: body.folderId,
+      holder: current?.holder ?? null,
+      granted: false,
+      expiresAt: current ? iso(current.expires_at) : null,
+      ...(current ? { retryAfterMs: Math.max(0, current.expires_at.getTime() - now.getTime()) } : {}),
+      contended: true,
+    };
   });
 
   app.delete(route(ApiRoutes.folderLease, "projectId"), async (request, reply) => {

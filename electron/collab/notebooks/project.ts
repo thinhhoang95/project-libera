@@ -444,7 +444,10 @@ export class SharedProject {
   }
 
   private diskGuard(finalizing = false): WriteGuard {
-    return { root: this.info.root, canCommit: async () => (finalizing || (!this.stopped && !this.follower)) && await this.rootAvailable() };
+    // Eligibility is asked again after the marker read: a lease that expired
+    // (or a role that changed) during a slow provider read never commits.
+    const eligible = () => finalizing || (!this.stopped && !this.follower);
+    return { root: this.info.root, canCommit: async () => eligible() && await this.rootAvailable() && eligible() };
   }
 
   // ------------------------------------------------------------ lifecycle

@@ -27,7 +27,7 @@ import type {
 } from "../../../src/lib/collab/local-api";
 import { stripPhotoMetadata } from "../../../src/lib/collab/photo-metadata";
 import { ControlRoutes } from "../../../src/lib/collab/local-api";
-import type { ProjectSummary } from "../../../src/lib/collab/protocol/api";
+import type { FolderLease, ProjectSummary } from "../../../src/lib/collab/protocol/api";
 import { EventKind } from "../../../src/lib/collab/protocol/messages";
 import { isRole, roleAtLeast, type Role } from "../../../src/lib/collab/protocol/roles";
 import {
@@ -75,10 +75,16 @@ export interface NotebookServiceOptions {
   shareSyncTimeoutMs?: number;
   /**
    * How long a synced folder's writer lease lasts unless renewed. Leases are
-   * renewed, and followers try to take over, every third of it; the same
-   * pass looks for shared folders that arrived through a sync client.
+   * renewed every third of it; a follower contests a held lease near its
+   * expiry. Renewal never waits for discovery.
    */
   leaseTtlMs?: number;
+  /**
+   * How often the library and gallery are scanned for shared folders that
+   * arrived through a sync client and stored projects are started or repaired
+   * (times the battery scale on battery). Default: twice the lease lifetime.
+   */
+  discoveryMs?: number;
   /**
    * How long a bound folder's sharing marker must stay missing before it is
    * restored from this installation's binding (a cloud provider may only be
@@ -170,6 +176,8 @@ interface ProjectHandle {
   leaseSupported: boolean;
   /** Conservative monotonic deadline, never extended by a failed renewal. */
   leaseDeadline?: number;
+  /** A follower refused the lease contests it again at this monotonic time (near the holder's expiry). */
+  nextContestAt?: number;
   /** A role change or reopen failed: no runtime until a later tick succeeds (retried with backoff). */
   restart?: { attempts: number; retryAt: number; stale?: SharedProject };
 }
@@ -281,10 +289,16 @@ export class NotebookServiceImpl implements NotebookService {
   private loading: Promise<void> | null = null;
   private readonly leaseTtlMs: number;
   private readonly markerRepairDelayMs: number;
+  private readonly discoveryMs: number;
   /** Bound roots whose marker is missing, and since when (see repairMissingMarker). */
   private readonly markerMissingSince = new Map<string, number>();
   private leaseTimer: ReturnType<typeof setInterval> | null = null;
   private ticking: Promise<void> | null = null;
+  /** Discovery (stored projects, markers) runs on its own timer; renewal never waits for it. */
+  private discoveryTimer: ReturnType<typeof setTimeout> | null = null;
+  private discovering: Promise<void> | null = null;
+  /** Lifecycle checks started by ticks (outside the renewal's own time budget); stop waits for them. */
+  private readonly lifecycleChecks = new Set<Promise<void>>();
   /** Between beforeAccountChange and accountChanged: no lease is renewed or taken. */
   private releasing = false;
   /** Folders being shared or joined right now: their marker is ours before the store knows it. */
@@ -306,6 +320,7 @@ export class NotebookServiceImpl implements NotebookService {
     this.shareSyncTimeoutMs = options.shareSyncTimeoutMs ?? 20_000;
     this.leaseTtlMs = options.leaseTtlMs ?? 60_000;
     this.markerRepairDelayMs = options.markerRepairDelayMs ?? 5 * 60_000;
+    this.discoveryMs = options.discoveryMs ?? Math.max(1000, this.leaseTtlMs * 2);
   }
 
   // ------------------------------------------------------------ lifecycle
@@ -318,6 +333,36 @@ export class NotebookServiceImpl implements NotebookService {
     if (!this.started) return;
     this.leaseTimer = setInterval(() => void this.tick(), Math.max(100, Math.floor(this.leaseTtlMs / 3)));
     this.leaseTimer.unref?.();
+    this.scheduleDiscovery();
+  }
+
+  /** The next discovery pass, a self-rescheduling timer so the battery scale applies as it changes. */
+  private scheduleDiscovery(): void {
+    if (!this.started) return;
+    if (this.discoveryTimer) clearTimeout(this.discoveryTimer);
+    const scale = this.onBattery ? Math.max(1, this.timings.batteryScale) : 1;
+    this.discoveryTimer = setTimeout(() => {
+      this.discoveryTimer = null;
+      void this.discover().finally(() => this.scheduleDiscovery());
+    }, this.discoveryMs * scale);
+    this.discoveryTimer.unref?.();
+  }
+
+  /** Starts stored projects, repairs markers and adopts folders that arrived; at most one pass at a time. */
+  private discover(): Promise<void> {
+    if (this.discovering || !this.started || this.releasing) return this.discovering ?? Promise.resolve();
+    this.discovering = (async () => {
+      try {
+        await this.loading?.catch(() => undefined);
+        await this.loadStoredProjects();
+        if (this.started && !this.releasing) await this.adoptMarkers();
+      } catch (error) {
+        this.logger.warn("Shared notebooks: discovery failed; it will retry.", error);
+      } finally {
+        this.discovering = null;
+      }
+    })();
+    return this.discovering;
   }
 
   async stop(): Promise<void> {
@@ -326,9 +371,13 @@ export class NotebookServiceImpl implements NotebookService {
     this.unsubscribeHost = null;
     if (this.leaseTimer) clearInterval(this.leaseTimer);
     this.leaseTimer = null;
+    if (this.discoveryTimer) clearTimeout(this.discoveryTimer);
+    this.discoveryTimer = null;
     this.deps.host.api?.cancelPending();
     await this.loading?.catch(() => undefined);
     await this.ticking?.catch(() => undefined);
+    await this.discovering?.catch(() => undefined);
+    await Promise.all([...this.lifecycleChecks]);
     await Promise.all([...this.projects.values()].map((handle) => handle.runtime?.stop()));
     // Another installation on the same folder can take over right away.
     await Promise.all([...this.projects.values()].map((handle) => this.releaseLease(handle)));
@@ -343,6 +392,8 @@ export class NotebookServiceImpl implements NotebookService {
       return;
     }
     await this.ticking?.catch(() => undefined);
+    await this.discovering?.catch(() => undefined);
+    await Promise.all([...this.lifecycleChecks]);
     await Promise.all([...this.projects.values()].map((handle) => handle.runtime?.stop()));
     this.projects.clear();
     this.releasing = false;
@@ -531,6 +582,8 @@ export class NotebookServiceImpl implements NotebookService {
     if (!api) return { outcome: "signed-out", contended: false };
     if (!handle.leaseSupported) return { outcome: "unsupported", contended: false };
     if (!handle.folderId) return { outcome: "unavailable", contended: false };
+    // A follower already refused tries again near the holder's expiry, not on every tick.
+    if (!handle.writer && (handle.nextContestAt ?? 0) > performance.now()) return { outcome: "refused", contended: false };
     const requestedAt = performance.now();
     try {
       const lease = await api.acquireFolderLease(handle.projectId, { folderId: handle.folderId, holder: this.installationId, ttlMs: this.leaseTtlMs }, { timeoutMs: Math.min(5000, Math.max(100, Math.floor(this.leaseTtlMs / 3))) });
@@ -540,6 +593,7 @@ export class NotebookServiceImpl implements NotebookService {
       // which a skewed clock turns into a zero-length (or overlong) lease.
       const grantedMs = typeof lease.ttlMs === "number" && Number.isFinite(lease.ttlMs) && lease.ttlMs > 0 ? lease.ttlMs : this.leaseTtlMs;
       handle.leaseDeadline = lease.granted ? requestedAt + Math.min(this.leaseTtlMs, grantedMs) : 0;
+      handle.nextContestAt = lease.granted ? 0 : this.contestTime(lease, requestedAt);
       return { outcome: lease.granted ? "granted" : "refused", contended: lease.contended === true };
     } catch (error) {
       if (error instanceof ApiClientError && error.status === 404) {
@@ -556,6 +610,19 @@ export class NotebookServiceImpl implements NotebookService {
       }
       return { outcome: "unavailable", contended: false };
     }
+  }
+
+  /**
+   * When a refused follower asks again: just after the holder's lease runs
+   * out, with jitter so followers do not all arrive together. The remaining
+   * time is the server's own duration when it sends one (never its absolute
+   * expiry against this device's clock unless it is all there is).
+   */
+  private contestTime(lease: FolderLease, requestedAt: number): number {
+    let remaining = typeof lease.retryAfterMs === "number" && Number.isFinite(lease.retryAfterMs) ? lease.retryAfterMs : lease.expiresAt ? Date.parse(lease.expiresAt) - Date.now() : 0;
+    if (!Number.isFinite(remaining) || remaining <= 0) return 0;
+    remaining = Math.min(remaining, this.leaseTtlMs);
+    return requestedAt + remaining + 50 + Math.random() * Math.min(2000, Math.max(50, this.leaseTtlMs / 10));
   }
 
   private async releaseLease(handle: ProjectHandle): Promise<void> {
@@ -589,53 +656,44 @@ export class NotebookServiceImpl implements NotebookService {
     await Promise.all([...this.projects.values()].map((handle) => this.releaseLease(handle)));
   }
 
-  /** Renews leases, hands the writing role over, and adopts folders that arrived. */
+  /**
+   * Renews leases and hands the writing role over. Only renewal is awaited:
+   * each project's marker check and lease call run independently and are
+   * bounded to a third of the lease, so neither discovery nor one slow
+   * project or provider call delays another project's renewal. The
+   * lifecycle work that follows (role changes, marker repair) runs detached.
+   */
   private tick(): Promise<void> {
     if (this.ticking || !this.started || this.releasing) return this.ticking ?? Promise.resolve();
     this.ticking = (async () => {
       try {
-        await this.loading?.catch(() => undefined);
-        await this.loadStoredProjects();
-        let rebound = false;
-        // Projects are renewed independently with bounded concurrency: one
-        // slow project (or a long lifecycle lock) must not let the others lapse.
-        const pending = [...this.projects.values()];
-        const worker = async () => {
-          for (let handle = pending.shift(); handle; handle = pending.shift()) {
-            if (!this.started || this.releasing) return;
-            const key = `project:${handle.projectId}`;
-            // The renewal itself never queues behind the lifecycle lock.
-            // Only while the folder still carries this project's marker: an
-            // installation that cannot write here must let its lease lapse so
-            // another one can take the folder over.
+        const budgetMs = Math.max(100, Math.floor(this.leaseTtlMs / 3));
+        await Promise.all([...this.projects.values()].map(async (handle) => {
+          if (!this.started || this.releasing) return;
+          // Only while the folder still carries this project's marker: an
+          // installation that cannot write here must let its lease lapse so
+          // another one can take the folder over.
+          const renew = async (): Promise<Lease | undefined> => {
             const renewable = !handle.revoked && handle.runtime && handle.folderId && this.projects.get(handle.projectId) === handle &&
               this.matchesMarker(handle, await readMarker(handle.root).catch(() => null));
-            const renewed = renewable ? await this.lease(handle) : undefined;
-            // A project whose lock is held (takedown, join...) does the rest next tick.
-            if (this.locks.has(key)) continue;
-            const current = handle;
-            await this.locked(key, async () => {
-              if (!current.revoked && await this.rebindMovedRoot(current)) {
-                rebound = true;
-                return;
-              }
-              if (!current.revoked) await this.repairMissingMarker(current.projectId, current.root);
-              if (current.revoked) {
-                const marker = await readMarker(current.root).catch(() => null);
-                if (this.matchesMarker(current, marker)) {
-                  const reason = this.deps.host.store.getDocMeta(current.manifestDocId)?.readOnlyReason;
-                  if (reason === "access-revoked" || reason === "document-deleted") recordNotebookLifecycle(this.lifecycleDirectory, marker, "revoked");
-                  await this.repairEndedMarker(current.root, marker);
-                }
-              } else await this.checkLease(current, renewed);
-            }).catch((error) => this.logger.warn(`Shared notebook ${current.name}: lifecycle/lease check will retry.`, error));
-          }
-        };
-        await Promise.all(Array.from({ length: Math.min(6, pending.length) }, worker));
-        if (!this.started || this.releasing) return;
-        // A rebound project starts again at its new folder, as at startup.
-        if (rebound && this.started && !this.releasing) await this.loadStoredProjects();
-        if (this.started && !this.releasing) await this.adoptMarkers();
+            return renewable ? await this.lease(handle) : undefined;
+          };
+          // A renewal that does not answer in time counts as unavailable: the
+          // lifecycle check below must not wait for it again.
+          const unanswered: Lease = { outcome: "unavailable", contended: false };
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const renewed = await Promise.race([
+            renew().catch(() => unanswered),
+            new Promise<Lease>((resolve) => {
+              timer = setTimeout(() => resolve(unanswered), budgetMs);
+              timer.unref?.();
+            }),
+          ]);
+          clearTimeout(timer);
+          if (!this.started || this.releasing) return;
+          const check: Promise<void> = this.lifecycleCheck(handle, renewed).finally(() => this.lifecycleChecks.delete(check));
+          this.lifecycleChecks.add(check);
+        }));
       } catch (error) {
         this.logger.warn("Shared notebooks: the writer lease check failed.", error);
       } finally {
@@ -643,6 +701,31 @@ export class NotebookServiceImpl implements NotebookService {
       }
     })();
     return this.ticking;
+  }
+
+  /** One project's role and marker upkeep after its renewal; skipped while its lifecycle lock is held. */
+  private async lifecycleCheck(current: ProjectHandle, renewed: Lease | undefined): Promise<void> {
+    const key = `project:${current.projectId}`;
+    // A project whose lock is held (takedown, join...) does the rest next tick.
+    if (this.locks.has(key) || !this.started || this.releasing) return;
+    let rebound = false;
+    await this.locked(key, async () => {
+      if (!current.revoked && await this.rebindMovedRoot(current)) {
+        rebound = true;
+        return;
+      }
+      if (!current.revoked) await this.repairMissingMarker(current.projectId, current.root);
+      if (current.revoked) {
+        const marker = await readMarker(current.root).catch(() => null);
+        if (this.matchesMarker(current, marker)) {
+          const reason = this.deps.host.store.getDocMeta(current.manifestDocId)?.readOnlyReason;
+          if (reason === "access-revoked" || reason === "document-deleted") recordNotebookLifecycle(this.lifecycleDirectory, marker, "revoked");
+          await this.repairEndedMarker(current.root, marker);
+        }
+      } else await this.checkLease(current, renewed);
+    }).catch((error) => this.logger.warn(`Shared notebook ${current.name}: lifecycle/lease check will retry.`, error));
+    // A rebound project starts again at its new folder, as at startup (discovery, not renewal).
+    if (rebound && this.started && !this.releasing) void this.discover();
   }
 
   /**
@@ -1135,10 +1218,15 @@ export class NotebookServiceImpl implements NotebookService {
   powerChanged(onBattery: boolean): void {
     if (this.onBattery === onBattery) return;
     this.onBattery = onBattery;
+    // The next discovery pass is waited out at the new power scale.
+    this.scheduleDiscovery();
     for (const handle of this.projects.values()) handle.runtime?.powerChanged();
   }
 
   resumed(): void {
+    // Leases lapsed during sleep: renew or contest now, not at the old schedule.
+    for (const handle of this.projects.values()) handle.nextContestAt = 0;
+    void this.tick();
     for (const handle of this.projects.values()) handle.runtime?.resumed();
   }
 
