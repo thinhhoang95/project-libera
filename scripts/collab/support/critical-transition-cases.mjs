@@ -5,7 +5,7 @@ import { cpSync, existsSync, promises as fs, readFileSync, readdirSync, rmSync, 
 import path from "node:path";
 import test from "node:test";
 
-import { api, closePeer, invite, makePeer, register, tempRoot, until, writeTree } from "../support/notebooks-harness.ts";
+import { api, closePeer, invite, makePeer, register, sleep, tempRoot, until, writeTree } from "../support/notebooks-harness.ts";
 import { removeDataDir, startServerProcess } from "../support/server-process.ts";
 
 const observe = (name, value) => console.log(`TRANSITION ${name} ${JSON.stringify(value)}`);
@@ -97,27 +97,35 @@ test("R11–R14: guarded collaboration lifecycle transitions", { timeout: 180_00
       await project.whenIdle(); quiet(project);
       const external = "external input not yet imported before rename\n";
       writeFileSync(path.join(root, "a.md"), external);
+      // Finding 4: only the entry's own bytes move, so the edit is taken in (once quiet) before the rename stages it.
+      await sleep(400);
+      await project.enqueue(() => project.scan());
+      const docId = owner.service.resolvePath("MoveRecovery/a.md").docId;
+      await until(() => project.docs.get(docId)?.hub.getText("content") === external, "external edit imported before rename");
       const rename = fs.rename;
+      const link = fs.link;
       let failed = false;
-      fs.rename = async (from, to) => {
+      const interrupt = (from, to) => {
         if (String(from).includes(`${path.sep}moving${path.sep}`) && to === path.join(root, "b.md")) {
           failed = true; throw Object.assign(new Error("injected interrupted final move"), { code: "EIO" });
         }
-        return rename(from, to);
       };
+      // Final placement now links the staged bytes into place (exclusive move) and falls back to a rename; fail both.
+      fs.rename = async (from, to) => { interrupt(from, to); return rename(from, to); };
+      fs.link = async (from, to) => { interrupt(from, to); return link(from, to); };
       try {
         const first = await resultOf(owner.service.fileOp(shared.projectId, { op: "rename", path: "a.md", to: "b.md" }));
         await project.whenIdle();
         assert.equal(failed, true);
         const afterFailure = containsBytes(root, external);
         assert.equal(afterFailure, true, "the injected move leaves the only external copy in staging");
-        fs.rename = rename;
+        fs.rename = rename; fs.link = link;
         const second = await resultOf(owner.service.fileOp(shared.projectId, { op: "rename", path: "b.md", to: "c.md" }));
         await project.whenIdle();
         const afterNextMove = containsBytes(root, external);
         observe("move-recovery", { first, second, afterFailure, afterNextMove, finalText: readFileSync(path.join(root, "c.md"), "utf8") });
         assert.equal(afterNextMove, true, "reusing a staging path must not destroy an earlier interrupted move's recovery bytes");
-      } finally { fs.rename = rename; }
+      } finally { fs.rename = rename; fs.link = link; }
     });
 
     for (const replacement of ["missing", "foreign"]) await scenario(`a pending join cannot commit into a ${replacement} root`, async (peer) => {
