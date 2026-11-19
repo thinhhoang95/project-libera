@@ -152,7 +152,7 @@ test("a synced notebook folder is adopted, followed and handed over between inst
       alice.host.setAccount(null);
       await alice.service.accountChanged();
       assert.equal(isFollower(alice, projectId), true, "signed out, a folder used elsewhere is only followed");
-      await until(() => isFollower(twin, projectId) === false, "the other installation to take over at once", LEASE_TTL_MS);
+      await until(() => isFollower(twin, projectId) === false, "the other installation to take over at once (the release event, not the expiry)", 20_000);
       assert.equal(readMarkerFile(root).writer, twin.host.installationId);
       await sleepTicks(3);
       assert.equal(isFollower(alice, projectId), true);

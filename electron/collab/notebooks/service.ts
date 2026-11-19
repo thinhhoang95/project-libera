@@ -179,6 +179,8 @@ interface ProjectHandle {
   leaseDeadline?: number;
   /** A follower refused the lease contests it again at this monotonic time (near the holder's expiry). */
   nextContestAt?: number;
+  /** Counts lease releases heard from the server, so a refusal that crossed one is not trusted. */
+  leaseReleases?: number;
   /** A role change or reopen failed: no runtime until a later tick succeeds (retried with backoff). */
   restart?: { attempts: number; retryAt: number; stale?: SharedProject };
 }
@@ -586,6 +588,7 @@ export class NotebookServiceImpl implements NotebookService {
     // A follower already refused tries again near the holder's expiry, not on every tick.
     if (!handle.writer && (handle.nextContestAt ?? 0) > performance.now()) return { outcome: "refused", contended: false };
     const requestedAt = performance.now();
+    const releases = handle.leaseReleases ?? 0;
     try {
       const lease = await api.acquireFolderLease(handle.projectId, { folderId: handle.folderId, holder: this.installationId, ttlMs: this.leaseTtlMs }, { timeoutMs: Math.min(5000, Math.max(100, Math.floor(this.leaseTtlMs / 3))) });
       if (!this.started || this.releasing) return { outcome: "unavailable", contended: false };
@@ -594,7 +597,7 @@ export class NotebookServiceImpl implements NotebookService {
       // which a skewed clock turns into a zero-length (or overlong) lease.
       const grantedMs = typeof lease.ttlMs === "number" && Number.isFinite(lease.ttlMs) && lease.ttlMs > 0 ? lease.ttlMs : this.leaseTtlMs;
       handle.leaseDeadline = lease.granted ? requestedAt + Math.min(this.leaseTtlMs, grantedMs) : 0;
-      handle.nextContestAt = lease.granted ? 0 : this.contestTime(lease, requestedAt);
+      handle.nextContestAt = lease.granted || (handle.leaseReleases ?? 0) !== releases ? 0 : this.contestTime(lease, requestedAt);
       return { outcome: lease.granted ? "granted" : "refused", contended: lease.contended === true };
     } catch (error) {
       if (error instanceof ApiClientError && error.status === 404) {
@@ -1253,6 +1256,14 @@ export class NotebookServiceImpl implements NotebookService {
       void this.revoke(projectId).catch((error) => this.logger.warn("Could not finish notebook revocation.", error));
     } else if (kind === EventKind.RoleChanged && aboutMe && isRole(data.role)) {
       this.setRole(projectId, data.role);
+    } else if (kind === EventKind.FolderLeaseReleased && scope === "user") {
+      // The holder gave the lease up: a refused follower claims it now, not at the old expiry.
+      const handle = this.projects.get(projectId);
+      if (handle && !handle.writer) {
+        handle.leaseReleases = (handle.leaseReleases ?? 0) + 1;
+        handle.nextContestAt = 0;
+        void Promise.resolve(this.ticking).catch(() => undefined).then(() => this.tick());
+      }
     }
   }
 
