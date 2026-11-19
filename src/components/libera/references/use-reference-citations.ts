@@ -6,6 +6,7 @@ import { citedKeys } from "@/lib/references/citation-syntax";
 import { isLatexCitingPath, latexCitedKeys } from "@/lib/references/latex-cite-syntax";
 import { entryForKey, libraryEntriesByKey } from "@/lib/references/format";
 import type { ReferenceLibrary } from "@/lib/references/types";
+import type { OpenTab } from "../types";
 
 // Which documents cite which keys: the server's citation index
 // (GET /api/references/citations, saved files only) merged with the open
@@ -17,6 +18,33 @@ export type ReferenceCitationIndex = {
 };
 
 export type OpenReferenceDraft = { path: string; text: string };
+
+const NO_DRAFTS: OpenReferenceDraft[] = [];
+
+/**
+ * The unsaved Markdown and LaTeX tabs as drafts, reusing `previous` itself (and
+ * its entries) while no relevant text changed, so a caret report or a scroll
+ * position does not look like an edit to the scan below.
+ */
+export function projectReferenceDrafts(previous: OpenReferenceDraft[], tabs: readonly OpenTab[]): OpenReferenceDraft[] {
+  const before = new Map(previous.map((draft) => [draft.path, draft]));
+  const next: OpenReferenceDraft[] = [];
+  for (const tab of tabs) {
+    if (!(tab.file.fileType === "markdown" || isLatexCitingPath(tab.file.path)) || tab.untitled || tab.draft === tab.saved) continue;
+    const old = before.get(tab.file.path);
+    next.push(old && old.text === tab.draft ? old : { path: tab.file.path, text: tab.draft });
+  }
+  return next.length === previous.length && next.every((draft, index) => draft === previous[index]) ? previous : next;
+}
+
+/** The drafts the References rail scans; none are collected while the rail is closed (`enabled` false). */
+export function useOpenReferenceDrafts(tabs: readonly OpenTab[], enabled: boolean): OpenReferenceDraft[] {
+  const [held, setHeld] = useState<OpenReferenceDraft[]>(NO_DRAFTS);
+  // Pure in `tabs`; the state only keeps identities, and is replaced while rendering when something changed.
+  const next = enabled ? projectReferenceDrafts(held, tabs) : NO_DRAFTS;
+  if (next !== held) setHeld(next);
+  return next;
+}
 
 /** Keys are matched case-insensitively, like key collisions in the library. */
 export type CitingDocuments = Map<string, Set<string>>;
@@ -77,6 +105,15 @@ function scanDraft(draft: OpenReferenceDraft) {
   draftScans.set(draft.path, { text: draft.text, keys });
   if (draftScans.size > 200) draftScans.delete(draftScans.keys().next().value!);
   return keys;
+}
+
+function sameDrafts(a: OpenReferenceDraft[], b: OpenReferenceDraft[]) {
+  return a.length === b.length && a.every((draft, index) => draft.path === b[index].path && draft.text === b[index].text);
+}
+
+function sameScans(a: Record<string, string[]>, b: Record<string, string[]>) {
+  const paths = Object.keys(a);
+  return paths.length === Object.keys(b).length && paths.every((path) => a[path] === b[path]);
 }
 
 /** `value`, after it has stopped changing for `delay` ms. */
@@ -146,16 +183,24 @@ export function useReferenceCitations(notebook: string | null, openDrafts: OpenR
   }, [reload]);
 
   // Drafts inside this notebook, scanned after typing pauses. Unchanged drafts reuse their last scan.
-  const relevant = useMemo(
+  const candidates = useMemo(
     () => notebook ? openDrafts.filter((draft) => draft.path.startsWith(`${notebook}/`)) : [],
     [notebook, openDrafts],
   );
+  // An identical list keeps its identity, so it does not restart the debounce.
+  const [heldDrafts, setHeldDrafts] = useState<OpenReferenceDraft[]>(NO_DRAFTS);
+  const relevant = sameDrafts(heldDrafts, candidates) ? heldDrafts : candidates;
+  if (relevant !== heldDrafts) setHeldDrafts(relevant);
   const debouncedDrafts = useDebounced(relevant, CITATION_SCAN_DELAY_MS);
-  const draftKeys = useMemo(() => {
+  const scanned = useMemo(() => {
     const keys: Record<string, string[]> = {};
     for (const draft of debouncedDrafts) keys[draft.path] = scanDraft(draft);
     return keys;
   }, [debouncedDrafts]);
+  // The merged index below is rebuilt only when some file's keys differ.
+  const [heldKeys, setHeldKeys] = useState<Record<string, string[]>>({});
+  const draftKeys = sameScans(heldKeys, scanned) ? heldKeys : scanned;
+  if (draftKeys !== heldKeys) setHeldKeys(draftKeys);
 
   const index = state.notebook === notebook ? state.index : EMPTY_INDEX;
   const byKey = useMemo(() => mergeCitationIndex(index, draftKeys), [index, draftKeys]);

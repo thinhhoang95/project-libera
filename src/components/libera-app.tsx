@@ -38,6 +38,7 @@ import { galleryPhotoFromSearch, searchRevealViewState } from "@/components/libe
 import type { SearchEntry } from "@/components/libera/global-search/search-results";
 import { LeftPanel, type LeftPanelReferences, type LeftPanelTab } from "@/components/libera/left-panel";
 import { useReferencesPanelRequests } from "@/components/libera/references/references-panel";
+import { useOpenReferenceDrafts } from "@/components/libera/references/use-reference-citations";
 import { PdfQuoteCiteHost } from "@/components/libera/references/pdf-quote-cite";
 import { useReferencePaletteCommands } from "@/components/libera/references/reference-palette-commands";
 import { closedReferencesMenuItems } from "@/components/libera/references/references-panel";
@@ -322,7 +323,12 @@ export function LiberaApp({
   const chromeTabs = useChromeTabs(workspace.tabs);
   const activeChromeTab = useMemo(() => chromeTabs.find((tab) => tab.id === workspace.activeTabId), [chromeTabs, workspace.activeTabId]);
   // What they show that is computed from a draft re-checks after each publication (tab-chrome.ts).
-  useEffect(() => { draftRevision.bump(); }, [workspace.tabs]);
+  // Only the tabs whose text (or page count) changed move their revisions; a caret report moves none.
+  const publishedTabs = useRef<typeof workspace.tabs | null>(null);
+  useEffect(() => {
+    draftRevision.publish(publishedTabs.current, workspace.tabs);
+    publishedTabs.current = workspace.tabs;
+  }, [workspace.tabs]);
   // Read when the user acts, from the tabs of the latest commit. Never call these while rendering.
   const tabReaders = useStableHandlers({
     readOpenTabs: () => workspace.tabs,
@@ -352,12 +358,9 @@ export function LiberaApp({
     setNotebooksCollapsed(false);
     if (workspace.selectedNotebookName !== notebook) workspace.selectNotebook(notebook);
   });
-  const openReferenceDrafts = useMemo(
-    () => workspace.tabs
-      .filter((tab) => (tab.file.fileType === "markdown" || isLatexCitingPath(tab.file.path)) && !tab.untitled && tab.draft !== tab.saved)
-      .map((tab) => ({ path: tab.file.path, text: tab.draft })),
-    [workspace.tabs],
-  );
+  // The References rail is the only reader of the drafts, so nothing is collected while it is closed.
+  const referencesOpen = activeLeftPanel === "references";
+  const openReferenceDrafts = useOpenReferenceDrafts(workspace.tabs, referencesOpen);
   const activeLatexSource = workspace.activeTab?.file.fileType === "latex" && isLatexCitingPath(workspace.activeTab.file.name) && !workspace.activeTab.page ? workspace.activeTab : null;
   const activeTabFile = workspace.activeTab && !workspace.activeTab.untitled ? workspace.activeTab.file : null;
   const activePdfPath = activeTabFile?.fileType === "pdf" ? activeTabFile.path : null;
@@ -366,9 +369,9 @@ export function LiberaApp({
     () => activePdfPath ? { notebook: activePdfNotebook, path: activePdfPath } : null,
     [activePdfNotebook, activePdfPath],
   );
-  const activeMarkdownDraft = workspace.activeMarkdownDraft;
+  const activeMarkdownDraft = referencesOpen ? workspace.activeMarkdownDraft : null;
   const activeDocumentPath = workspace.activeTab?.file.fileType === "markdown" && !workspace.activeTab.untitled ? workspace.activeTab.file.path : null;
-  const activeLatexDraft = activeLatexSource ? activeLatexSource.draft : null;
+  const activeLatexDraft = referencesOpen && activeLatexSource ? activeLatexSource.draft : null;
   const activeLatexPath = activeLatexSource && !activeLatexSource.untitled ? activeLatexSource.file.path : null;
   const canCite = workspace.activeTab?.file.fileType === "markdown" || Boolean(activeLatexSource);
   const citeSyntax = activeLatexSource ? "latex" : "markdown";
