@@ -16,7 +16,6 @@ import { removeDataDir, startServerProcess } from "../support/server-process.ts"
 
 const MARKER = ".libera-shared.json";
 const markerAt = (root) => JSON.parse(readFileSync(path.join(root, MARKER), "utf8"));
-const stateAt = (root) => JSON.parse(readFileSync(path.join(root, ".libera/collab/state.json"), "utf8"));
 const observe = (name, value) => console.log(`FOLLOWUP ${name} ${JSON.stringify(value)}`);
 
 function textOf(peer, file) {
