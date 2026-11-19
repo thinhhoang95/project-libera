@@ -29,6 +29,8 @@ interface Internals {
   awaitedOnDisk: Map<string, unknown>;
   isMaterialized(): boolean;
   whenIdle(): Promise<boolean>;
+  startScan(forced: boolean): Promise<void>;
+  scheduleScan(delay: number): void;
 }
 
 const internals = (peer: Peer, projectId: string) => peer.service.project(projectId) as unknown as Internals;
@@ -105,11 +107,22 @@ test("audit 1119 P8: writer materialization", { timeout: 240_000 }, async (t) =>
       try { await until(() => ready.getText("content") === "mine\n" && ready.getStatus().state === "saved-remote", "the document to be synced"); }
       finally { owner.host.release(noteDoc); }
       await project.whenIdle();
-      writeFileSync(note, "external edit\n");
-      await project.materializeDoc(noteDoc);
+      // Only the flush is under test here: the watcher's scan, which may take a
+      // settled edit in on its own schedule, is held off until the check is done.
+      const startScan = project.startScan;
+      project.startScan = async () => {};
+      try {
+        writeFileSync(note, "external edit\n");
+        await project.materializeDoc(noteDoc);
+        const flushed = owner.host.acquire(noteDoc);
+        try { assert.equal(flushed.getText("content"), "mine\n", "the flush leaves the edit to the scanner's quiet period"); }
+        finally { owner.host.release(noteDoc); }
+      } finally {
+        project.startScan = startScan;
+      }
+      project.scheduleScan(0);
       const hub = owner.host.acquire(noteDoc);
       try {
-        assert.equal(hub.getText("content"), "mine\n", "the edit waits for the scanner's quiet period");
         await until(() => hub.getText("content") === "external edit\n", "the scanner to take the quiet edit in", 30_000);
       } finally {
         owner.host.release(noteDoc);

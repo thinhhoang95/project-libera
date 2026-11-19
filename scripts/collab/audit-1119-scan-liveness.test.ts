@@ -18,7 +18,7 @@ import { after, afterEach, describe, test } from "node:test";
 
 import { contentGuard, guardTimings, type WalkEntry } from "../../electron/collab/notebooks/fs-ops";
 import { DEFAULT_TIMINGS, SharedProject, stopTimings, type Timings } from "../../electron/collab/notebooks/project";
-import { MAX_OUTSTANDING_READS, MAX_UPLOAD_BYTES, readShared } from "../../electron/collab/notebooks/scan-reads";
+import { MAX_OUTSTANDING_READS, MAX_UPLOAD_BYTES, quietWaitMs, readShared } from "../../electron/collab/notebooks/scan-reads";
 import type { LayoutRecord } from "../../electron/collab/notebooks/state";
 
 const roots: string[] = [];
@@ -265,4 +265,15 @@ describe("finding 38: tracked files and the scan budget", () => {
     await project.scan();
     assert.deepEqual(spy.reads, []);
   });
+});
+
+test("finding 28: a file changed while the scan ran still waits out the quiet period", () => {
+  const now = 1_700_000_000_000;
+  // Written in the millisecond `now` rounds down (file times keep the fraction), or during the walk.
+  assert.equal(quietWaitMs({ mtimeMs: now + 0.4, ctimeMs: now + 0.4 }, now, 1_500), 1_500);
+  assert.equal(quietWaitMs({ mtimeMs: now + 5_000, ctimeMs: now + 5_000 }, now, 1_500), 1_500);
+  assert.equal(quietWaitMs({ mtimeMs: now - 1_000, ctimeMs: now - 1_000 }, now, 1_500), 500);
+  // A future mtime alone (a copy from a skewed clock, or one set on purpose) says nothing: the ctime decides.
+  assert.equal(quietWaitMs({ mtimeMs: now + 10_000, ctimeMs: now - 60_000 }, now, 1_500), 0);
+  assert.equal(quietWaitMs({ mtimeMs: now + 3_600_000 }, now, 1_500), 0);
 });

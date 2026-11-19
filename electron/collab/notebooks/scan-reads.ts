@@ -98,10 +98,21 @@ export async function readShared(absolute: string, ms: number, observed: { size:
 }
 
 /** Milliseconds until a file counts as quiet (0: it has not changed for `quietMs`). */
+/**
+ * How far past `now` a change time may be and still mean "changed just now":
+ * a scan takes `now` before it walks, so a file written during the walk is
+ * later than that, and file times carry fractions of the millisecond `now`
+ * rounds down.
+ */
+const RECENT_FUTURE_MS = 60_000;
+
 export function quietWaitMs(entry: { mtimeMs: number; ctimeMs?: number }, now: number, quietMs = IMPORT_QUIET_MS): number {
-  // A time in the future (a copy from a skewed clock) says nothing about when it changed.
+  // An mtime can be anything (a copy keeps its source's; a skewed clock writes
+  // a future one), so one in the future says nothing about when it changed.
   const modified = entry.mtimeMs <= now ? entry.mtimeMs : 0;
-  const changed = entry.ctimeMs !== undefined && entry.ctimeMs <= now ? entry.ctimeMs : 0;
+  // The ctime is this system's own clock: past `now` only because the file
+  // changed after `now` was taken, which is as recent as it gets.
+  const changed = entry.ctimeMs === undefined || entry.ctimeMs > now + RECENT_FUTURE_MS ? 0 : Math.min(entry.ctimeMs, now);
   return Math.max(0, quietMs - (now - Math.max(modified, changed)));
 }
 
