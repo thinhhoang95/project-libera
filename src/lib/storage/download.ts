@@ -1,10 +1,10 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import JSZip from "jszip";
-import { IGNORED_DOWNLOAD_ENTRIES } from "@/lib/storage/constants";
+import { ARCHIVE_DIR, IGNORED_DOWNLOAD_ENTRIES } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
 import { ensureAdminRoot, notebookPath, assertSafeSegment } from "@/lib/storage/paths";
-import { readSharedAuthorityBytes } from "@/lib/storage/shared-source";
+import { listSharedAuthorityEntries, readSharedAuthorityEntry } from "@/lib/storage/shared-source";
 
 function sanitizeZipName(name: string) {
   return (
@@ -19,7 +19,18 @@ function shouldSkipDownloadEntry(name: string) {
   return name.startsWith("._") || IGNORED_DOWNLOAD_ENTRIES.has(name);
 }
 
-async function addDirectoryToZip(zip: JSZip, rootPath: string, currentPath: string, notebookName: string) {
+/**
+ * What a shared notebook's manifest never lists: the local `_archive` and
+ * hidden bookkeeping (.libera, the marker). Only these come from the disk of
+ * a shared notebook; everything else is the manifest's, so a file the cloud has
+ * not delivered is still exported and a deleted one still on disk is not.
+ */
+function isLocalOnly(relativePath: string) {
+  const segments = relativePath.split("/");
+  return segments[0] === ARCHIVE_DIR || segments.some((segment) => segment.startsWith("."));
+}
+
+async function addDirectoryToZip(zip: JSZip, rootPath: string, currentPath: string, include: (relativePath: string) => boolean) {
   const entries = await readdir(currentPath, { withFileTypes: true });
 
   for (const entry of entries) {
@@ -31,18 +42,32 @@ async function addDirectoryToZip(zip: JSZip, rootPath: string, currentPath: stri
     const relativePath = path.relative(rootPath, entryPath).split(path.sep).join("/");
 
     if (entry.isDirectory()) {
-      zip.folder(relativePath);
-      await addDirectoryToZip(zip, rootPath, entryPath, notebookName);
+      if (include(relativePath)) zip.folder(relativePath);
+      await addDirectoryToZip(zip, rootPath, entryPath, include);
       continue;
     }
 
-    if (entry.isFile()) {
-      // A shared notebook's working file can lag the host: export its current shared version.
-      // Hidden bookkeeping (.libera, the marker) is never part of the shared notebook.
-      const hidden = relativePath.split("/").some((segment) => segment.startsWith("."));
-      zip.file(relativePath, (hidden ? null : await readSharedAuthorityBytes(`${notebookName}/${relativePath}`)) ?? await readFile(entryPath));
+    if (entry.isFile() && include(relativePath)) {
+      zip.file(relativePath, await readFile(entryPath));
     }
   }
+}
+
+/** A shared notebook: entries and bytes from the host's manifest, the disk only for what the manifest never holds. */
+async function addSharedNotebookToZip(zip: JSZip, notebook: string, rootPath: string, entries: NonNullable<Awaited<ReturnType<typeof listSharedAuthorityEntries>>>) {
+  const prefix = `${notebook}/`;
+  for (const entry of entries) {
+    const relativePath = entry.path.startsWith(prefix) ? entry.path.slice(prefix.length) : entry.path;
+    if (relativePath.split("/").some(shouldSkipDownloadEntry)) continue;
+    if (entry.kind === "folder") {
+      zip.folder(relativePath);
+      continue;
+    }
+    const bytes = await readSharedAuthorityEntry(entry);
+    // Left the manifest since the listing: it is gone, not a file to take from the disk.
+    if (bytes) zip.file(relativePath, bytes);
+  }
+  await addDirectoryToZip(zip, rootPath, rootPath, isLocalOnly);
 }
 
 export async function createNotebookZip(name: string) {
@@ -63,7 +88,9 @@ export async function createNotebookZip(name: string) {
     throw new StorageError("Could not prepare notebook download.", 500);
   }
 
-  await addDirectoryToZip(rootFolder, targetPath, targetPath, safeName);
+  const shared = await listSharedAuthorityEntries(safeName);
+  if (shared) await addSharedNotebookToZip(rootFolder, safeName, targetPath, shared);
+  else await addDirectoryToZip(rootFolder, targetPath, targetPath, () => true);
 
   return {
     fileName: `${rootFolderName}.zip`,

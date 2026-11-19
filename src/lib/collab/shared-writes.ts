@@ -434,6 +434,23 @@ export async function readSharedBlob(liberaPath: string, options: SharedWriteOpt
 }
 
 /**
+ * The authoritative bytes of one entry of `listSharedEntries`: a document's
+ * live text, or a blob's content. Null for a folder, or a blob that left the
+ * manifest between the listing and this read.
+ */
+export async function readSharedEntryBytes(entry: import("./local-api").FileListEntry, options: SharedWriteOptions = {}): Promise<Buffer | null> {
+  if (entry.kind === "folder") return null;
+  if (entry.kind === "doc") {
+    if (!entry.docId) return null;
+    const docId = entry.docId;
+    const config = hostConfig(entry.path, options);
+    return Buffer.from((await host(entry.path, () => getDocText(docId, config))).text, "utf8");
+  }
+  const blob = await readSharedBlob(entry.path, options);
+  return blob.contentBase64 === null ? null : Buffer.from(blob.contentBase64, "base64");
+}
+
+/**
  * Saves a text file a shared notebook holds as a file rather than a document
  * (too large, or not text, when it was added): its bytes are replaced through
  * the host, as for any shared binary file, so the last save wins. A text
@@ -820,7 +837,7 @@ export async function copyFileIntoSharedDirectory(relativePath: string, destinat
       for (const source of markdownImageSources(content)) {
         if (/^(?:[a-z][a-z0-9+.-]*:|#)/i.test(source)) continue;
         if (source.startsWith("/") && !source.startsWith("/api/markdown-assets/raw") && !source.startsWith("/api/files/raw/")) continue;
-        const asset = await getMarkdownImageAssetBySource(relativePath, source);
+        const asset = await getMarkdownImageAssetBySource(relativePath, source, { authoritative: true });
         const assetPath = `${markdownAssetsPathPrefix(parts)}/${randomUUID()}/${assertSafeSegment(asset.fileName, "Image name")}`;
         await writeSharedBlob(`${destination.notebook}/${assetPath}`, new Uint8Array(asset.body), { ...options, createOnly: true });
         content = content.split(source).join(assetPath);
@@ -847,8 +864,9 @@ export async function copyFileIntoSharedDirectory(relativePath: string, destinat
     }
     // The host's current version of the source, not a working file that may lag it.
     const sourceBytes = (await readSharedAuthorityBytes(relativePath)) ?? await readFile(filePathFromParts(current.notebook, current.pathParts));
-    await writeSharedBlob(liberaPath, new Uint8Array(sourceBytes), { ...options, createOnly: true, pdfSeed });
-    if (node.fileType === "audio") await copyTranscript(relativePath, liberaPath);
+    const placed = await writeSharedBlob(liberaPath, new Uint8Array(sourceBytes), { ...options, createOnly: true, pdfSeed });
+    // The transcript follows the name the host's layout gave the recording; the recording itself may not be on this disk yet.
+    if (node.fileType === "audio") await copyTranscript(relativePath, placed.paths[0] ?? liberaPath);
     // A copy's marks are its own. On a notebook with live PDFs, the host merges them into the copy's document.
     if (node.fileType === "pdf" && !(await listProjects(hostConfig(liberaPath, options))).find((project) => project.notebook === destination.notebook)?.pdfLive) {
       await copyFileIfExists(pdfAnnotationsPath(current.notebook, current.pathParts), pdfAnnotationsPath(destination.notebook, parts));
