@@ -187,6 +187,8 @@ const LAYOUT_LINE_ARGS: Record<string, number> = {
   newcounter: 1, counterwithin: 2, counterwithout: 2, newsavebox: 1,
   // Set-up that prints nothing: numberwithin, cleveref crefalias, zref-clever zcsetup.
   numberwithin: 2, crefalias: 2, zcsetup: 1,
+  // fancyhdr's page styles: set up for the pages' headers and footers, which print nothing where they stand.
+  fancypagestyle: 2, fancyhf: 1, fancyhead: 1, fancyfoot: 1, fancyheadoffset: 1, fancyfootoffset: 1,
   appendix: 0, setcounter: 2, addtocounter: 2, renewcommand: 2, onecolumn: 0, twocolumn: 0, frenchspacing: 0, nonfrenchspacing: 0,
   // IEEEtran's `\appendices`; counters stepped where they are.
   appendices: 0, stepcounter: 1, refstepcounter: 1,
@@ -288,7 +290,7 @@ function layoutRun(text: string, partial = false): number {
       if (helper > 0) { i = helper; continue; }
     }
     // `\renewcommand` of a counter's format (`{\thesection}` or `\thesection`), of `\qedsymbol`, or of the table row height (`\arraystretch`) only.
-    if (command[1] === "renewcommand" && !/^\s*(?:\{\s*\\(?:the[A-Za-z]+|qedsymbol|arraystretch)\s*\}|\\(?:the[A-Za-z]+|qedsymbol|arraystretch)(?![A-Za-z]))/.test(text.slice(i, i + 60))) return 0;
+    if (command[1] === "renewcommand" && !/^\s*(?:\{\s*\\(?:the[A-Za-z]+|qedsymbol|arraystretch|fps@[A-Za-z]+|(?:head|foot)rulewidth)\s*\}|\\(?:the[A-Za-z]+|qedsymbol|arraystretch|fps@[A-Za-z]+|(?:head|foot)rulewidth)(?![A-Za-z]))/.test(text.slice(i, i + 60))) return 0;
     // `\newcommand` is only a layout line as a row helper (above).
     if (command[1] === "newcommand") return 0;
     const optional = /^[ \t]*\[/.exec(text.slice(i));
@@ -405,7 +407,7 @@ const TEXT_BLOCKS: Record<string, string> = {
   quote: "cm-vis-quote", quotation: "cm-vis-quote", verse: "cm-vis-quote", center: "cm-vis-center", flushleft: "cm-vis-flushleft",
   flushright: "cm-vis-flushright", abstract: "cm-vis-abstract",
   // The appendix package's environment: its lines fold away, its sections are lettered (numbering.ts).
-  appendices: "cm-vis-appendices", APPENDICES: "cm-vis-appendices",
+  appendices: "cm-vis-appendices", APPENDICES: "cm-vis-appendices", subappendices: "cm-vis-appendices",
   // `\begin{appendix}`, which runs `\appendix` (KOMA papers): the same.
   appendix: "cm-vis-appendices",
   // `tabbing`: lines of text with tab stops (`\=`, `\>`), drawn as gaps (Featherweight Go's proofs).
@@ -896,7 +898,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
    * same run of text: no environment or group boundary in between. Null when there is none.
    */
   const pairedSwitchEnd = (command: string, from: number) => {
-    const cancels = /^\\(?:itshape|it|slshape|sl)$/.test(command) ? /\\(upshape|normalfont|rm)(?![A-Za-z@])/g : /^\\(?:bfseries|bf)$/.test(command) ? /\\(mdseries|normalfont|rm)(?![A-Za-z@])/g : null;
+    const cancels = command === "\\boldmath" ? /\\(unboldmath)(?![A-Za-z@])/g : /^\\(?:itshape|it|slshape|sl)$/.test(command) ? /\\(upshape|normalfont|rm)(?![A-Za-z@])/g : /^\\(?:bfseries|bf)$/.test(command) ? /\\(mdseries|normalfont|rm)(?![A-Za-z@])/g : null;
     if (!cancels) return null;
     const limit = Math.min(doc.length, from + 4000);
     const span = read(state, from, limit);
@@ -1606,6 +1608,9 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
             return false;
           }
           if (!inner || hasDirectError(node)) return false;
+          // A key written with commands (`\label{LISTING\thelstlisting}`, physics.hist-ph 2609.14600) is a name only TeX can work out: the chip
+          // would show the raw command, so such a label stays as source.
+          if (/\\/.test(read(state, inner.from, inner.to))) return false;
           emit({
             kind: "label", from: node.from, to: node.to, reveal: "strict",
             replaces: [{ from: node.from, to: node.to, widget: new ChipWidget("label", "\\label", [read(state, inner.from, inner.to).trim()], {}, node.to - node.from) }],
@@ -2207,9 +2212,38 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     return !!aloneOnLines(doc, formed.begin.from, firstEnd);
   }
 
+  /**
+   * `\begin{center}{\large\bfseries Supplemental Material}\end{center}` on one line (nlin.PS 2610.37990): the grammar reads the group after
+   * `\begin{center}` as its argument and loses the `\end`, so the line is read here. Its two markers hide (shown at the caret) and the
+   * line is centred; what is between them is drawn as text.
+   */
+  function oneLineTextBlock(node: SyntaxNode): undefined {
+    const line = doc.lineAt(node.from);
+    const match = /^([ \t]*)(\\begin\s*\{(center|flushleft|flushright)\})(.*?)(\\end\s*\{\3\})[ \t]*$/.exec(line.text);
+    if (!match || line.from + match[1].length !== node.from || !match[4].trim() || /\\(?:begin|end)\s*\{/.test(match[4])) return undefined;
+    const begin = { from: node.from, to: node.from + match[2].length };
+    const end = { from: line.to - match[5].length - (line.text.length - line.text.trimEnd().length), to: 0 };
+    end.to = end.from + match[5].length;
+    emit({ kind: "env-body", from: begin.to, to: end.from, reveal: "never", replaces: [], lines: [{ from: line.from, to: line.to, class: TEXT_BLOCKS[match[3]] }] });
+    consumed.push([begin.from, begin.to], [end.from, end.to]);
+    if (!structural) return undefined;
+    const opening = [begin];
+    const closing = [end];
+    // The group the grammar made an argument of `\begin`: its braces are not text. (Each end shows its source when the caret touches it:
+    // the caret in the text shows the group's own switches, the innermost construct.)
+    const inner = match[4];
+    if (inner.startsWith("{") && inner.endsWith("}") && readGroup(inner, 0, TEX_GROUPS)?.end === inner.length) {
+      opening.push({ from: begin.to, to: begin.to + 1 });
+      closing.unshift({ from: end.from - 1, to: end.from });
+    }
+    emit({ kind: "env-begin", from: opening[0].from, to: opening[opening.length - 1].to, reveal: "touch", replaces: opening });
+    emit({ kind: "env-end", from: closing[0].from, to: end.to, reveal: "touch", replaces: closing });
+    return undefined;
+  }
+
   function environment(node: SyntaxNode): false | undefined {
     const formed = wellFormedEnvironment(node, state);
-    if (!formed) return undefined;
+    if (!formed) return oneLineTextBlock(node);
     // IEEEtran's `IEEEproof` is amsthm's `proof` (its optional `[Proof of …]` heading and end mark), unless the document defines it.
     const name = formed.name === "IEEEproof" && !defs.environments.has("IEEEproof") && !defs.theorems.has("IEEEproof") ? "proof" : formed.name;
     if (name === "thebibliography" || (name === "CSLReferences" && !hasDirectError(node))) return bibliography(node, formed);
@@ -2839,7 +2873,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     if ((text === "\\color" || FONT_SWITCHES[text]) && !isConsumed(ctrl)) {
       const color = text === "\\color" ? colorSwitch(node) : null;
       const after = color ? color.end : ctrl.to;
-      const container = color || text !== "\\color" ? switchEnd(node) : null;
+      // `\boldmath … \unboldmath` in a list item: the pair ends it, not the list (cs.SI 2611.09126).
+      const container = (color || text !== "\\color") && !(text === "\\boldmath" && pairedSwitchEnd(text, ctrl.to)) ? switchEnd(node) : null;
       if (container && container.text > after) {
         let textFrom = after;
         while (textFrom < container.text && / |\t/.test(read(state, textFrom, textFrom + 1))) textFrom++;
