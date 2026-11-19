@@ -163,8 +163,13 @@ export class PdfCommentService {
       if (!api) throw new ApiClientError("network", 0, "Not signed in.");
       threads = await api.listThreads(docId);
       const current = new Set(threads.map((thread) => thread.id));
-      for (const row of this.host.store.listThreads(docId)) if (!current.has(row.threadId)) this.host.store.deleteThread(row.threadId);
-      for (const thread of threads) this.host.store.putThread(thread.id, docId, thread);
+      const cached = new Map<string, string>();
+      for (const row of this.host.store.listThreads(docId)) {
+        if (!current.has(row.threadId)) this.host.store.deleteThread(row.threadId);
+        else cached.set(row.threadId, JSON.stringify(row.json));
+      }
+      // Only threads that changed are written: this runs on every sidecar copy.
+      for (const thread of threads) if (cached.get(thread.id) !== JSON.stringify(thread)) this.host.store.putThread(thread.id, docId, thread);
     } catch (error) {
       if (error instanceof ApiClientError && !error.transient && error.code !== "network" && error.code !== "needs-sign-in" && error.status !== 404) throw error;
       threads = this.host.store.listThreads(docId).map((row) => row.json as Thread);

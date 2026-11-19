@@ -15,8 +15,10 @@ const libraryPath = (value: unknown): value is string =>
  * renamed or deleted one, or this user did through the host). The windows
  * forward its tree-changed events here, so the PDFs' side-cars on this
  * computer (annotations, outline, definitions) are copied to the new path
- * when its bytes match, never overwriting or erasing; a removed PDF's
- * side-cars stay for identity reconciliation (src/lib/storage/pdf-sidecars.ts).
+ * when its bytes match, never overwriting or erasing (a move whose bytes have
+ * not arrived yet is replayed later); a removed PDF's side-cars are set aside,
+ * recoverable (src/lib/storage/pdf-sidecars.ts). At most MAX_PATHS per request;
+ * the renderer sends chunks and retries failures.
  */
 export async function POST(request: NextRequest) {
   const authError = requireAuth(request);

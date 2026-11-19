@@ -1,6 +1,6 @@
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, open, readFile, readdir, rename, rm, stat } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   assertImageFileName,
@@ -13,7 +13,7 @@ import { cachedPdfIdentity, parsePdfIdentity } from "@/lib/storage/pdf-identity"
 import {
   ensureAdminRoot,
   filePathFromParts,
-  getStateRoot,
+  getLocalLockDir,
   imageAnnotationsPath,
   imageAnnotationsDirectoryPath,
   legacyFlatImageAnnotationsPath,
@@ -468,7 +468,27 @@ async function pdfSidecarForRead(notebook: string, name: string, pathParts: stri
   return annotationsPath;
 }
 
-type PdfSidecar = { annotations?: unknown; comments?: unknown; source?: unknown };
+type PdfSidecar = { annotations?: unknown; comments?: unknown; source?: unknown; revision?: unknown };
+
+/**
+ * False when the sidecar records the bytes of a different PDF than the one at
+ * `sourcePath`: a new PDF reused the old one's name. Legacy sidecars with no
+ * recorded identity are trusted (hiding a person's own notes without evidence
+ * is worse); reconcilePdfSidecars gives them an identity in the background.
+ */
+async function sidecarMatchesPdf(sidecar: PdfSidecar, sourcePath: string): Promise<boolean> {
+  const stored = parsePdfIdentity(sidecar.source);
+  if (!stored) return true;
+  const current = await cachedPdfIdentity(sourcePath).catch(() => null);
+  return !current || (current.contentHash === stored.contentHash && current.size === stored.size);
+}
+
+async function readTextIfExists(target: string): Promise<string | null> {
+  try { return await readFile(target, "utf8"); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
 
 /** The sidecar's JSON, or an empty one when the PDF has none yet. */
 async function readPdfSidecar(annotationsPath: string): Promise<PdfSidecar> {
@@ -490,8 +510,9 @@ const sidecarLocks = lockState[PDF_SIDECAR_LOCKS] ??= new Map<string, Promise<un
  * different hands (the viewer saves whole markup lists; comments change one
  * thread at a time, also from the agent). Each write reads the sidecar and
  * keeps the other half, one writer at a time: queued in this process, and an
- * OS lock file across Next workers. The lock lives in the library's state
- * folder, not beside the sidecar, so a folder move never carries a held lock.
+ * OS lock file across Next workers. The lock lives in this machine's temp
+ * directory (getLocalLockDir), never in the synced library, so another
+ * computer's lock is never judged by a PID that means nothing here.
  */
 async function withPdfSidecar<T>(annotationsPath: string, fn: () => Promise<T>): Promise<T> {
   const previous = sidecarLocks.get(annotationsPath) ?? Promise.resolve();
@@ -501,7 +522,7 @@ async function withPdfSidecar<T>(annotationsPath: string, fn: () => Promise<T>):
 }
 
 async function withSidecarFileLock<T>(annotationsPath: string, fn: () => Promise<T>): Promise<T> {
-  const lockPath = path.join(getStateRoot(), ".libera", "locks", `pdf-sidecar-${createHash("sha256").update(annotationsPath).digest("hex").slice(0, 32)}.lock`);
+  const lockPath = path.join(getLocalLockDir(), `pdf-sidecar-${createHash("sha256").update(annotationsPath).digest("hex").slice(0, 32)}.lock`);
   await mkdir(path.dirname(lockPath), { recursive: true });
   let lock;
   for (let attempt = 0; attempt < 100; attempt++) {
@@ -534,12 +555,29 @@ async function updatePdfSidecar<T>(relativePath: string, change: (sidecar: PdfSi
   await migratePdfAnnotations(notebook, pathParts);
   const annotationsPath = pdfAnnotationsPath(notebook, pathParts);
   return withPdfSidecar(annotationsPath, async () => {
-    const { sidecar, result } = change(await readPdfSidecar(annotationsPath));
-    const comments = Array.isArray(sidecar.comments) && sidecar.comments.length ? { comments: sidecar.comments } : {};
-    // The PDF's bytes, so the notes can find it again after a rename outside Libera (pdf-sidecars.ts).
-    const source = await cachedPdfIdentity(sourcePath).catch(() => parsePdfIdentity(sidecar.source));
-    await writeJsonForSource(annotationsPath, { annotations: Array.isArray(sidecar.annotations) ? sidecar.annotations : [], ...comments, ...(source ? { source } : {}) }, sourcePath, signature);
-    return result;
+    // The process lock is local, so another device's copy of this sidecar can
+    // arrive through the sync folder at any time. Compare the file's bytes
+    // just before publishing; if it changed, apply `change` again to the new
+    // content (a merge, not whole-file replacement of what the other device wrote).
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const before = await readTextIfExists(annotationsPath);
+      let current = await readPdfSidecar(annotationsPath);
+      if (!await sidecarMatchesPdf(current, sourcePath)) {
+        // Notes of the PDF that used to have this name: keep them recoverable beside the sidecar, start this PDF clean.
+        const replaced = `${annotationsPath}.replaced-${createHash("sha256").update(before ?? "").digest("hex").slice(0, 12)}.json`;
+        if (before !== null && !(await pathExists(replaced))) await writeFile(replaced, before, { encoding: "utf8", flag: "wx" }).catch(() => undefined);
+        current = { revision: current.revision };
+      }
+      const { sidecar, result } = change(current);
+      const comments = Array.isArray(sidecar.comments) && sidecar.comments.length ? { comments: sidecar.comments } : {};
+      // The PDF's bytes, so the notes can find it again after a rename outside Libera (pdf-sidecars.ts).
+      const source = await cachedPdfIdentity(sourcePath).catch(() => parsePdfIdentity(sidecar.source));
+      if (await readTextIfExists(annotationsPath) !== before) continue;
+      const revision = (Number.isSafeInteger(current.revision) ? current.revision as number : 0) + 1;
+      await writeJsonForSource(annotationsPath, { annotations: Array.isArray(sidecar.annotations) ? sidecar.annotations : [], ...comments, ...(source ? { source } : {}), revision }, sourcePath, signature);
+      return result;
+    }
+    throw new StorageError("The PDF's notes changed on another device while saving. Retry.", 409);
   });
 }
 
@@ -557,9 +595,11 @@ export async function readPdfAnnotations(
   await stat(filePathFromParts(notebook, pathParts));
 
   const sidecar = await readPdfSidecar(await pdfSidecarForRead(notebook, name, pathParts));
+  // Another PDF's notes (this name was reused) are not shown; the sidecar stays on disk.
+  const belongs = await sidecarMatchesPdf(sidecar, filePathFromParts(notebook, pathParts));
   return {
     path: relativeFilePath(notebook, pathParts),
-    annotations: normalizePdfAnnotations(sidecar.annotations),
+    annotations: belongs ? normalizePdfAnnotations(sidecar.annotations) : [],
   };
 }
 
@@ -592,7 +632,8 @@ export async function readPdfCommentThreads(relativePath: string): Promise<PdfCo
   await stat(filePathFromParts(notebook, pathParts));
 
   const sidecar = await readPdfSidecar(await pdfSidecarForRead(notebook, name, pathParts));
-  return { path: relativeFilePath(notebook, pathParts), threads: normalizePdfCommentThreads(sidecar.comments, randomUUID) };
+  const belongs = await sidecarMatchesPdf(sidecar, filePathFromParts(notebook, pathParts));
+  return { path: relativeFilePath(notebook, pathParts), threads: belongs ? normalizePdfCommentThreads(sidecar.comments, randomUUID) : [] };
 }
 
 /**

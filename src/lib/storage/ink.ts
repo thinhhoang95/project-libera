@@ -321,8 +321,11 @@ export async function writeInk(relativePath: string, chunk: string, opsValue: un
   const shared = isSharedNotebookPath(libraryPath);
 
   return withInkLock(target, async () => {
+    // The rendering's version before anything is merged: if another device
+    // publishes a newer one meanwhile, ours (merged from older strokes) must not replace it.
+    const renderingAuthority = shared && rendering ? await (await import("@/lib/collab/shared-writes")).readSharedBlob(`${notebook}/${rendering.normalized}`).catch(() => null) : null;
     const files = (await readInkFolder(folder, new Set([chunk]))).get(chunk) ?? [];
-    const others = files.filter((file) => file.author.key !== author.key);
+    let others = files.filter((file) => file.author.key !== author.key);
     let own = files.find((file) => file.author.key === author.key);
     // A follower's disk file may lag every successful save. Merge against
     // the host's acknowledged blob and fence the replacement by its identity.
@@ -331,6 +334,18 @@ export async function writeInk(relativePath: string, chunk: string, opsValue: un
     if (authority) {
       own = authority.contentBase64 === null ? undefined : normalizeInkAuthorFile(JSON.parse(Buffer.from(authority.contentBase64, "base64").toString("utf8"))) ?? undefined;
       if (authority.contentBase64 !== null && (!own || own.author.key !== author.key)) throw new StorageError("The shared ink author file is invalid; it was kept unchanged.", 409);
+    }
+    if (shared) {
+      // Other authors' files on a follower's disk may lag the host: merge their acknowledged strokes.
+      const { readSharedBlob } = await import("@/lib/collab/shared-writes");
+      others = (await Promise.all(others.map(async (file) => {
+        const theirs = await readSharedBlob(inkLibraryPath(notebook, pathParts, inkFileName(chunk, file.author.key))).catch(() => null);
+        if (!theirs || theirs.contentBase64 === null) return file;
+        try {
+          const parsed = normalizeInkAuthorFile(JSON.parse(Buffer.from(theirs.contentBase64, "base64").toString("utf8")));
+          return parsed && parsed.author.key === file.author.key ? parsed : file;
+        } catch { return file; }
+      })));
     }
     if (own && !canWriteInkFile(own)) throw new StorageError("This ink was saved by a newer version of Libera. Update Libera to change it.", 409);
     if (!own) {
@@ -374,7 +389,7 @@ export async function writeInk(relativePath: string, chunk: string, opsValue: un
     if (rendering) {
       const svg = inkToSvg(payload.strokes.map((item) => item.stroke), payload.frame ?? own.frame, "Ink");
       const onDisk = await readFile(rendering.targetPath, "utf8").catch(() => null);
-      if (onDisk !== svg) await publishRendering(notebook, rendering, svg, shared);
+      if (onDisk !== svg) await publishRendering(notebook, rendering, svg, shared, renderingAuthority);
     }
     return { path: libraryPath, author: author.key, chunks: [payload] };
   });
@@ -387,10 +402,18 @@ function renderingTarget(notebook: string, chunk: string, source: unknown) {
   return asset;
 }
 
-async function publishRendering(notebook: string, rendering: { normalized: string; targetPath: string }, svg: string, shared: boolean) {
+async function publishRendering(notebook: string, rendering: { normalized: string; targetPath: string }, svg: string, shared: boolean, authority: { fileId?: string | null; blobHash?: string | null; contentBase64: string | null } | null = null) {
   if (shared) {
-    const { writeSharedBlob } = await import("@/lib/collab/shared-writes");
-    await writeSharedBlob(`${notebook}/${rendering.normalized}`, new TextEncoder().encode(svg));
+    const { writeSharedBlob, SharedWriteError } = await import("@/lib/collab/shared-writes");
+    try {
+      // Only replaces the rendering this save started from; a newer one stays, and the next save repairs it.
+      await writeSharedBlob(`${notebook}/${rendering.normalized}`, new TextEncoder().encode(svg),
+        authority?.contentBase64 !== null && authority?.fileId && authority.blobHash
+          ? { expectedFileId: authority.fileId, expectedBlobHash: authority.blobHash }
+          : authority ? { createOnly: true } : {});
+    } catch (error) {
+      if (!(error instanceof SharedWriteError && error.code === "conflict")) throw error;
+    }
     return;
   }
   await publishText(rendering.targetPath, svg);

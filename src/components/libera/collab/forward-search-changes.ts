@@ -11,6 +11,50 @@ const FORWARD_DELAY_MS = 1_000;
 const AUDIO_PATH = /\.(m4a|mp3|wav|aac|ogg|oga|opus|flac|webm)$/i;
 const PDF_PATH = /\.pdf$/i;
 
+/** The sidecar endpoints reject a request with more changes than this. */
+export const SIDECAR_CHUNK = 500;
+const SIDECAR_RETRY_DELAYS_MS = [1_000, 4_000, 15_000];
+
+type SidecarChanges = { moves: Array<{ from: string; to: string }>; removed: string[] };
+
+/** The changes in requests of at most SIDECAR_CHUNK entries, moves first. */
+export function chunkSidecarChanges({ moves, removed }: SidecarChanges): SidecarChanges[] {
+  const entries = [
+    ...moves.map((move) => ({ move })),
+    ...removed.map((path) => ({ path })),
+  ];
+  const chunks: SidecarChanges[] = [];
+  for (let start = 0; start < entries.length; start += SIDECAR_CHUNK) {
+    const part = entries.slice(start, start + SIDECAR_CHUNK);
+    chunks.push({
+      moves: part.flatMap((entry) => ("move" in entry ? [entry.move] : [])),
+      removed: part.flatMap((entry) => ("path" in entry ? [entry.path] : [])),
+    });
+  }
+  return chunks;
+}
+
+/**
+ * Sends sidecar changes in endpoint-sized requests, checks every response, and
+ * retries a failed one a few times: a rejected or dropped request would
+ * otherwise lose a move for good. Resolves to whether every chunk was accepted.
+ */
+export async function postSidecarChanges(url: string, changes: SidecarChanges, delays: number[] = SIDECAR_RETRY_DELAYS_MS): Promise<boolean> {
+  let allSent = true;
+  for (const chunk of chunkSidecarChanges(changes)) {
+    let sent = false;
+    for (let attempt = 0; attempt <= delays.length && !sent; attempt++) {
+      if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, delays[attempt - 1]));
+      try {
+        const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(chunk) });
+        sent = response.ok;
+      } catch { /* Offline or restarting: try again. */ }
+    }
+    if (!sent) allSent = false;
+  }
+  return allSent;
+}
+
 export function useForwardSharedFileChanges(): void {
   useEffect(() => {
     const pending = new Set<string>();
@@ -35,21 +79,13 @@ export function useForwardSharedFileChanges(): void {
         const moves = event.moves.filter((move) => AUDIO_PATH.test(move.from));
         const removed = event.removed.filter((path) => AUDIO_PATH.test(path));
         if (moves.length || removed.length) {
-          void fetch("/api/transcripts/sidecars", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ moves, removed }),
-          }).catch(() => undefined);
+          void postSidecarChanges("/api/transcripts/sidecars", { moves, removed });
         }
         // PDFs' local side-cars (annotations, outline, definitions) too.
         const pdfMoves = event.moves.filter((move) => PDF_PATH.test(move.from));
         const pdfRemoved = event.removed.filter((path) => PDF_PATH.test(path));
         if (pdfMoves.length || pdfRemoved.length) {
-          void fetch("/api/pdf-sidecars", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ moves: pdfMoves, removed: pdfRemoved }),
-          }).catch(() => undefined);
+          void postSidecarChanges("/api/pdf-sidecars", { moves: pdfMoves, removed: pdfRemoved });
         }
       }
       const paths = event.t === "files-changed" ? event.paths : [...event.added, ...event.moves.flatMap((move) => [move.from, move.to]), ...event.removed];
