@@ -12,7 +12,7 @@ import path from "node:path";
 
 import type * as Y from "yjs";
 
-import type { FileBlobResponse, FileOpRequest, HostEvent, LocalAlbum, LocalAlbumPhoto, Reconciliation, UpdateAlbumRequest } from "../../../src/lib/collab/local-api";
+import type { FileBlobResponse, FileOpRequest, FileOpResult, HostEvent, LocalAlbum, LocalAlbumPhoto, Reconciliation, UpdateAlbumRequest } from "../../../src/lib/collab/local-api";
 import type { Provenance } from "../../../src/lib/collab/protocol/actor";
 import type { Role } from "../../../src/lib/collab/protocol/roles";
 import { roleAtLeast } from "../../../src/lib/collab/protocol/roles";
@@ -23,6 +23,7 @@ import {
   ManifestKeys,
   albumImageType,
   albumPathError,
+  docKindForPath,
   manifestNewNameError,
   manifestPathKey,
   type AlbumPhotoRecord,
@@ -75,7 +76,8 @@ import {
 import { computeLayout, entriesUnder, entryRecord, readManifest } from "./layout";
 import { FRESH_RETAIN_BYTES, MAX_UPLOAD_BYTES, SCAN_READ_BUDGET_BYTES, noteTruncatedWalk, quietWaitMs, readShared, scanReadState } from "./scan-reads";
 import { PdfCommentService } from "./pdf-comments";
-import { AUDIO_EXTENSIONS } from "../../../src/lib/storage/constants";
+import { AUDIO_EXTENSIONS, MARKDOWN_EXTENSIONS } from "../../../src/lib/storage/constants";
+import { pythonSidecarPath } from "../../../src/lib/python/sidecar";
 import { PdfMarksRuntime } from "./pdf-marks";
 import { PDF_LIVE_SETTING } from "../../../src/lib/collab/protocol/pdf";
 import { emptyState, isStaleCopy, isUncertainCopy, readBase, readMarker, readState, setMaterialized, writeBase, writeMarker, writeState, deleteBase, type LayoutRecord, type ProjectState } from "./state";
@@ -2543,6 +2545,53 @@ export class SharedProject {
     return [{ ...moving[0], path: next, updatedAt: now }];
   }
 
+  /**
+   * A note's Python code (`_assets/<note path>/<note>.py`, a text document in
+   * the manifest) follows the note like its ink and transcript do.
+   */
+  private pythonCompanion(entries: ManifestEntry[], relative: string): ManifestEntry[] {
+    if (this.info.album || !MARKDOWN_EXTENSIONS.has(path.posix.extname(relative).toLowerCase())) return [];
+    // The notebook segment is dropped again: manifest paths are relative to it.
+    return entriesUnder(entries, pythonSidecarPath(`n/${relative}`).split("/").slice(1).join("/")).filter((entry) => entry.kind !== "folder");
+  }
+
+  /** The renamed note's Python code at its new path; none when the destination is occupied. */
+  private pythonCompanionMoves(doc: Y.Doc, from: string, to: string, now: number): ManifestEntry[] {
+    if (from === to || !MARKDOWN_EXTENSIONS.has(path.posix.extname(to).toLowerCase())) return [];
+    const entries = [...readManifest(doc).values()];
+    const moving = this.pythonCompanion(entries, from);
+    if (moving.length !== 1) return [];
+    const next = pythonSidecarPath(`n/${to}`).split("/").slice(1).join("/");
+    const key = manifestPathKey(next);
+    const displayed = computeLayout(entries).paths;
+    const taken = entries.some((entry) => entry.fileId !== moving[0].fileId && manifestPathKey(displayed.get(entry.fileId) ?? entry.path) === key);
+    if (taken || !isShareablePath(next)) return [];
+    return [{ ...moving[0], path: next, updatedAt: now }];
+  }
+
+  /**
+   * Renaming one file never changes what kind of file it is and never deletes
+   * a record, as in a local notebook (files.ts assertTypeChangeLosesNothing):
+   * the document or blob would be served to the wrong viewer, and the ink,
+   * transcript or Python code kept for the old type would be left without a
+   * file. The bytes are not converted; the person removes the records or keeps
+   * the type.
+   */
+  private assertRenameKeepsRecords(file: ManifestEntry, from: string, to: string): void {
+    const fromExtension = path.posix.extname(from).toLowerCase();
+    const toExtension = path.posix.extname(to).toLowerCase();
+    const wanted = docKindForPath(to);
+    const kindChanged = file.kind === "doc" ? wanted !== (file.docKind ?? null) : wanted !== null && wanted !== docKindForPath(from);
+    if (kindChanged) throw new ControlError(409, "conflict", `${from} cannot become ${path.posix.basename(to)}: a file of that type is shared differently. Keep its type, or add the file again under the new name.`);
+    const doc = this.manifestDoc();
+    const kept: string[] = [];
+    if (fromExtension !== toExtension && this.inkCompanions(doc, from).length) kept.push("ink");
+    const entries = [...readManifest(doc).values()];
+    if (!AUDIO_EXTENSIONS.has(toExtension) && this.transcriptCompanion(entries, from).length) kept.push("a transcript");
+    if (!MARKDOWN_EXTENSIONS.has(toExtension) && this.pythonCompanion(entries, from).length) kept.push("Python code");
+    if (kept.length) throw new ControlError(409, "conflict", `${from} has ${kept.join(" and ")} that a ${toExtension || "file"} file cannot keep. Remove ${kept.length > 1 ? "them" : "it"} or keep the file type, then rename again.`);
+  }
+
   private pathFree(doc: Y.Doc, relative: string, except?: string, folder = false): boolean {
     const key = manifestPathKey(relative);
     return [...readManifest(doc).values()].every((entry) => {
@@ -2632,7 +2681,7 @@ export class SharedProject {
   }
 
   /** create-file, create-folder, write-blob, rename and delete, through the manifest; the disk follows. */
-  fileOp(request: FileOpRequest): Promise<{ paths: string[] }> {
+  fileOp(request: FileOpRequest): Promise<FileOpResult> {
     return this.enqueueExplicit(async () => {
       if (!this.canEdit) throw new ControlError(403, "forbidden", "Your role cannot add, rename or delete files.");
       if (!this.manifestReady()) throw new ControlError(503, "offline", "The notebook's file list has not loaded yet.");
@@ -2655,6 +2704,8 @@ export class SharedProject {
       }
       const paths: string[] = [];
       const uploaded: string[] = [];
+      // The file a create or a blob write produced or changed, for the caller to name it by.
+      let resultFileId: string | undefined;
       try {
         switch (request.op) {
           case "create-file":
@@ -2667,8 +2718,8 @@ export class SharedProject {
             } else {
               created = await this.createFileEntry(fileId, relative, encodeText(request.content ?? ""), accountId, now);
             }
-            await this.writeManifest((map) => map.set(fileId, entryRecord(created)), { source: "typing" });
-            paths.push(relative);
+            paths.push(await this.publishCreated(created));
+            resultFileId = fileId;
             break;
           }
           case "write-blob": {
@@ -2687,10 +2738,11 @@ export class SharedProject {
               const fileId = randomId("fil");
               if (request.pdfSeed && this.pdfs.enabled) await this.pdfs.seed(fileId, relative, request.pdfSeed);
               const created = await this.createFileEntry(fileId, relative, bytes, accountId, now);
-              await this.writeManifest((map) => map.set(fileId, entryRecord(created)), { source: "typing" });
-              paths.push(relative);
+              paths.push(await this.publishCreated(created));
+              resultFileId = fileId;
               break;
             }
+            resultFileId = existing.fileId;
             if (existing.kind === "doc") throw new ControlError(409, "conflict", `${existing.path} is a shared document; change its text with edits.`);
             if (existing.kind !== "blob") throw new ControlError(409, "conflict", `${existing.path} is a folder.`);
             const api = this.ctx.host.api;
@@ -2739,7 +2791,10 @@ export class SharedProject {
             });
             // A folder unless `relative` names a file (folders may have no entry of their own).
             const folder = !moving.some((entry) => entry.kind !== "folder" && manifestPathKey(displayed.get(entry.fileId) ?? entry.path) === manifestPathKey(relative));
-            const sameKind = folder || path.posix.extname(relative).toLowerCase() === path.posix.extname(to).toLowerCase();
+            if (!folder) {
+              const file = moving.find((entry) => entry.kind !== "folder" && manifestPathKey(displayed.get(entry.fileId) ?? entry.path) === manifestPathKey(relative));
+              if (file) this.assertRenameKeepsRecords(file, relative, to);
+            }
             await this.writeManifest((map, doc) => {
               for (const entry of updates) map.set(entry.fileId, entryRecord(entry));
               for (const entry of this.inkCompanionMoves(doc, relative, to, folder, now)) {
@@ -2751,18 +2806,8 @@ export class SharedProject {
                   map.set(entry.fileId, entryRecord(entry));
                   paths.push(entry.path);
                 }
-                // A recording renamed to another type leaves no transcript behind.
-                if (!AUDIO_EXTENSIONS.has(path.posix.extname(to).toLowerCase())) {
-                  for (const entry of this.transcriptCompanion([...readManifest(doc).values()], relative)) {
-                    map.delete(entry.fileId);
-                    paths.push(entry.path);
-                  }
-                }
-              }
-              // A file that becomes another type keeps none of its ink, as in a local notebook.
-              if (!sameKind) {
-                for (const entry of this.inkCompanions(doc, relative)) {
-                  map.delete(entry.fileId);
+                for (const entry of this.pythonCompanionMoves(doc, relative, to, now)) {
+                  map.set(entry.fileId, entryRecord(entry));
                   paths.push(entry.path);
                 }
               }
@@ -2801,11 +2846,26 @@ export class SharedProject {
         // change; rebuild the resolvePath index here, or a file just created
         // would not resolve (the caller's next request is often an edit to it).
         this.ctx.layoutChanged(this.info.projectId);
-        return { paths: paths.map((item) => this.liberaPath(item)) };
+        return { paths: paths.map((item) => this.liberaPath(item)), ...(resultFileId ? { fileId: resultFileId } : {}) };
       } finally {
         for (const hash of uploaded) this.uploadedBlobs.delete(hash);
       }
     });
+  }
+
+  /**
+   * Adds a created entry to the manifest and returns the path the layout gives
+   * it. The name is checked again in the tick that writes it (the file was
+   * created over several awaits, so someone may have taken it since: 409,
+   * nothing published). A create on another device can still land in the same
+   * merge and be placed with a suffix; the caller gets that path, never the
+   * requested one, which would open the other file.
+   */
+  private async publishCreated(created: ManifestEntry): Promise<string> {
+    this.entries = this.readEntries();
+    this.assertFree(created.path, []);
+    await this.writeManifest((map) => map.set(created.fileId, entryRecord(created)), { source: "typing" });
+    return computeLayout(this.readEntries().values()).paths.get(created.fileId) ?? created.path;
   }
 
   /**

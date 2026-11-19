@@ -270,15 +270,25 @@ async function performFileMove(move: FileMove): Promise<LiberaFileMovePayload> {
   try { await movePathWithReview(currentRelativePath, nextRelativePath, nextFileType, images, () => moveDocumentWithSidecars(move)); }
   catch (error) { await images?.discard(); throw error; }
   await finishMarkdownImageMove(currentRelativePath, nextRelativePath, images);
-  await moveReviewPaths(new Map([[currentRelativePath, nextRelativePath]]), { replaceEmpty: true });
-  await moveReferenceAttachments(currentRelativePath, nextRelativePath);
-  await renameFileMetadataPath(currentRelativePath, nextRelativePath);
+  await movePathDerivedRecords(currentRelativePath, nextRelativePath);
   // After the attachment wiring, so copied entries see this file's new path.
   const references = await copyCitedReferences(notebook, nextNotebook, currentRelativePath, nextRelativePath);
   await recordFileMove(currentRelativePath, nextRelativePath, currentFileType, images, references);
   notifySearchChanges([currentRelativePath, nextRelativePath]);
 
   return withReferences({ ...await readLiberaFile(nextRelativePath), ...(images ? { imageSources: images.imageSources } : {}), ...(changedLinks.length ? { changedLinks } : {}) }, references);
+}
+
+/**
+ * The records a file has at a path of their own, beside its sidecars (which
+ * SIDECAR_KINDS lists): review comments, reference attachments, and the
+ * workspace's per-path metadata (stars, tags, ...). One list for the move of a
+ * local file and of a shared one, so neither forgets a kind.
+ */
+export async function movePathDerivedRecords(from: string, to: string) {
+  await moveReviewPaths(new Map([[from, to]]), { replaceEmpty: true });
+  await moveReferenceAttachments(from, to);
+  await renameFileMetadataPath(from, to);
 }
 
 /**

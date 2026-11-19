@@ -2077,7 +2077,7 @@ export class NotebookServiceImpl implements NotebookService {
     return handle.runtime;
   }
 
-  async fileOp(projectId: string, request: FileOpRequest): Promise<{ paths: string[] }> {
+  async fileOp(projectId: string, request: FileOpRequest): Promise<import("../../../src/lib/collab/local-api").FileOpResult> {
     if (!request || typeof request !== "object") throw new ControlError(400, "bad-request", "A file operation is required.");
     try {
       return await this.runningProject(projectId).fileOp(request);
