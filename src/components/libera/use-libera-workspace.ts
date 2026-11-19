@@ -15,6 +15,7 @@ import type {
   LiberaFilePayload,
   LiberaFolderNode,
   LiberaNotebookGroup,
+  LiberaNotebookNode,
   LiberaNotebookViewOptions,
   LiberaTree,
   LiberaTreeNode,
@@ -112,7 +113,7 @@ import { getSharedDocRegistry, type SharedDocSession } from "@/lib/collab/client
 import { isTabDirty, journalTab, mayTakeContentFromDisk, readTabDraft, type DraftWriteOptions } from "@/lib/collab/client/workspace";
 import { aiSuggestionNotice, suggestAiOnSharedTab } from "@/lib/collab/client/suggestions-ai";
 import { subscribeHostEvents } from "@/lib/collab/ui/bridge";
-import { subscribeSharedTreeChanges } from "@/lib/collab/ui/tree-changes";
+import { isIdentityConflict, notebooksToRefresh, replaceNotebook, subscribeSharedTreeChanges, withBackoff, type FileMove, type RefreshScope } from "@/lib/collab/ui/tree-changes";
 import type { SnapshotEdit } from "@/lib/collab/suggestions/model";
 import { rewriteCitationKeys } from "@/lib/references/citation-syntax";
 import { rewriteMarkdownImageSources } from "@/lib/markdown-image-sources";
@@ -625,6 +626,28 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       persist: Boolean(expandNotebook),
     });
     return nextTree;
+  }
+
+  /**
+   * What a shared edit refreshes: only the notebooks it touched that this
+   * window shows, each read alone (archive included) and without the library-wide
+   * sidecar upkeep. A notebook this window has never seen means the library
+   * changed shape, so everything is read.
+   */
+  async function refreshNotebooks(scope: RefreshScope) {
+    const names = notebooksToRefresh(scope, appliedTreeRef.current);
+    if (!names) { await refreshTree(undefined, { onlyIfChanged: true }); return; }
+    for (const name of names) {
+      const { notebook } = await apiRequest<{ notebook: LiberaNotebookNode | null }>(`/api/tree?notebook=${encodeURIComponent(name)}&includeArchive=true`);
+      // Gone since the event: the shape changed after all.
+      if (!notebook) { await refreshTree(undefined, { onlyIfChanged: true }); return; }
+      const shown = appliedTreeRef.current;
+      if (!shown) continue;
+      const merged = replaceNotebook(shown, notebook);
+      if (JSON.stringify(merged.notebooks) === JSON.stringify(shown.notebooks)) continue;
+      appliedTreeRef.current = merged;
+      setTree(merged);
+    }
   }
 
   useEffect(() => {
@@ -3118,6 +3141,24 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       await savePendingFor(activeTab);
       await refreshTree(activeTab.file.notebook);
     } catch (error) {
+      // The disk has another version than this tab opened. Take it as the tab's saved text and keep the draft:
+      // the tab stays dirty and the next save, which now names that version, is a deliberate replacement.
+      if ((error as { status?: number }).status === 409) {
+        const onDisk = await apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(activeTab.file.path)}`).then(
+          (payload) => ({ text: payload.content ?? "" }),
+          (readError: { status?: number }) => (readError.status === 404 ? { text: null } : undefined),
+        );
+        if (onDisk) {
+          const gone = onDisk.text === null;
+          updateTab(activeTab.id, (tab) => ({
+            ...tab,
+            ...(gone ? {} : { saved: onDisk.text as string }),
+            status: "error",
+            error: tRef.current(gone ? "fileGoneOnDiskError" : "fileChangedOnDiskError"),
+          }));
+          return;
+        }
+      }
       updateTab(activeTab.id, (tab) => ({
         ...tab,
         status: "error",
@@ -3732,41 +3773,56 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
    * saved copy and draft follow (movedTabText).
    */
   function retargetOpenTab(fromPath: string, payload: LiberaFilePayload | LiberaFileMovePayload) {
-    const nextId = payload.file.path;
-    // Unsaved ink and annotations follow, before the views re-render under the new path.
-    pendingSaves.moveUnsaved(fromPath, nextId, { sources: "imageSources" in payload ? payload.imageSources : undefined });
-    const openTab = tabs.find((tab) => tab.file.path === fromPath);
-    let moved: ReturnType<typeof movedTabText> = null;
-    if (openTab) {
-      const draft = getTabDraft(openTab);
-      moved = movedTabText(openTab, draft, payload);
+    retargetOpenTabs([{ from: fromPath, payload }]);
+  }
 
-      forgetTabDraft(openTab.id);
-      rememberTabDraft(nextId, moved?.draft ?? draft);
+  /**
+   * Retargets the tabs of several files that moved together (one host event).
+   * Each tab is matched on its path as it was before any move, so a swap swaps
+   * and two files never end up under one name; unsaved ink and annotations
+   * follow the same pairs.
+   */
+  function retargetOpenTabs(items: { from: string; payload: LiberaFilePayload | LiberaFileMovePayload }[]) {
+    const byFrom = new Map(items.map((item) => [item.from, item.payload]));
+    pendingSaves.moveUnsavedMany(items.map(({ from, payload }) => ({ from, to: payload.file.path, sources: "imageSources" in payload ? payload.imageSources : undefined })));
+    const movedText = new Map<string, ReturnType<typeof movedTabText>>();
+    const drafts = new Map<string, string>();
+    for (const openTab of tabs) {
+      const payload = byFrom.get(openTab.file.path);
+      if (!payload) continue;
+      const draft = getTabDraft(openTab);
+      const moved = movedTabText(openTab, draft, payload);
+      movedText.set(openTab.file.path, moved);
+      drafts.set(payload.file.path, moved?.draft ?? draft);
     }
+    // Forget every old draft before remembering any new one: a swap reuses the names.
+    for (const openTab of tabs) if (byFrom.has(openTab.file.path)) forgetTabDraft(openTab.id);
+    for (const [nextId, draft] of drafts) rememberTabDraft(nextId, draft);
     setTabs((currentTabs) =>
-      currentTabs.map((currentTab) =>
-        currentTab.file.path === fromPath
-          ? {
-              ...currentTab,
-              id: nextId,
-              draft: latestDraftByTabIdRef.current[nextId] ?? currentTab.draft,
-              file: payload.file,
-              rawUrl: payload.rawUrl ?? `/api/files/raw/${encodeFilePath(nextId)}`,
-              ...(moved ? { saved: moved.saved, status: moved.draft === moved.saved ? "clean" as const : "dirty" as const } : {}),
-            }
-          : currentTab,
-      ),
+      currentTabs.map((currentTab) => {
+        const payload = byFrom.get(currentTab.file.path);
+        if (!payload) return currentTab;
+        const nextId = payload.file.path;
+        const moved = movedText.get(currentTab.file.path) ?? null;
+        return {
+          ...currentTab,
+          id: nextId,
+          draft: latestDraftByTabIdRef.current[nextId] ?? currentTab.draft,
+          file: payload.file,
+          rawUrl: payload.rawUrl ?? `/api/files/raw/${encodeFilePath(nextId)}`,
+          ...(moved ? { saved: moved.saved, status: moved.draft === moved.saved ? "clean" as const : "dirty" as const } : {}),
+        };
+      }),
     );
-    setActiveTabId((current) => (current === fromPath ? nextId : current));
-    setClosedViewStates((current) => remapClosedViewStates(current, (path) => (path === fromPath ? nextId : path)));
+    setActiveTabId((current) => byFrom.get(current)?.file.path ?? current);
+    setClosedViewStates((current) => remapClosedViewStates(current, (path) => byFrom.get(path)?.file.path ?? path));
   }
 
   // Shared working-copy writes can change links without changing the file layout.
   // Refresh for both host event types, and follow open tabs whose file moved.
-  const latestTreeChange = useRef({ refreshTree, retargetOpenTab });
+  const latestTreeChange = useRef({ refreshNotebooks, retargetOpenTabs });
   useLayoutEffect(() => {
-    latestTreeChange.current = { refreshTree, retargetOpenTab };
+    latestTreeChange.current = { refreshNotebooks, retargetOpenTabs };
   });
   useEffect(() => {
     if (!authenticated) return;
@@ -3775,25 +3831,30 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     let movesDone: Promise<void> = Promise.resolve();
     const stop = subscribeSharedTreeChanges(
       subscribeHostEvents,
-      async () => {
+      async (scope: RefreshScope) => {
         // Tabs follow their files first, but a move lookup that hangs must not freeze the file list.
         await Promise.race([movesDone, new Promise((resolve) => setTimeout(resolve, 10_000))]);
         if (!active) return;
-        // Most shared edits change no file's metadata; an identical tree is not applied, so nothing re-renders.
-        try { await latestTreeChange.current.refreshTree(undefined, { onlyIfChanged: true }); }
+        // Only the notebooks the events touched, and only those this window shows; an identical result is not applied, so nothing re-renders.
+        try { await latestTreeChange.current.refreshNotebooks(scope); }
         catch (error) { setWorkspaceError(error instanceof Error ? error.message : tRef.current("refreshTreeError")); }
       },
-      (moves) => {
+      (moves: FileMove[]) => {
         movesDone = movesDone.then(async () => {
-          for (const move of moves) {
-            if (!active) return;
+          // All destinations are looked up first, then every tab is retargeted in one step.
+          // A lookup that fails while the cloud is still delivering the file is retried a few times.
+          const found = await Promise.all(moves.map(async (move) => {
             try {
-              const payload = await apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(move.to)}`);
-              if (active) latestTreeChange.current.retargetOpenTab(move.from, payload);
+              const payload = await withBackoff(() => apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(move.to)}`));
+              return { from: move.from, payload };
             } catch {
               // The file is gone; one failed move must not stop the others.
+              return null;
             }
-          }
+          }));
+          if (!active) return;
+          const items = found.filter((item): item is { from: string; payload: LiberaFilePayload } => item !== null);
+          if (items.length) latestTreeChange.current.retargetOpenTabs(items);
         });
       },
     );
@@ -3828,6 +3889,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
           path: file.path,
           destinationNotebook,
           destinationName,
+          fileId: file.fileId,
         }),
       }, (payload) => ({ paths: [payload.file.path], moved: { from: file.path, to: payload.file.path } }));
       retargetOpenTab(file.path, payload);
@@ -3835,7 +3897,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       reportMovedLinks(payload);
       await refreshTree(payload.file.notebook);
     } catch (error) {
-      setWorkspaceError(error instanceof Error ? error.message : tRef.current("moveFileError"));
+      setWorkspaceError(isIdentityConflict(error) ? tRef.current("fileChangedUnderYouError") : error instanceof Error ? error.message : tRef.current("moveFileError"));
       // A failed move leaves the disk as it was, but never trust the tree to say so: show what is there.
       await refreshTree().catch(() => undefined);
     }
@@ -3877,6 +3939,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         body: JSON.stringify({
           path: file.path,
           destinationDirectory: normalizedDestination,
+          fileId: file.fileId,
         }),
       }, (payload) => ({ paths: [payload.file.path], moved: { from: file.path, to: payload.file.path } }));
       retargetOpenTab(file.path, payload);
@@ -3890,7 +3953,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         return next;
       });
     } catch (error) {
-      setWorkspaceError(error instanceof Error ? error.message : tRef.current("moveFileError"));
+      setWorkspaceError(isIdentityConflict(error) ? tRef.current("fileChangedUnderYouError") : error instanceof Error ? error.message : tRef.current("moveFileError"));
       // A failed move leaves the disk as it was, but never trust the tree to say so: show what is there.
       await refreshTree().catch(() => undefined);
     }
@@ -4175,7 +4238,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
   async function deleteFileNode(file: LiberaFileNode) {
     try {
-      await workspaceFileRequest<LiberaTree>(`/api/files?path=${encodeURIComponent(file.path)}`, {
+      await workspaceFileRequest<LiberaTree>(`/api/files?path=${encodeURIComponent(file.path)}${file.fileId ? `&fileId=${encodeURIComponent(file.fileId)}` : ""}`, {
         method: "DELETE",
       }, () => ({ removed: [file.path] }));
       tabs.forEach((tab) => {
@@ -4189,7 +4252,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       setActiveTabId((current) => (current === file.path ? "" : current));
       await refreshTree(file.notebook);
     } catch (error) {
-      setWorkspaceError(error instanceof Error ? error.message : tRef.current("deleteFileError"));
+      setWorkspaceError(isIdentityConflict(error) ? tRef.current("fileChangedUnderYouError") : error instanceof Error ? error.message : tRef.current("deleteFileError"));
+      // The path now belongs to another file: show what is there instead of the stale list.
+      if (isIdentityConflict(error)) await refreshTree().catch(() => undefined);
     }
   }
 

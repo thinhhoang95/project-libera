@@ -93,7 +93,7 @@ test("shared tree refreshes batch writes and moves, meet the first deadline, and
   assert.equal(refreshes, 2, "unmount cancels pending work and unsubscribes");
 });
 
-test("moves reach the consumer while the window is hidden, collapsed to their final destination", (t) => {
+test("moves reach the consumer while the window is hidden, as each event's simultaneous mapping", (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const events = hostEvents();
   const visibility = { hidden: () => true, onVisible: () => () => undefined };
@@ -105,8 +105,11 @@ test("moves reach the consumer while the window is hidden, collapsed to their fi
   events.emit(tree([{ from: "a.md", to: "b.md" }, { from: "b.md", to: "c.md" }]));
   events.emit(tree([{ from: "x.md", to: "y.md" }, { from: "y.md", to: "x.md" }]));
   events.emit(tree([{ from: "c.md", to: "d.md" }]));
-  assert.deepEqual(delivered, [[{ from: "a.md", to: "c.md" }], [{ from: "c.md", to: "d.md" }]],
-    "chains collapse within a delivery and round trips are dropped");
+  assert.deepEqual(delivered, [
+    [{ from: "a.md", to: "b.md" }, { from: "b.md", to: "c.md" }],
+    [{ from: "x.md", to: "y.md" }, { from: "y.md", to: "x.md" }],
+    [{ from: "c.md", to: "d.md" }],
+  ], "one event's moves are different files: a swap stays a swap, nothing is chained");
   t.mock.timers.tick(SHARED_TREE_REFRESH_MS * 2);
   assert.equal(refreshes, 0, "the tree refresh still waits for the window");
   stop();

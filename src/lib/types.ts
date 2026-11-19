@@ -155,6 +155,12 @@ export type LiberaFileNode = {
   changedAt?: string;
   /** Files this saved Markdown file links to, resolved against the tree. */
   linkedFilePaths?: string[];
+  /**
+   * The shared notebook's file id for this path, when the host listed it at
+   * the time the tree was built. Rename and delete send it so a path that
+   * another file has taken over is refused instead of acted on.
+   */
+  fileId?: string;
 };
 
 export type LiberaFolderNode = {
