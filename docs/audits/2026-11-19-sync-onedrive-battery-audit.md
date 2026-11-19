@@ -116,6 +116,16 @@ Three agents:
 | P4b manifest validation and unresolvable entries | 35; whether new names must pass `manifestNewNameError` in `fileOp` and on the server |
 | P4c shared rename leftovers and tree event ids | 13 leftovers (bibliography tether, per-file records under a renamed shared folder); file ids in host `tree-changed` moves |
 
+## Round C results (merged)
+
+No textual conflicts. Central `tsc` found one error (a `Y.Map` passed where a `ReadonlyMap` was typed), fixed.
+
+| Package | Status | Notes and gaps |
+|---|---|---|
+| P4a (5) | fixed | `writeManifest` records every field change it makes (path; blob hash with size and mime) as an intent; after a merge, the host whose change lost re-applies it on top of the merged entry. No wire-format change. Intents live in memory (lost on restart), are dropped once acknowledged and confirmed, and expire after 6 h; an offline write from another device arriving after that is decided by the merge as before. |
+| P4b (35) | fixed | One entry-shape check (`manifestEntryShapeError`) for the desktop parser and the server. The server rejects a changed entry whose new `docId` is not a document of this project (or of another kind) or whose new `blobHash` was not uploaded to this project. Clients already upload or create before writing the entry. An unfetchable blob backs off (to 5 min) and is reported once instead of being retried every 5 s. New and renamed names must leave room for sidecar suffixes, in `fileOp` (400) and on the server (new or renamed entries only). |
+| P4c (13 leftovers, event ids) | fixed | The tether already followed single-file renames through the reference "moved" event. A shared folder rename now moves every contained file's local records, reviews and reference attachments, and reports (after the rename) any record it could not move. Host `tree-changed` moves carry `fileId`. |
+
 ## Findings (verbatim from the review)
 
 ### Highest risk for data and file identity

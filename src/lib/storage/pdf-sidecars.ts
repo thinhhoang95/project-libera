@@ -101,7 +101,7 @@ async function setAside(notebook: string, store: KindStore, sidecarPath: string,
  * the PDF there has the bytes the side-car records, and only into a free
  * destination; the original stays. Removals leave side-cars in place for
  * reconcilePdfSidecars, which sets aside or re-attaches them by identity.
- * A removal sets the removed PDF's side-cars aside (retireRemovedPdf).
+ * A removal sets them aside only when other bytes already took the name (retireRemovedPdf).
  * Returns how many side-cars it copied.
  */
 export async function followSharedPdfChanges(moves: Array<{ from: string; to: string }>, removed: string[]) {
@@ -130,16 +130,18 @@ async function retireRemovedPdf(libraryPath: string) {
     const { notebook, pathParts } = splitFilePath(libraryPath);
     const present = await pdfExists(libraryPath);
     if (present === null) return; // Unreadable: not known to be gone.
+    // Gone: the side-cars stay. The host may put these very bytes back (a
+    // refused delete rolls back), and a different PDF arriving later under
+    // this name is told apart by the readers' identity check.
+    if (!present) return;
     const pdf = filePathFromParts(notebook, pathParts);
     for (const store of KINDS) {
       const sidecarPath = store.path(notebook, pathParts);
-      if (present) {
-        const identity = sidecarIdentity(await readJson(sidecarPath));
-        const current = identity ? await cachedPdfIdentity(pdf).catch(() => null) : null;
-        // Same bytes: still this PDF's. Different bytes: the name was reused. A legacy
-        // side-car with no identity cannot be told apart: it stays (the readers trust it too).
-        if (!identity || !current || (current.contentHash === identity.contentHash && current.size === identity.size)) continue;
-      }
+      const identity = sidecarIdentity(await readJson(sidecarPath));
+      const current = identity ? await cachedPdfIdentity(pdf).catch(() => null) : null;
+      // Same bytes: still this PDF's. Different bytes: the name was reused. A legacy
+      // side-car with no identity cannot be told apart: it stays (the readers trust it too).
+      if (!identity || !current || (current.contentHash === identity.contentHash && current.size === identity.size)) continue;
       await setAside(notebook, store, sidecarPath, libraryPath);
     }
   } catch { /* Left in place for identity reconciliation. */ }

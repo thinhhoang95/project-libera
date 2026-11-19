@@ -165,14 +165,18 @@ test("finding 15: the same PDF keeps its notes, and a legacy sidecar without a h
   assert.deepEqual(await texts("Notes/paper.pdf"), ["kept"]);
 }));
 
-test("finding 15: a shared removal sets the old sidecar aside so a new PDF at that name starts clean", () => withLibrary(async () => {
+test("finding 15: after a shared removal, a new PDF at that name starts clean and the old notes stay recoverable", () => withLibrary(async () => {
   await pdf("Notes/paper.pdf", "old paper");
   await writePdfAnnotations("Notes/paper.pdf", note("old note"));
   await rm(filePathFromParts("Notes", ["paper.pdf"]));
   await followSharedPdfChanges([], ["Notes/paper.pdf"]);
-  assert.equal(existsSync(pdfAnnotationsPath("Notes", ["paper.pdf"])), false, "the old sidecar is retired");
+  // Kept in place: the host may restore these very bytes (a refused delete rolls back).
+  assert.equal(existsSync(pdfAnnotationsPath("Notes", ["paper.pdf"])), true, "a removal keeps the sidecar");
   await pdf("Notes/paper.pdf", "new paper");
-  assert.deepEqual(await texts("Notes/paper.pdf"), []);
+  assert.deepEqual(await texts("Notes/paper.pdf"), [], "the new PDF does not show the old PDF's notes");
+  // A later removal event, with the new PDF already there, sets the old notes aside.
+  await followSharedPdfChanges([], ["Notes/paper.pdf"]);
+  assert.equal(existsSync(pdfAnnotationsPath("Notes", ["paper.pdf"])), false, "a name reused by other bytes retires the old sidecar");
 }));
 
 // ---- Finding 21 ---------------------------------------------------------------
