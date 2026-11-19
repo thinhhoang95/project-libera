@@ -205,6 +205,16 @@ The first full run found three regressions, fixed in code:
   was refused, losing that document. Both are kept; the answer is the created file's own
   (suffixed) path and id.
 
+After merging `fix/latex-visual-audit-10` and `perf/rerender-audit` (five conflicts, all in the
+tree refresh path: P11's notebook-scoped refresh and file ids were kept alongside perf's per-file
+metadata check and throttled upkeep), the suites found one more bug, which predates this audit:
+
+- **Quiet period skipped for files changed during a scan** (finding 28): `quietWaitMs` ignored any
+  file time later than `now` as a skewed clock. A scan takes `now` before it walks, and `Date.now()`
+  rounds down while file times keep the fraction, so a file written during the walk (or in the
+  same millisecond) was imported at once, possibly half-written. Times up to a minute ahead now
+  count as just changed.
+
 ## Test inventory
 
 ### Broken on `main` before this work (still failing; unrelated to sync)
@@ -229,7 +239,9 @@ missing `refreshTree` dependency in `use-libera-workspace.ts`.
 Failed once in the first full run, passed alone (on `main` and the branch) and in the second full run:
 `scripts/editor/latex-visual-gaps-text.test.ts` ("boxes, rules, space and symbols in running text are
 drawn; \texorpdfstring …") and `scripts/editor/references-editors-source.test.ts` ("textarea: citation
-hover uses the shared dismissal rules …").
+hover uses the shared dismissal rules …"). After the final merge, `scripts/collab/albums-host.test.ts`
+("when access ends, the member keeps the photos they added") failed once in a full run and passed twice
+alone.
 
 ### Updated because a finding changed the behaviour on purpose (passing)
 
