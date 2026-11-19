@@ -1,7 +1,7 @@
 "use client";
 
 import { ReviewToggle } from "./markdown-review-ui";
-import { memo, useEffect, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import type { MouseEvent } from "react";
 import { Code, Download, Eye, FolderInput, MoreHorizontal, Plus, Sparkles, TextCursorInput, X } from "lucide-react";
@@ -152,6 +152,28 @@ function nativeMenuPointFromMouseEvent(event: MouseEvent<HTMLElement>) {
   };
 }
 
+/** A narrow window clips the tab row; let a vertical mouse wheel scroll it sideways.
+ *  React's onWheel is passive, so the listener is attached natively to call preventDefault. */
+function useWheelScrollsSideways() {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const onWheel = (event: WheelEvent) => {
+      if (event.ctrlKey || el.scrollWidth <= el.clientWidth) return;
+      // Trackpads already send horizontal deltas; only remap a mostly-vertical wheel.
+      if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+      const unit = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 40 : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? el.clientWidth : 1;
+      const before = el.scrollLeft;
+      el.scrollLeft += event.deltaY * unit;
+      if (el.scrollLeft !== before) event.preventDefault();
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+  return ref;
+}
+
 export const TabStrip = memo(function TabStrip({
   chatOpen,
   onToggleChat,
@@ -254,6 +276,8 @@ export const TabStrip = memo(function TabStrip({
     }
   }
 
+  const tabRowRef = useWheelScrollsSideways();
+
   function showTabAt(step: number) {
     const index = tabs.findIndex((tab) => tab.id === activeTabId);
     const next = tabs[(index + step + tabs.length) % tabs.length];
@@ -301,7 +325,7 @@ export const TabStrip = memo(function TabStrip({
     <div className="libera-tab-strip libera-window-drag-region border-b border-border bg-card">
       <div className="flex min-h-12 items-center gap-2 px-3 py-2">
         <button type="button" aria-label={t("newUntitledFile")} title={t("newUntitledFile")} onClick={onCreateUntitled} className="libera-window-no-drag-region rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-foreground"><Plus aria-hidden className="h-4 w-4" /></button>
-        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <div ref={tabRowRef} className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {tabs.map((tab) => {
             const isActive = activeTabId === tab.id;
             const isDragging = draggingTabId === tab.id;
