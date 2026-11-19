@@ -1,6 +1,6 @@
 # Libera
 
-A liberal notetaking app built with Next.js, TypeScript, Tailwind CSS, filesystem storage, password authentication, and KaTeX-backed Markdown math rendering.
+A liberal notetaking app built with Next.js, TypeScript, Tailwind CSS, filesystem storage, password authentication, and KaTeX-backed Markdown math rendering. Notebooks can be shared and edited together in real time, LaTeX documents can be edited as formatted text, and the interface is available in English, French, Vietnamese and Chinese.
 
 ## Getting Started
 
@@ -24,11 +24,13 @@ The app uses the Next.js App Router in `src/app`.
 
 ## Collaboration
 
-Real-time collaboration lives on the `collaboration` branch. The collaboration server, desktop host, shared notebooks, shared gallery albums, comments, suggestions, and reviews are implemented and tested; the first production deploy, the private beta, and some manual checks (IME input, macOS and ExFAT file watching, restore drill) are still open. See [SETUP.md](SETUP.md) to run and deploy the collaboration server, [docs/collaboration/README.md](docs/collaboration/README.md) for the architecture, and [docs/collaboration/progress.md](docs/collaboration/progress.md) for status.
+Real-time collaboration is part of the main app. The collaboration server, desktop host, shared notebooks, shared gallery albums, live PDFs, comments, suggestions, and reviews are implemented and tested; the first production deploy, the private beta, and some manual checks (IME input, macOS and ExFAT file watching, restore drill) are still open. See [SETUP.md](SETUP.md) to run and deploy the collaboration server, [docs/collaboration/README.md](docs/collaboration/README.md) for the architecture, and [docs/collaboration/progress.md](docs/collaboration/progress.md) for status.
 
 - **Sync behavior and edge cases.** See the [notebook sync reference](docs/features/notebook-sync.md) for working-folder and collaboration flow diagrams, lifecycle rules, condition matrices, and confirmed review gaps.
 
-- **Shared notebooks.** The owner shares an existing notebook (**Share notebook…**) and invites members by email or link. Members join from the invitation and get the notebook as a normal folder under their master directory. Markdown, LaTeX (`.tex`, `.bib`, `.sty`, `.cls`), and other text files are collaborative documents; images, PDFs, and other binaries sync as content-addressed blobs. File and folder changes (create, rename, move, delete) sync for everyone, and removed files go to `_archive`.
+- **Shared notebooks.** The owner shares an existing notebook (**Share notebook…**) and invites members by email or link. Members join from the invitation and get the notebook as a normal folder under their master directory. File and folder changes (create, rename, move, delete) sync for everyone, and removed files go to `_archive`.
+- **Every text file, not just notes.** Markdown (`.md`, `.markdown`), LaTeX (`.tex`, `.bib`, `.sty`, `.cls`), and plain text, data and code files (`.txt`, `.json`, `.yaml`, `.yml`, `.csv`, `.py`, `.js`, `.ts`, `.css`, `.html`) are collaborative documents, edited live in the Visual, Source, LaTeX, and code editors. Other extensions, text files too large for one update, images, PDFs, and other binaries sync as content-addressed blobs.
+- **Three-way sync: local, Libera Collab Server, and OneDrive.** A shared notebook's working folder can sit inside OneDrive, iCloud Drive, or a similar sync client, so one account's computers all see the same folder. The local SQLite log, the collaboration server, and the cloud-synced folder stay in step: the server gives one installation a writer lease for the folder, the others follow through the server without touching the folder, and an older copy put back by the sync client is written over instead of undoing newer edits. Share with other people through Libera's invitations, not by sharing the OneDrive folder: anyone OneDrive lets write the folder can change its files whatever their Libera role. See the [notebook sync reference](docs/features/notebook-sync.md).
 - **Live editing.** Edit together in the Visual, Source, and LaTeX editors. Edits never wait on the network: they are saved to a local SQLite log first and synced in the background, and you can keep editing offline and reconnect later. Each shared tab shows a status pill (Saved on this device, Syncing…, Saved to workspace, Offline, Read-only, Access changed) in place of Save.
 - **Presence.** See collaborators' avatars, cursors, and sections, with a quiet mode, and follow a collaborator (follow mode works in the Source and LaTeX editors only).
 - **Roles.** Owner, Editor, Commenter, and Viewer, enforced on the server for every update and command. Only owners invite members, change roles, or delete the notebook.
@@ -77,6 +79,12 @@ Several people who share one computer (and one operating-system account) can eac
 - **Existing installs.** The first user keeps the original settings files and browser session, so a single-user install needs no migration and an older Libera still opens it. Other users live in `profiles/<id>/` in Electron's `userData` folder, listed in `profiles.json`. A damaged `profiles.json` or a user's broken settings are recovered from, not overwritten.
 
 See [docs/features/users.md](docs/features/users.md) for the full guide.
+
+## Languages
+
+The interface is available in English, French (Français), Vietnamese (Tiếng Việt), and Simplified Chinese (简体中文). Choose the language under Preferences → General → Appearance; **System** follows the operating system's language, and a change applies after Libera restarts. Menus, Preferences, every panel, editor and dialog, and what you read while the AI Agent works are translated. Your notes and documents are never translated, and prompts sent to AI models stay in English. Text without a translation falls back to English.
+
+A few server messages (for example some error details and import parser messages) are still English. Translations live in `messages/<locale>.json`, with style guides in [docs/i18n/](docs/i18n/); `node scripts/i18n/check-messages.mjs [locale]` checks every translation against English. See [docs/i18n-plan.md](docs/i18n-plan.md) for the plan and status.
 
 ## Math Rendering
 
@@ -423,6 +431,12 @@ In a shared notebook, a live block shows a **Run** button instead of running on 
 
 **Editor Mode → Visual** in the file menu (⋯ at the end of the tab strip, or File on macOS) draws a `.tex` file as formatted text: headings with their numbers, bold and italic text, lists, formulas typeset by KaTeX, figures with their images, tables as editable grids, theorems, citations and numbered references, and `\maketitle`. The file stays plain LaTeX: Visual mode is a layer over the same text, so it never reformats the source, and shared tabs need nothing extra. Where the cursor is, the LaTeX comes back. Click a formula to edit it in MathLive (only the parts you change are written back), click a table cell to edit it, and paste from Word or the web as LaTeX. The document's own `\newcommand`s, `\newtheorem`s and `\newenvironment`s render as they will in the PDF, and numbers follow the document, continuing across a project's `\input` files and taking exact labels from the last compile. Anything Visual mode does not recognise stays as source. See [docs/features/latex-visual-editor.md](docs/features/latex-visual-editor.md).
 
+Visual mode is built for real papers, not just the article class. About 20 journal and conference formats are covered, with publishers' title blocks (authors, affiliations, emails, keywords) drawn as their classes print them, among them revtex (APS, AIP), acmart, IEEEtran, llncs, svjour3 and sn-jnl (Springer), elsarticle (Elsevier), amsart, aastex, A&A, MNRAS, JHEP, SIAM, INFORMS, LIPIcs, JMLR, NeurIPS, ICML, AAAI, and ACL. It has been audited against 264 arXiv papers across physics, astronomy, mathematics, statistics, computer science and biology, in nine review rounds; each round opens every paper's `.tex` files as the editor does and fixes what breaks. The reports are in [docs/audits/](docs/audits/), and the `latex-visual-audit` skill runs a new round.
+
+### Pasting Markdown as LaTeX
+
+Copy Markdown from a Libera note or chat, ChatGPT, Claude, GitHub, Obsidian, or Notion and paste it into a `.tex` file, in Source or Visual mode, and it arrives as LaTeX: headings become `\section`s, lists `itemize` and `enumerate`, tables `tabular`, bold and italic `\textbf` and `\emph`, `[@key]` citations `\cite` (or `\citep`/`\parencite`, to match the preamble), footnotes, links, images, and Libera's highlights, colors, boxes and macros their LaTeX equivalents. Formulas keep their content, whichever math markers they use, and special characters are escaped. When the Markdown has headings or tables, a dialog asks how to write them (heading levels follow the section the cursor is in) and previews the LaTeX; packages it needs are listed, and the preamble is changed only if you ask. Each paste is one undo step. ⇧⌘V pastes plain text, ⌥⌘V or **Paste Markdown as LaTeX…** opens the dialog, and **Convert Markdown to LaTeX…** converts a selection in place. The converter is deterministic (no AI). See [docs/features/latex-editor.md](docs/features/latex-editor.md#pasting-markdown).
+
 The LaTeX parser is [codemirror-lang-latex](https://github.com/texlyre/codemirror-lang-latex) (based on Overleaf's grammar), licensed AGPL-3.0-or-later; Libera as distributed is subject to that licence's terms for this component.
 
 ## LaTeX PDF export
@@ -662,4 +676,9 @@ To view a photo next to notes and PDFs, right-click it (or select one photo, or 
 
 - **Local LLMs.** Run AI features on your own machine with Ollama, LM Studio, llama-server or any OpenAI-compatible server, alongside cloud models. Give an endpoint an alias in **Preferences → Local LLMs** and use `local/alias` wherever a model is chosen. See [Model Pool and local models](#model-pool-and-local-models) and [docs/features/local-llms.md](docs/features/local-llms.md).
 - **Ink.** Draw freehand on PDFs with the pen tool, with ink colors and stroke widths you can change from the toolbar or the command palette. Ink marks are saved with the PDF's other annotations and are shared live in notebooks with live PDFs. See [PDF outlines and annotations](#pdf-outlines-and-annotations).
-- **Real-time collaboration on every text file.** In a shared notebook, Markdown, LaTeX and other text files are edited together live, with presence, comments and suggestions. With live PDFs on, PDFs are annotated together in real time too. See [Collaboration](#collaboration) and [Live PDFs](docs/features/live-pdfs.md).
+- **Real-time collaboration on text files.** In a shared notebook, Markdown, LaTeX, and plain text, data and code files are edited together live, with presence, comments and suggestions. With live PDFs on, PDFs are annotated together in real time too. See [Collaboration](#collaboration) and [Live PDFs](docs/features/live-pdfs.md).
+- **Three-way sync.** A shared notebook can live in a OneDrive or iCloud Drive folder and stay in step with your local copy and the Libera Collab Server. See [Collaboration](#collaboration).
+- **LaTeX Visual mode.** WYSIWYG editing of `.tex` files in about 20 journal and conference formats, audited against 264 arXiv papers. See [LaTeX Visual mode](#latex-visual-mode).
+- **Markdown to LaTeX.** Copy Markdown from a note or an AI chat and paste it into a `.tex` file as LaTeX. See [Pasting Markdown as LaTeX](#pasting-markdown-as-latex).
+- **Four languages.** English, French, Vietnamese, and Chinese. See [Languages](#languages).
+- **Definitions cards.** Look up a document's symbols, terms and notation as searchable cards with typeset math. See [Definitions and notation](#definitions-and-notation).
