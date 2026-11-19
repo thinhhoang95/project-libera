@@ -3256,9 +3256,13 @@ export class SharedProject {
    * merge and be placed with a suffix; the caller gets that path, never the
    * requested one, which would open the other file.
    */
+  /**
+   * Publishes a created entry and answers with the path the layout gives it.
+   * A name another member took while the document or blob was being created
+   * is not refused: both files are kept (the layout suffixes one, "notes (2).md"),
+   * and the caller learns the created file's own path, never the other's.
+   */
   private async publishCreated(created: ManifestEntry): Promise<string> {
-    this.entries = this.readEntries();
-    this.assertFree(created.path, []);
     await this.writeManifest((map) => map.set(created.fileId, entryRecord(created)), { source: "typing" });
     return computeLayout(this.readEntries().values()).paths.get(created.fileId) ?? created.path;
   }

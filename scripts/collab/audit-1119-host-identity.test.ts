@@ -217,7 +217,7 @@ test("host: rename keeps a file's kind and records, moves a note's Python, and c
     assert.ok(listedEntries.some((entry) => entry.path === "memo.mp3" && entry.kind === "blob" && entry.blobHash));
     assert.equal(listedEntries.some((entry) => entry.path === "a.md" || entry.path === "memo.m4a"), false, "renamed-away paths are not listed");
 
-    // 25: the name is taken by another file while the create is in flight: refused, never answered with the other file's path.
+    // 25: the name is taken by another file while the create is in flight: both are kept, and the answer is the created file's own (suffixed) path, never the other's.
     const hub = alice.host.acquire(JSON.parse(readFileSync(path.join(root, ".libera-shared.json"), "utf8")).manifestDocId);
     injections.push(() => {
       hub.applyLocalChange("manifest", (doc) => {
@@ -226,7 +226,10 @@ test("host: rename keeps a file's kind and records, moves a note's Python, and c
       }, { source: "typing" });
     });
     const raced = await op({ op: "create-file", path: "race.md", content: "mine\n" });
-    assert.equal(raced.status, 409, JSON.stringify(raced.body));
+    assert.equal(raced.status, 200, JSON.stringify(raced.body));
+    const racedBody = raced.body as { paths: string[]; fileId?: string };
+    assert.ok(racedBody.fileId && racedBody.fileId !== "fil_other");
+    assert.deepEqual(racedBody.paths, ["Notes/race (2).md"], "the earlier entry keeps the name; this one is suffixed");
     alice.host.release(JSON.parse(readFileSync(path.join(root, ".libera-shared.json"), "utf8")).manifestDocId);
   } finally {
     await closePeer(alice);
