@@ -56,6 +56,10 @@ class StubHost {
           const bytes = this.blobs.get(relative);
           return send(200, bytes ? { fileId: `fil_${relative}`, blobHash: sha(bytes), contentBase64: bytes.toString("base64") } : { contentBase64: null });
         }
+        if (/\/projects\/[^/]+\/file-entries$/.test(url.pathname)) {
+          const blobs = [...this.blobs].map(([relative, bytes]) => ({ fileId: `fil_${relative}`, path: relative, kind: "blob", blobHash: sha(bytes), updatedAt: 1 }));
+          return send(200, { entries: [...blobs, ...[...this.folders].map((relative) => ({ fileId: `fld_${relative}`, path: relative, kind: "folder", updatedAt: 1 }))] });
+        }
         if (!/\/projects\/[^/]+\/files$/.test(url.pathname)) return send(404, { error: { code: "not-found", message: "No route." } });
         const op = JSON.parse(body) as FileOpRequest;
         this.ops.push(op);
@@ -123,9 +127,13 @@ test("DATA-6: a notebook export uses the host's version of a lagging file; a vie
   await withShared(async ({ notebook, host }) => {
     writeFileSync(path.join(notebook, "photo.png"), "stale bytes on disk");
     host.blobs.set("photo.png", Buffer.from("current shared bytes"));
+    host.blobs.set("note.md", Buffer.from("note\n"));
+    writeFileSync(path.join(notebook, "stray.txt"), "on disk only");
     const archive = await JSZip.loadAsync((await createNotebookZip("Shared")).body);
     assert.equal(await archive.file("Shared/photo.png")!.async("string"), "current shared bytes");
-    assert.equal(await archive.file("Shared/note.md")!.async("string"), "note\n", "a file the manifest does not hold comes from the disk");
+    assert.equal(await archive.file("Shared/note.md")!.async("string"), "note\n");
+    // Finding 26: the export's file list is the manifest's; a path only the disk has is not exported.
+    assert.equal(archive.file("Shared/stray.txt"), null);
     // The raw route serves every viewer, so it stays on the working file (no host round trip per view).
     assert.equal((await getRawFile("Shared/photo.png")).body.toString(), "stale bytes on disk");
   });
