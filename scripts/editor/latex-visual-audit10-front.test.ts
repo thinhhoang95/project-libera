@@ -333,6 +333,9 @@ Towards the LSST DESC pipeline -- \\ design and validation on simulations\vspace
 \begin{abstract}
 We present the pipeline.
 \end{abstract}
+
+\maketitle
+
 \section{Introduction}
 Text.
 \end{document}
@@ -352,11 +355,14 @@ Contact: \href{mailto:barroso@lapp.in2p3.fr}{barroso@lapp.in2p3.fr}
 
 // astro-ph.IM 2611.19899: the Open Journal of Astrophysics class's \title (with a \vspace) and the \author / \affiliation of the file it inputs.
 test("2611.19899: openjournal's title (a \\vspace in it) is drawn, and authors.tex draws its authors and affiliations", () => {
-  const view = mount(OJA_MAIN);
+  const view = mount(OJA_MAIN, [], [{ path: "nb/authors.tex", text: OJA_AUTHORS, version: "1", key: "input:authors" }]);
   const block = view.contentDOM.querySelector<HTMLElement>(".cm-vis-title-block");
   assert.ok(block, "a title block");
   assert.match(plain(block!), /Towards the LSST DESC pipeline/);
   assert.ok(!/vspace|[\\]/.test(plain(block!)), plain(block!));
+  assert.match(plain(block!), /E\. J\. Barroso/);
+  assert.match(plain(block!), /IRFU, CEA/);
+  assert.match(plain(block!), /We present the pipeline/, "the abstract is printed with the title");
   assert.deepEqual(left(view).filter((name) => name !== "input"), []);
   const authors = mount(OJA_AUTHORS, [], [{ path: "nb/main.tex", text: "\\documentclass[iop]{openjournal}\n", version: "1" }]);
   const authorBlock = authors.contentDOM.querySelector<HTMLElement>(".cm-vis-title-block");

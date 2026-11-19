@@ -5308,7 +5308,7 @@ const TITLE_DEFINITIONS = /^(?:newcommand|renewcommand|providecommand|DeclareRob
  */
 const TITLE_ENVIRONMENTS = /^(?:abstract|CCSXML|teaserfigure|authgrp|keywords|IEEEkeywords|comment)$/;
 /** Classes that print an abstract written before `\maketitle` with the title (amsart: under it; acmart: in the block). */
-const ABSTRACT_WITH_TITLE = /^(?:informs\d*(?:-[A-Za-z0-9-]+)?|acmart|amsart|amsproc|amsbook|revtex4(?:-[12])?|sn-jnl|jfp|aa|cas-[sd]c|lmcs|IEEEojcsys)$/;
+const ABSTRACT_WITH_TITLE = /^(?:informs\d*(?:-[A-Za-z0-9-]+)?|acmart|amsart|amsproc|amsbook|revtex4(?:-[12])?|sn-jnl|jfp|aa|cas-[sd]c|lmcs|IEEEojcsys|openjournal)$/;
 /** The headings of A&A's structured `\abstract{…}{…}{…}{…}{…}`. */
 const AA_ABSTRACT_LABELS = ["Context", "Aims", "Methods", "Results", "Conclusions"];
 
