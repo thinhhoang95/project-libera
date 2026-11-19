@@ -185,6 +185,13 @@ export function readBibEntries(source: string): BibEntrySummary[] {
 
 /** A TeX group's text without its braces and spacing (`{Sant'Anna}` → Sant'Anna). */
 function bibText(text: string) {
+  // REVTeX's label names (`\citenamefont {Papi\ifmmode~\acute{c}\else \'{c}\fi{}}\ \emph {et~al.}`) are text: the `\else` branch, an accent, a control space.
+  const marks: Record<string, string> = { "'": "́", "`": "̀", "^": "̂", '"': "̈", "~": "̃", "=": "̄", ".": "̇" };
+  text = text
+    .replace(/\\ifmmode(?:(?!\\if)[\s\S])*?\\else(?![A-Za-z@])((?:(?!\\if)[\s\S])*?)\\fi(?![A-Za-z@])/g, "$1")
+    .replace(/\\(?:citenamefont|bibnamefont|bibfnamefont|emph|textit|textbf|textsc)(?![A-Za-z@])\s*/g, "")
+    .replace(/\\(['`^"~=.])\s*\{?([A-Za-z])\}?/g, (_, mark: string, letter: string) => (letter + marks[mark]).normalize("NFC"))
+    .replace(/\\ /g, " ");
   // natbib's `\natexlab{a}` is the year's letter (1975a).
   return text.replace(/\\natexlab\s*\{([^{}]*)\}/g, "$1").replace(/\\bibinitperiod|\\bibinithyphendelim|\\bibnamedelim[a-z]/g, (match) => (match === "\\bibinitperiod" ? "." : match === "\\bibinithyphendelim" ? "-" : " ")).replace(/~/g, " ").replace(/[{}]/g, "").replace(/\s+/g, " ").trim();
 }

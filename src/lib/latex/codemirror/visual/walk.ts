@@ -144,7 +144,7 @@ function layoutExtent(state: EditorState, at: number, command: string) {
   const text = read(state, at, Math.min(state.doc.length, at + 400));
   let i = text[0] === "*" ? 1 : 0;
   const rest = () => text.slice(i);
-  if (/^\\(?:vskip|hskip|vglue|hglue|kern)$/.test(command)) i += PRIMITIVE_GLUE.exec(rest())?.[0].length ?? 0;
+  if (/^\\(?:vskip|hskip|vglue|hglue|kern|openup)$/.test(command)) i += PRIMITIVE_GLUE.exec(rest())?.[0].length ?? 0;
   // `\vspace*{2pt}`: the star keeps the grammar from attaching the group, which follows as text.
   else if (/^\\(?:vspace|hspace|addvspace|Needspace|needspace)$/.test(command)) i += /^\s*\{[^{}]*\}/.exec(rest())?.[0].length ?? 0;
   else if (/^\\(?:setlength|addtolength)$/.test(command)) i += /^\s*\\[A-Za-z@]+\s*\{[^{}]*\}/.exec(rest())?.[0].length ?? 0;
@@ -434,6 +434,9 @@ const HANDLED = new Set([
 const THEOREM_STYLE_CLASSES ={ plain: "cm-vis-thm-plain", definition: "cm-vis-thm-definition", remark: "cm-vis-thm-remark" };
 /** Layout commands in user environment code that draw nothing worth showing. */
 const LAYOUT_NOISE = /\\(?:begingroup|endgroup|par|noindent|indent|medskip|smallskip|bigskip|hfill|vfill|null|ignorespaces|unskip|relax|nopagebreak|newline|centering|raggedright|raggedleft|normalfont|itshape|upshape|bfseries|mdseries|rmfamily|sffamily|ttfamily)(?![A-Za-z])|\\[vh]space\*?\s*\{[^}]*\}|\\color\s*\{\s*black\s*\}|\\(?:begin|end)\s*\{[^}]*\}(?:\[[^\]]*\])?|\\item(?:\[([^\]]*)\])?/g;
+
+/** IOP's back-matter commands and the headings they print. */
+const IOP_BACK_MATTER: Record<string, string> = { ack: "Acknowledgments", funding: "Funding", data: "Data availability statement" };
 
 /** What a reference list is headed: the book classes' "Bibliography", else "References". */
 function bibliographyHeading(defs: LatexDefinitions) {
@@ -767,7 +770,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
   // AASTeX's front matter, which the class prints without `\maketitle`: a title block over its lines. A walk that starts
   // inside them leaves them to the walk that draws the block.
   // (From the file's start without a body start: the run is the one right before the abstract, wherever that is.)
-  const aastexFront = AASTEX.test(defs.documentClass ?? "") ? aastexFrontMatterIn(doc, Math.max(0, env.preambleEnd), defs.documentClass!) : null;
+  const aastexFront = FRONT_RUN_CLASS.test(defs.documentClass ?? "") ? aastexFrontMatterIn(doc, Math.max(0, env.preambleEnd), defs.documentClass!) : null;
   const aastexTitle = aastexFront && aloneOnLines(doc, aastexFront.from, aastexFront.to) ? aastexFront : null;
   if (aastexTitle && aastexTitle.from < from && from < aastexTitle.to) consumed.push([aastexTitle.from, aastexTitle.to]);
 
@@ -1090,7 +1093,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
   /** Groups that only scope layout (`{\setlength{\tabcolsep}{3pt}\input{table}}`): not an argument of anything. */
   const layoutGroups = new Set<number>();
   const inArgument = (node: SyntaxNode) => {
-    for (let parent = node.parent; parent; parent = parent.parent) if (!layoutGroups.has(parent.from) && /^(?:Group|NonEmptyGroup|TextArgument|ShortTextArgument|LongArg|SectioningArgument)$/.test(parent.name)) return true;
+    // (A group a font or size switch opens, `{\small\textbf{Abstract.} \input{abstract}}`, scopes the switch only: nlin.AO 2610.25113.)
+    for (let parent = node.parent; parent; parent = parent.parent) if (!layoutGroups.has(parent.from) && !(parent.name === "Group" && groupSwitch(parent)) && /^(?:Group|NonEmptyGroup|TextArgument|ShortTextArgument|LongArg|SectioningArgument)$/.test(parent.name)) return true;
     return false;
   };
 
@@ -1208,7 +1212,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       if (aastexTitle && ref.from === aastexTitle.from && ref.to <= aastexTitle.to && ref.from >= from) {
         const span = aloneOnLines(doc, aastexTitle.from, aastexTitle.to)!;
         consumed.push([span.from, span.to]);
-        if (structural) emit({ kind: "title", from: span.from, to: span.to, reveal: "strict", replaces: [{ from: span.from, to: span.to, block: true, widget: new TitleWidget(aastexTitle.title, aastexTitle.author, null, span.to - span.from, null, aastexTitle.notes) }] });
+        if (structural) emit({ kind: "title", from: span.from, to: span.to, reveal: "strict", replaces: [{ from: span.from, to: span.to, block: true, widget: new TitleWidget(aastexTitle.title, aastexTitle.author, aastexTitle.date ?? null, span.to - span.from, null, aastexTitle.notes, aastexTitle.details) }] });
         return false;
       }
       // A node starting before an `\iffalse`'s `\fi` and running past it (`\iffalse \section{A} \fi more`): only what follows is drawn.
@@ -1715,7 +1719,9 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
           // AASTeX's `\bibliography{refs}{}` takes an empty group after it, which prints nothing.
           const empty = /^[ \t]*\{\s*\}/.exec(read(state, node.to, Math.min(doc.length, node.to + 20)));
           const bibEnd = node.to + (empty?.[0].length ?? 0);
-          let span = aloneOnLines(doc, node.from, bibEnd);
+          // A comment after the command on its line (`\bibliography{refs} % no extension`, physics 2610.30517) goes with the list.
+          const trailing = /^[ \t]*%[^\n]*/.exec(read(state, bibEnd, doc.lineAt(bibEnd).to));
+          let span = aloneOnLines(doc, node.from, bibEnd + (trailing?.[0].length ?? 0));
           // `\begingroup\renewcommand{\baselinestretch}{0.94}\bibliography{references}\endgroup` (eess.SY 2611.15162) is one line: the
           // group and the spacing around the command print nothing, and go with the list (their source shows at the caret).
           if (!span && structural && inner && !hasDirectError(node)) {
@@ -2584,6 +2590,19 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         return false;
       }
     }
+    // IOP's back matter (physics.ins-det 2611.12369): `\ack{…}`, `\funding{…}` and `\data{…}` print a headed paragraph.
+    if (Object.hasOwn(IOP_BACK_MATTER, text.slice(1)) && defs.documentClass === "iopjournal" && !hasDirectError(node) && !macroAt(defs, text.slice(1), node.from)) {
+      const argument = commandArguments(node).find((arg) => !arg.optional);
+      const inner = argument && argumentInner(argument.node);
+      if (argument && inner && !read(state, ctrl.to, argument.node.from).trim()) {
+        emit({
+          kind: "style", from: node.from, to: node.to, reveal: "touch",
+          replaces: structural ? [{ from: node.from, to: inner.from, widget: new EnvironmentHeaderWidget("theorem", IOP_BACK_MATTER[text.slice(1)], null, null, 0, inner.from - node.from) }, { from: inner.to, to: node.to }] : [],
+          marks: [{ from: inner.from, to: inner.to, class: "cm-vis-acknowledgments" }],
+        });
+        return undefined;
+      }
+    }
     // biblatex's `\printbibliography[title=…]`: the References list, on its own lines only.
     if (text === "\\printbibliography") {
       const end = commandArguments(node).filter((arg) => arg.optional).at(-1)?.node.to ?? ctrl.to;
@@ -2658,7 +2677,8 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
       }
       // Any other `\twocolumn[{ … }]` or `\twocolumn[ … ]` (a title block, text set across both columns): a wrapper. Its content is
       // drawn as it would be outside, the `\twocolumn[{` and `}]` fold away (the cursor on their lines shows them).
-      if (block && open && !teaser && !hasDirectError(node) && block.content.trim()) {
+      // (The grammar reads no comment or line end inside `[…]`, so `\twocolumn[%` has a parse error that the brackets read from the text do not: nlin.AO 2610.25113.)
+      if (block && open && !teaser && block.content.trim()) {
         const openingEnd = wrapped ? contentFrom + groupAt + 1 : contentFrom;
         const closing = { from: wrapped ? contentFrom + wrapped.end - 1 : ctrl.to + block.end - 1, to: ctrl.to + block.end };
         if (closing.from >= openingEnd) {
@@ -3321,7 +3341,7 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
         return false;
       }
     }
-    if (/^\\(?:vspace|addvspace|vskip|hspace|hskip|Needspace|needspace|penalty|looseness|urlstyle)$/.test(text) && !hasDirectError(node)) {
+    if (/^\\(?:vspace|addvspace|vskip|hspace|hskip|Needspace|needspace|penalty|looseness|urlstyle|openup)$/.test(text) && !hasDirectError(node)) {
       const end = layoutExtent(state, ctrl.to, text);
       if (end > ctrl.to || /skip$/.test(text)) {
         const horizontal = /^\\h/.test(text);
@@ -3430,6 +3450,12 @@ export function walkConstructs(env: WalkEnvironment, from: number, to: number, e
     // `\urlprefix` (url.sty, written into the `.bbl` by BibTeX's `\newblock\urlprefix\url{…}`) prints "URL ".
     if (text === "\\urlprefix" && !args.length && !macroAt(defs, "urlprefix", node.from)) {
       if (structural) emit({ kind: "symbol", from: node.from, to: ctrl.to, reveal: "touch", replaces: [{ from: node.from, to: ctrl.to, widget: new SymbolWidget("URL ", text) }] });
+      consumed.push([node.from, ctrl.to]);
+      return undefined;
+    }
+    // amsart's `\bysame` in a reference prints a three-em rule (math.AT 2611.11463): the author's name of the entry above.
+    if (text === "\\bysame" && !args.length && !macroAt(defs, "bysame", node.from)) {
+      if (structural) emit({ kind: "symbol", from: node.from, to: ctrl.to, reveal: "touch", replaces: [{ from: node.from, to: ctrl.to, widget: new SymbolWidget("\u2014\u2014\u2014", text) }] });
       consumed.push([node.from, ctrl.to]);
       return undefined;
     }
@@ -5048,7 +5074,8 @@ const titleCache = new WeakMap<Text, Map<string, ReturnType<typeof scanTitlePart
 
 /** The class that decides how the title block reads its commands: JHEP's `jheppub` package (over `article`) gives its own. */
 export function titleClass(defs: { packages: readonly string[] }, documentClass: string | null) {
-  return defs.packages.includes("jheppub") ? "jheppub" : documentClass;
+  // authblk (over a plain class): each `\author[a]{Name}` adds an author, `\affil[a]{…}` is the address labelled a (cs.DM 2611.13813).
+  return defs.packages.includes("jheppub") ? "jheppub" : defs.packages.includes("authblk") && /^(?:article|report|book|memoir|scrartcl|scrreprt|scrbook)$/.test(documentClass ?? "") ? "authblk" : documentClass;
 }
 
 /** `\title`, `\author` and `\date` before a `\maketitle` at `pos` (cached per document version). */
@@ -5133,7 +5160,18 @@ function frontMatterParts(text: string): { title: string | null; author: string 
 /** AASTeX's front matter commands: the title block's, its metadata (printed small or not at all), and space. */
 const AASTEX_DECLARATIONS = /^(?:title|shorttitle|shortauthors|author|affiliation|altaffiliation|email|correspondingauthor|collaboration|nocollaboration|received|revised|accepted|published|submitjournal|journalinfo|doi|watermark|setwatermarkfontsize|AuthorCollaborationLimit|keywords|vspace|vskip|and|thanks)$/;
 
-type AastexFrontMatter = { from: number; to: number; title: string | null; author: string | null; notes: Array<[string, string]> };
+/**
+ * The classes that print their title block from the commands before the abstract, with no `\maketitle`: AASTeX, AGU (`\authors`,
+ * `\affiliation{1}{…}`, `\correspondingauthor`, `keypoints`; physics.space-ph 2610.30517), IOP (`\author`, `\affil`, `\email`;
+ * physics.ins-det 2611.12369) and the Open Journal of Astrophysics (astro-ph.IM 2611.19899).
+ */
+const FRONT_RUN_CLASS = /^(?:aastex\d*|emulateapj|agujournal\d*|iopjournal|openjournal|cernphprep)$/;
+const AGU_DECLARATIONS = /^(?:title|authors|affiliation|correspondingauthor|authorrunninghead|journalname|vspace|vskip|thanks)$/;
+// CERN's preprint class (`cernphprep`, nucl-ex 2611.08473): the report number and date, the title and the collaboration that signs, in a `titlepage`.
+const CERN_DECLARATIONS = /^(?:PHyear|PHnumber|PHdate|title|ShortTitle|Collaboration|ShortAuthor|thanks)$/;
+const IOP_DECLARATIONS = /^(?:articletype|title|author|affil|email|keywords|orcid|vspace|vskip|thanks|ead)$/;
+
+type AastexFrontMatter = { from: number; to: number; title: string | null; author: string | null; notes: Array<[string, string]>; details?: FrontDetailsView | null; date?: string | null };
 
 /**
  * AASTeX's front matter (2611.08676), which the class prints without `\maketitle`: the run of `\title`, `\author[orcid=…]{…}`,
@@ -5143,6 +5181,10 @@ type AastexFrontMatter = { from: number; to: number; title: string | null; autho
  * something else comes right before the abstract, or the run has no title or author.
  */
 function aastexFrontMatter(text: string, documentClass: string, whole = false): AastexFrontMatter | null {
+  const agu = /^agujournal/.test(documentClass);
+  const iop = documentClass === "iopjournal";
+  const cern = documentClass === "cernphprep";
+  const declarations = agu ? AGU_DECLARATIONS : iop ? IOP_DECLARATIONS : cern ? CERN_DECLARATIONS : AASTEX_DECLARATIONS;
   type Declaration = { name: string; optional: string | null; groups: string[] };
   type Run = { start: number; end: number; items: Declaration[] };
   let run: Run | null = null;
@@ -5167,7 +5209,16 @@ function aastexFrontMatter(text: string, documentClass: string, whole = false): 
         end = group.end;
       }
     }
-    if (command && AASTEX_DECLARATIONS.test(command[1])) {
+    // AGU's `\begin{keypoints} \item … \end{keypoints}`: its items, one declaration.
+    const keypoints = agu && command?.[1] === "begin" && item.groups[0] === "keypoints" ? /\\end\s*\{keypoints\}/.exec(text.slice(end)) : null;
+    if (keypoints) {
+      end += keypoints.index + keypoints[0].length;
+      item.name = "keypoints";
+      item.groups = text.slice(start, end).replace(/^\\begin\s*\{keypoints\}/, "").replace(/\\end\s*\{keypoints\}$/, "").split(/\\item(?![A-Za-z@])/).slice(1).map((point) => stripTexComments(point).trim()).filter(Boolean);
+      run ??= { start, end, items: [] };
+      run.items.push(item);
+      run.end = end;
+    } else if (command && declarations.test(command[1])) {
       run ??= { start, end, items: [] };
       run.items.push(item);
       run.end = end;
@@ -5185,24 +5236,37 @@ function aastexFrontMatter(text: string, documentClass: string, whole = false): 
   }
   run ??= held;
   if (!run) return null;
+  // A comment after the last command on its line (`\ShortAuthor{…} % appears on right page headers`) is part of the line.
+  run.end += /^[ \t]*%[^\n]*/.exec(text.slice(run.end))?.[0].length ?? 0;
   // Before AASTeX 7 every `\email` is printed; since, only `\email[show]{…}`.
-  const allEmails = /^aastex6\d*$/.test(documentClass) || documentClass === "emulateapj";
+  const allEmails = /^aastex6\d*$/.test(documentClass) || documentClass === "emulateapj" || iop;
   let title: string | null = null;
   const authors: Array<{ name: string; places: string[] }> = [];
   const emails: string[] = [];
   const notes: Array<[string, string]> = [];
   const keywords: string[] = [];
+  // AGU's and IOP's affiliations are numbered lines after the authors, not each author's own.
+  const places: FrontDetailsView["places"] = [];
+  let cernYear = "", cernNumber = "", cernDate = "";
   for (const item of run.items) {
     const last = item.groups.at(-1);
     if (last === undefined) continue;
-    if (item.name === "title") title = last;
-    else if (item.name === "author") authors.push({ name: last, places: [] });
+    if (item.name === "title") title = last.replace(/\\vspace\*?\s*\{[^{}]*\}/g, "").trim();
+    else if (item.name === "authors" || (cern && item.name === "Collaboration")) authors.push({ name: last, places: [] });
+    else if (item.name === "PHyear") cernYear = last;
+    else if (item.name === "PHnumber") cernNumber = last;
+    else if (item.name === "PHdate") cernDate = last;
+    else if (item.name === "author") authors.push({ name: iop ? last.replace(/\\orcid\s*\{[^{}]*\}/g, "").trim() : last, places: [] });
+    else if (agu && item.name === "affiliation") places.push({ label: item.groups.length > 1 ? `${item.groups[0]} ` : "", latex: last, editable: false });
+    else if (iop && item.name === "affil") places.push({ label: "", latex: last, editable: false });
+    else if (item.name === "keypoints") item.groups.forEach((point, index) => notes.push([`Key Point ${index + 1}`, point]));
+    else if (item.name === "articletype") notes.push(["Article type", last]);
     else if (item.name === "affiliation" || item.name === "altaffiliation") {
       // An affiliation is its author's: one before any author is not read.
       if (!authors.length) return null;
       authors.at(-1)!.places.push(last);
     } else if (item.name === "email") { if (allEmails || /^\s*show\s*$/.test(item.optional ?? "")) emails.push(last); }
-    else if (item.name === "correspondingauthor") notes.push(["Corresponding author", last]);
+    else if (item.name === "correspondingauthor") notes.push(["Corresponding author", agu && item.groups.length > 1 ? `${item.groups[0]} (${last})` : last]);
     else if (item.name === "collaboration") notes.push(["Collaboration", last]);
     else if (item.name === "keywords") keywords.push(last);
   }
@@ -5211,7 +5275,8 @@ function aastexFrontMatter(text: string, documentClass: string, whole = false): 
   if (emails.length) notes.push([emails.length > 1 ? "Emails" : "Email", emails.join(", ")]);
   if (keywords.length) notes.push(["Keywords", keywords.join(", ")]);
   const author = authors.length ? authors.map(({ name, places }) => [name, ...places.map((place) => `{\\small ${place}}`)].join(" \\\\ ")).join(" \\and ") : null;
-  return { from: run.start, to: run.end, title, author, notes };
+  if (cernNumber) notes.unshift(["Report", `CERN-EP-${cernYear}-${cernNumber}`]);
+  return { from: run.start, to: run.end, title, author, notes, date: cernDate ? `${cernDate} ${cernYear}`.trim() : null, details: places.length ? { subtitle: null, authorLines: [], places, notes: [] } : null };
 }
 
 /** AASTeX's front matter in the body (cached per document version), at document positions; null when there is none. */
@@ -5278,7 +5343,7 @@ function abstractIn(content: string) {
  * What may come right before `\maketitle` and is shown by it: the title block's declarations, and the metadata the
  * classes print small or not at all (acmart's `\ccsdesc`, `\setcopyright`, `\acmConference`; amsart's `\subjclass`).
  */
-const TITLE_DECLARATIONS = /^(?:title|subtitle|author|date|thanks|and|AND|affiliation|address|email|institute|inst|keywords|titlerunning|authorrunning|runningtitle|shorttitle|shortauthors|editor|jmlrheading|ShortHeadings|firstpageno|vspace|vskip|smallskip|medskip|bigskip|subjclass|ccsdesc|orcid|additionalaffiliation|authornote|authornotemark|titlenote|subtitlenote|dedicatory|curraddr|urladdr|setcopyright|copyrightyear|acm[A-Z][A-Za-z]*|settopmatter|received|citestyle|Copyright|journaltitle|cpr|doival|lefttitle|righttitle|totalpg|jnlDoiYr|jnlPage|history|preprint|altaffiliation|collaboration|pacs|homepage|noaffiliation|affil|pagerange|pubyear|affiliations|abstract|ead|cormark|cortext|fnmark|fntext|tnotemark|tnotetext|credit|nonumnote|affilmark|lmcsorcid|authorinfo|makeatletter|makeatother|IEEEpubid|IEEEaftertitletext|IEEEpubidadjcol|markboth|markright|TITLE|RUNTITLE|RUNAUTHOR|ECRUNTITLE|ECRUNAUTHOR|ARTICLEAUTHORS|AUTHOR|AFF|EMAIL|URL|ABSTRACT|KEYWORDS|HISTORY|SUBJECTCLASS|AREAOFREVIEW|VOLUME|NO|MONTH|YEAR|FIRSTPAGE|LASTPAGE|SHORTYEAR|ISSUE|LONGFIRSTPAGE|DOI|MANUSCRIPTNO)$/;
+const TITLE_DECLARATIONS = /^(?:openup|corref|fnref|tnoteref|thanksref|title|subtitle|author|date|thanks|and|AND|affiliation|address|email|institute|inst|keywords|titlerunning|authorrunning|runningtitle|shorttitle|shortauthors|editor|jmlrheading|ShortHeadings|firstpageno|vspace|vskip|smallskip|medskip|bigskip|subjclass|ccsdesc|orcid|additionalaffiliation|authornote|authornotemark|titlenote|subtitlenote|dedicatory|curraddr|urladdr|setcopyright|copyrightyear|acm[A-Z][A-Za-z]*|settopmatter|received|citestyle|Copyright|journaltitle|cpr|doival|lefttitle|righttitle|totalpg|jnlDoiYr|jnlPage|history|preprint|altaffiliation|collaboration|pacs|homepage|noaffiliation|affil|pagerange|pubyear|affiliations|abstract|ead|cormark|cortext|fnmark|fntext|tnotemark|tnotetext|credit|nonumnote|affilmark|lmcsorcid|authorinfo|makeatletter|makeatother|IEEEpubid|IEEEaftertitletext|IEEEpubidadjcol|markboth|markright|TITLE|RUNTITLE|RUNAUTHOR|ECRUNTITLE|ECRUNAUTHOR|ARTICLEAUTHORS|AUTHOR|AFF|EMAIL|URL|ABSTRACT|KEYWORDS|HISTORY|SUBJECTCLASS|AREAOFREVIEW|VOLUME|NO|MONTH|YEAR|FIRSTPAGE|LASTPAGE|SHORTYEAR|ISSUE|LONGFIRSTPAGE|DOI|MANUSCRIPTNO)$/;
 /** What ends a run of title declarations rather than staying source inside it: text, sections, environments. */
 const RUN_ENDERS = /^(?:begin|end|part|chapter|section|subsection|subsubsection|paragraph|subparagraph|item|maketitle|par|noindent|indent|bibliography|printbibliography|appendix|label|footnote|textbf|textit|emph|cite|ref|includegraphics|caption)$/;
 /** Definitions among them (acmart's `\renewcommand{\shortauthors}{…}`, a paper's `\newcommand{\gentxt}[1]{…}`): they print nothing. */
@@ -5289,7 +5354,7 @@ const TITLE_DEFINITIONS = /^(?:newcommand|renewcommand|providecommand|DeclareRob
  */
 const TITLE_ENVIRONMENTS = /^(?:abstract|CCSXML|teaserfigure|authgrp|keywords|IEEEkeywords|comment)$/;
 /** Classes that print an abstract written before `\maketitle` with the title (amsart: under it; acmart: in the block). */
-const ABSTRACT_WITH_TITLE = /^(?:informs\d*(?:-[A-Za-z0-9-]+)?|acmart|amsart|amsproc|amsbook|revtex4(?:-[12])?|sn-jnl|jfp|aa|cas-[sd]c|lmcs|IEEEojcsys)$/;
+const ABSTRACT_WITH_TITLE = /^(?:informs\d*(?:-[A-Za-z0-9-]+)?|acmart|amsart|amsproc|amsbook|revtex4(?:-[12])?|sn-jnl|jfp|aa|cas-[sd]c|lmcs|IEEEojcsys|openjournal)$/;
 /** The headings of A&A's structured `\abstract{…}{…}{…}{…}{…}`. */
 const AA_ABSTRACT_LABELS = ["Context", "Aims", "Methods", "Results", "Conclusions"];
 
@@ -5370,6 +5435,8 @@ function titleDeclarationsStart(text: string, abstractWithTitle = false, wrapper
       // A definition's name and parameters (`\newcommand\x[1]{…}`, `\def\x#1{…}`), before its body.
       if (command[1] === "let") end += /^\s*\\[A-Za-z@]+\s*=?\s*(?:\\[A-Za-z@]+|\\.)/.exec(text.slice(end, end + 120))?.[0].length ?? 0;
       else if (TITLE_DEFINITIONS.test(command[1])) end +=/^\s*(?:\\[A-Za-z@]+|\{\s*\\[A-Za-z@]+\s*\})(?:#\d)*/.exec(text.slice(end, end + 80))?.[0].length ?? 0;
+      // `\openup 0.8\jot` (cs.DM 2611.13813): a spacing setting with its glue.
+      else if (command[1] === "openup") end += PRIMITIVE_GLUE.exec(text.slice(end, end + 60))?.[0].length ?? 0;
       for (;;) {
         // A&A's `\abstract` takes five groups, with comment lines between them (2611.07227).
         // `\author` with its `{` on the next line (cs.IT 2611.09184): one line break is space to TeX.
@@ -5433,7 +5500,7 @@ function titleDeclarationsStart(text: string, abstractWithTitle = false, wrapper
 }
 
 /** Classes where each `\author{…}` adds an author, rather than replacing the last: acmart, the AMS classes, elsarticle, revtex, imsart, LIPIcs, AASTeX, Cambridge's jfp. */
-export const ACCUMULATING_AUTHORS = /^(?:informs\d*(?:-[A-Za-z0-9-]+)?|acmart|amsart|amsbook|amsproc|elsarticle|cas-[sd]c|lmcs|IEEEojcsys|revtex4(?:-[12])?|imsart|sn-jnl|jfp|lipics(?:-v20\d\d)?|oasics(?:-v20\d\d)?|aastex\d*|emulateapj|jheppub)$/;
+export const ACCUMULATING_AUTHORS = /^(?:informs\d*(?:-[A-Za-z0-9-]+)?|acmart|amsart|amsbook|amsproc|elsarticle|cas-[sd]c|lmcs|IEEEojcsys|revtex4(?:-[12])?|imsart|sn-jnl|jfp|lipics(?:-v20\d\d)?|oasics(?:-v20\d\d)?|aastex\d*|emulateapj|jheppub|authblk)$/;
 /** INFORMS' classes (informs3 and the journal variants): `TITLE{…}`, `ARTICLEAUTHORS{AUTHOR{…}AFF{…}}`, `ABSTRACT{…}` (econ.TH 2611.05708). */
 export const INFORMS = /^informs\d*(?:-[A-Za-z0-9-]+)?$/;
 /** LIPIcs' and OASIcs' classes, whose `\author{Name}{Affiliation}{email}{orcid}{funding}` takes five arguments. */
