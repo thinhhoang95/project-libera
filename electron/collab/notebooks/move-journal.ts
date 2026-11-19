@@ -14,8 +14,10 @@ import path from "node:path";
 import {
   ARCHIVE_DIRECTORY,
   STATE_DIRECTORY,
+  DestinationTakenError,
   availableName,
   movePath,
+  movePathExclusive,
   readIfExists,
   resolveInside,
   sha256,
@@ -112,4 +114,101 @@ export async function recoverInterruptedMoves(root: string, guard?: WriteGuard):
     recovered.push({ destination: entry.destination, outcome: "archived", archivedAs });
   }
   return recovered;
+}
+
+export interface PlacedMove {
+  fileId: string;
+  destination: string;
+  /**
+   * placed: the staged bytes are at the destination. duplicate-removed: the
+   * destination already held the same bytes. archived: the destination holds
+   * something else that stayed put past the grace period, so the staged bytes
+   * went to `_archive` and the destination needs its content from the authority.
+   */
+  outcome: "placed" | "duplicate-removed" | "archived";
+  archivedAs?: string;
+}
+
+export interface StagedMoveResults {
+  placed: PlacedMove[];
+  /** Files whose staged bytes are still waiting for a free destination. */
+  waiting: Set<string>;
+}
+
+/** How long a taken destination is waited out before the staged bytes are archived instead. */
+export const MOVE_CONFLICT_GRACE_MS = 5 * 60_000;
+
+/**
+ * Retries the journalled moves a pass or an earlier run left staged (audit
+ * 2026-11-19 finding 29). `destinations` maps each fileId to the path the
+ * manifest wants now, which can differ from the journal's when the file moved
+ * again. Placement never replaces anything: a taken destination keeps the
+ * staged bytes and the journal for a later pass, and only after
+ * `conflictGraceMs` are the bytes archived (deleted only when the destination
+ * holds identical bytes). A journal for a file the manifest no longer lists is
+ * archived the same way, since nothing will place it.
+ */
+export async function placeStagedMoves(root: string, destinations: Map<string, string>, guard?: WriteGuard, options: { conflictGraceMs?: number; now?: number } = {}): Promise<StagedMoveResults> {
+  const results: StagedMoveResults = { placed: [], waiting: new Set() };
+  const directory = movingDirectory(root);
+  let names: string[];
+  try {
+    names = await fs.readdir(directory);
+  } catch {
+    return results;
+  }
+  const grace = options.conflictGraceMs ?? MOVE_CONFLICT_GRACE_MS;
+  const now = options.now ?? Date.now();
+  for (const name of names.filter((item) => item.endsWith(JOURNAL_SUFFIX)).sort()) {
+    const journal = path.join(directory, name);
+    const raw = await readIfExists(journal);
+    const entry = raw ? parseEntry(raw) : null;
+    if (!entry) continue;
+    const staged = path.join(directory, entry.staged);
+    const bytes = await readIfExists(staged).catch(() => null);
+    if (!bytes) {
+      if (!(await fs.stat(staged).catch(() => null))) await fs.rm(journal, { force: true });
+      continue;
+    }
+    const wanted = destinations.get(entry.fileId);
+    const destination = wanted ?? entry.destination;
+    const target = await resolveInside(root, destination).catch(() => null);
+    if (!target) continue;
+    const archive = async (): Promise<void> => {
+      const base = path.posix.basename(destination);
+      const extension = path.posix.extname(base);
+      const stem = extension ? base.slice(0, -extension.length) : base;
+      const archiveRoot = path.join(root, ARCHIVE_DIRECTORY);
+      const archivedAs = await availableName(archiveRoot, `${stem} (interrupted move)${extension}`);
+      await movePath(staged, path.join(archiveRoot, archivedAs), guard);
+      await fs.rm(journal, { force: true });
+      results.placed.push({ fileId: entry.fileId, destination, outcome: "archived", archivedAs });
+    };
+    try {
+      if (wanted === undefined) {
+        await archive();
+        continue;
+      }
+      await movePathExclusive(staged, target, guard);
+      await fs.rm(journal, { force: true });
+      results.placed.push({ fileId: entry.fileId, destination, outcome: "placed" });
+    } catch (error) {
+      if (!(error instanceof DestinationTakenError)) {
+        // A cancelled write or an IO failure: the bytes and the journal stay for the next pass.
+        results.waiting.add(entry.fileId);
+        continue;
+      }
+      const current = await readIfExists(target).catch(() => null);
+      if (current && sha256(current) === sha256(bytes)) {
+        await fs.rm(staged, { force: true });
+        await fs.rm(journal, { force: true });
+        results.placed.push({ fileId: entry.fileId, destination, outcome: "duplicate-removed" });
+      } else if (now - entry.stagedAt >= grace) {
+        await archive().catch(() => results.waiting.add(entry.fileId));
+      } else {
+        results.waiting.add(entry.fileId);
+      }
+    }
+  }
+  return results;
 }
