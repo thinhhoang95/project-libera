@@ -64,7 +64,10 @@ test("S1: a tree load reads no bytes and gives no id by size; an action resolves
     await assert.rejects(resolveSharedActionFileId("Shared/b.pdf", undefined, "deleted", list), (error: Error & { status?: number }) =>
       error.status === 409 && /still being brought up to date by sync, so it cannot be deleted yet/.test(error.message), "equal size is not identity");
     assert.equal(reads.mock.callCount(), 2);
-    await assert.rejects(resolveSharedActionFileId("Shared/gone.pdf", undefined, "moved", list), /still being brought up to date/);
+    assert.equal(await resolveSharedActionFileId("Shared/gone.pdf", undefined, "moved", list), undefined, "no entry: the operation's own validation reports it");
+    assert.equal(await resolveSharedActionFileId("Shared/doc.md", undefined, "moved", async () => [entryOf("doc.md", "id-doc", { kind: "doc" })]), "id-doc", "a document is not read");
+    assert.equal(reads.mock.callCount(), 2);
+    assert.equal(await resolveSharedActionFileId("Shared/absent.pdf", undefined, "moved", async () => [entryOf("absent.pdf", "id-absent", { blobHash: "x" })]), "id-absent", "not on this disk yet: the host's check guards");
     // An id the request carries is passed to the host, which does the check; nothing is listed or read.
     const listed = listings;
     assert.equal(await resolveSharedActionFileId("Shared/b.pdf", "id-seen", "deleted", list), "id-seen");
@@ -79,6 +82,31 @@ test("S1: a tree load reads no bytes and gives no id by size; an action resolves
     assert.equal(await resolveSharedActionFileId("Shared/a.pdf", undefined, "moved", list), "id-a");
     assert.equal(reads.mock.callCount(), 2);
   });
+});
+
+test("S1: a document row carries the manifest entry's id from the listing, so a stale row cannot act on the document that replaced it", async () => {
+  const manifest = new Map<string, string>([["Shared/notes.md", "id-A"]]);
+  const list = async () => [...manifest].map(([p, id]) => entryOf(p.split("/")[1], id, { kind: "doc" }));
+  const row = [file("notes.md", { fileType: "markdown" })];
+  await attachSharedFileIds([book(row)], list, () => true);
+  assert.equal(row[0].fileId, "id-A", "a document is identified by the listing, with no read");
+  // Another document takes the name.
+  manifest.set("Shared/notes.md", "id-B");
+  // The stub host compares expectedFileId with its entry at the path, as the real host does.
+  const host = (path: string, expectedFileId: string | undefined) => {
+    if (expectedFileId !== undefined && expectedFileId !== manifest.get(path)) throw Object.assign(new Error("This file changed since it was read."), { status: 409 });
+    return "deleted";
+  };
+  const sent = await resolveSharedActionFileId("Shared/notes.md", row[0].fileId, "deleted", list);
+  assert.throws(() => host("Shared/notes.md", sent), (error: Error & { status?: number }) => error.status === 409);
+  // A later listing replaces the id with the new occupant's.
+  await attachSharedFileIds([book(row)], list, () => true);
+  assert.equal(row[0].fileId, "id-B");
+  // An unanswered listing keeps the id the row had.
+  const kept = [file("notes.md", { fileType: "markdown" })];
+  await attachSharedFileIds([book(kept)], async () => { throw new Error("offline"); }, () => true);
+  assert.equal(kept[0].fileIdState, "unknown");
+  assert.equal((mergeTree(treeOf(book([file("notes.md", { fileId: "id-A" })])), treeOf(book(kept))).notebooks[0].children[0] as LiberaFileNode).fileId, "id-A");
 });
 
 test("S1: opening a file verifies the bytes that read already returned; a listing timeout or a file read without bytes stays unknown", async () => {

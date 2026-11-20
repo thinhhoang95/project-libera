@@ -914,10 +914,12 @@ test("new notes, LaTeX, text and folders use the shared manifest and preserve lo
 test("shared file rename, folder moves and deletion use the manifest and keep document identity", async () => {
   await withFixture(async ({ host, root, disk }) => {
     const docId = host.doc("Shared/notes.md").docId;
+    const fileId = host.doc("Shared/notes.md").fileId;
     const rename = await FILES_PATCH(authed("/api/files", { method: "PATCH", json: { path: "Shared/notes.md", destinationNotebook: "Shared", destinationName: "renamed.md" } }));
     assert.equal(rename.status, 200);
     assert.equal((await rename.json()).file.path, "Shared/renamed.md");
-    assert.deepEqual(host.fileOps.at(-1), { op: "rename", path: "notes.md", to: "renamed.md" });
+    // The route resolves the manifest entry's id and the host checks it (a request without an id no longer acts by path alone).
+    assert.deepEqual(host.fileOps.at(-1), { op: "rename", path: "notes.md", to: "renamed.md", expectedFileId: fileId });
     assert.equal(host.doc("Shared/renamed.md").docId, docId);
     assert.ok(!existsSync(path.join(root, "Shared", "notes.md")));
     await FOLDERS_POST(authed("/api/folders", { json: { parentPath: "Shared", name: "sub" } }));
@@ -930,7 +932,7 @@ test("shared file rename, folder moves and deletion use the manifest and keep do
     assert.equal(host.doc("Shared/sub/final.md").docId, docId);
     const removed = await FILES_DELETE(authed("/api/files?path=Shared%2Fsub%2Ffinal.md", { method: "DELETE" }));
     assert.equal(removed.status, 200);
-    assert.deepEqual(host.fileOps.at(-1), { op: "delete", path: "sub/final.md" });
+    assert.deepEqual(host.fileOps.at(-1), { op: "delete", path: "sub/final.md", expectedFileId: fileId });
     assert.ok(!existsSync(path.join(root, "Shared", "sub", "final.md")));
     assert.ok(!host.docs.has("Shared/sub/final.md"));
     assert.equal(disk("Shared/_archive/sub/final.md"), "Hello world (disk copy)\n");
