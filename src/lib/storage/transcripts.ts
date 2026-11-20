@@ -361,6 +361,19 @@ export async function copyTranscript(fromPath: string, toPath: string) {
   }
 }
 
+/**
+ * Whether nothing at `source` is a recording: it is not there, or what is
+ * there is a directory (or anything else but a file). Anything that cannot be
+ * told (no permission, a drive error) throws, so the cache is kept.
+ */
+async function recordingAbsent(source: string) {
+  try { return !(await stat(source)).isFile(); }
+  catch (error) {
+    if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) return true;
+    throw error;
+  }
+}
+
 /** Discard local sidecars of externally deleted recordings, retaining offline files. */
 export async function pruneAudioSidecars(notebook: string) {
   // Missing cloud files are not deletion intent. Retain the local recovery
@@ -378,8 +391,11 @@ export async function pruneAudioSidecars(notebook: string) {
       const target = path.join(directory, entry.name);
       if (entry.isDirectory()) await visit(target, [...parts, entry.name]);
       else if (entry.isFile() && entry.name.endsWith(".json") && getFileType(entry.name.slice(0, -5)) === "audio") {
-        try { await stat(filePathFromParts(notebook, [...parts, entry.name.slice(0, -5)])); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") await rm(target, { force: true }); else throw error; }
+        const source = filePathFromParts(notebook, [...parts, entry.name.slice(0, -5)]);
+        if (await recordingAbsent(source)) {
+          // Looked at again just before: the recording may have come back since.
+          if (await recordingAbsent(source)) await rm(target, { force: true });
+        }
       }
     }
   }

@@ -103,5 +103,10 @@ export function fileExistence() {
     },
     exists: (libraryPath: string) => known.get(libraryPath) === "file",
     unknown: (libraryPath: string) => known.get(libraryPath) === "unknown",
+    /** One path: true for a file by that exact name, false when absent, null when it could not be checked. */
+    async isFile(libraryPath: string) {
+      await this.check([libraryPath]);
+      return known.get(libraryPath) === "file" ? true : known.get(libraryPath) === "unknown" ? null : false;
+    },
   };
 }
