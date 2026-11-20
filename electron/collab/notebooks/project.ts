@@ -1626,7 +1626,11 @@ export class SharedProject {
   private ensureDoc(docId: string, fileId: string): void {
     const existing = this.docs.get(docId);
     if (existing) {
-      existing.fileId = fileId;
+      // A document belongs to one file id. A second entry naming it is a malformed manifest: keep the first binding.
+      if (existing.fileId !== fileId) {
+        this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: document ${docId} is listed under file ${fileId} but belongs to ${existing.fileId}; keeping the first`);
+        return;
+      }
       existing.hub.reviveDeleted();
       return;
     }
