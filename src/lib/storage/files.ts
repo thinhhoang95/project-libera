@@ -457,9 +457,9 @@ async function assertSidecarsCanMove(notebook: string, parts: string[], fromType
  * record: refused when the file has records the new type has no use for. The
  * bytes are not converted; only caches are dropped.
  */
-async function assertTypeChangeLosesNothing(notebook: string, parts: string[], relative: string, fromType: LiberaFileType, toType: LiberaFileType) {
+export async function assertTypeChangeLosesNothing(notebook: string, parts: string[], relative: string, fromType: LiberaFileType, toType: LiberaFileType, ignore?: ReadonlySet<string>) {
   if (fromType === toType) return;
-  const names = new Set((await lostSidecarRecords(notebook, parts, fromType, toType)).map((kind) => RECORD_NAMES[kind] ?? kind));
+  const names = new Set((await lostSidecarRecords(notebook, parts, fromType, toType, ignore)).map((kind) => RECORD_NAMES[kind] ?? kind));
   // A review follows only a text file (movePathWithReview).
   if (isTextFileType(fromType) && !isTextFileType(toType)) {
     const reviews = await inspectReviewDocuments<ReviewDocument>(getStateRoot(), relative);

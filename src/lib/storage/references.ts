@@ -379,6 +379,22 @@ export async function moveReferenceAttachments(from: string, to: string) {
 }
 
 /**
+ * A shared file moved: like moveReferenceAttachments, but says what could not follow.
+ * `failures`: libraries that could not be updated (retry later); `offline`: libraries in linked
+ * folders that are not connected (they keep the old pointer until they are).
+ */
+export async function moveReferenceAttachmentsChecked(from: string, to: string) {
+  if (from === to) return { failures: [] as { notebook: string; error: unknown }[], offline: [] as string[] };
+  const result = await moveReferenceAttachmentsBatch(new Map([[from, to]]));
+  // Open References panels of the libraries that changed reload.
+  for (const notebook of result.changed) {
+    try { publishReferenceEvent({ type: "library", notebook, revision: (await readReferenceLibrary(notebook)).revision }); }
+    catch { /* The panel catches up when it next loads. */ }
+  }
+  return { failures: result.failures, offline: result.offline };
+}
+
+/**
  * Many files moved at once (notebook migration): one pass over each library
  * instead of one per file. `moves` maps exact library paths. Never fails the
  * caller: libraries that could not be updated are returned, with those that changed.
@@ -397,6 +413,17 @@ export async function moveReferenceAttachmentsBatch(moves: ReadonlyMap<string, s
   }
   for (const failure of failures) console.error(`[references] Could not update attachments in ${failure.notebook || "the libraries"}:`, failure.error);
   return { changed, failures, offline };
+}
+
+/** A shared file was deleted: like detachReferenceAttachments, but says what could not follow (see moveReferenceAttachmentsChecked). */
+export async function detachReferenceAttachmentsChecked(removed: string) {
+  const failures: { notebook: string; error: unknown }[] = [];
+  try {
+    await remapReferenceAttachments((current) => underPath(current, removed) ? null : current, failures);
+  } catch (error) {
+    failures.push({ notebook: "", error });
+  }
+  return { failures, offline: offlineLinkedFolderNames() };
 }
 
 /** A file or folder at `removed` was deleted: detach every pointer into it. Never fails the caller. */

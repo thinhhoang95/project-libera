@@ -254,6 +254,54 @@ export async function copyFileIfExists(currentPath: string, nextPath: string, { 
   }
 }
 
+/** What a record looked like when it was read: its identity, size and time. */
+export type FileSnapshot = { dev: bigint; ino: bigint; size: bigint; mtimeNs: bigint };
+
+export async function snapshotFile(target: string): Promise<FileSnapshot | null> {
+  const stats = await stat(target, { bigint: true }).catch(() => null);
+  return stats?.isFile() ? { dev: stats.dev, ino: stats.ino, size: stats.size, mtimeNs: stats.mtimeNs } : null;
+}
+
+const sameSnapshot = (a: FileSnapshot, b: FileSnapshot) => a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeNs === b.mtimeNs;
+
+/**
+ * Removes a record only if it is still the version `seen` (the one that was
+ * copied elsewhere): a version saved there meanwhile (an editor, a cloud
+ * folder) is never removed. The record is renamed aside first, so the check is
+ * of the very file that goes; a newer version is put back where it was, and if
+ * that place was taken again it stays at the aside name, which the error says.
+ */
+export async function retireIfUnchanged(target: string, seen: FileSnapshot): Promise<"retired" | "gone" | "newer"> {
+  const aside = `${target}.${process.pid}.${randomUUID()}.retiring`;
+  try { await rename(target, aside); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "gone";
+    throw error;
+  }
+  const now = await snapshotFile(aside);
+  if (!now) return "gone";
+  if (sameSnapshot(now, seen)) { await rm(aside, { force: true }); return "retired"; }
+  try { await moveFileWithoutReplacing(aside, target); }
+  catch { throw new StorageError(`A newer version of ${path.basename(target)} was saved while it was being moved, and is kept at ${aside}.`, 409); }
+  return "newer";
+}
+
+/**
+ * A record whose name differs from its destination only in letter case, on a
+ * volume that treats the two as one slot: renamed through a temporary name,
+ * since an exclusive copy would find the slot taken by the record itself.
+ * Confirmed again here (same device and inode); the second step never replaces.
+ */
+export async function renameCaseAlias(currentPath: string, nextPath: string) {
+  if (!(await isCaseOnlyRename(currentPath, nextPath))) throw new StorageError("The two spellings are not the same record.", 409);
+  const aside = `${currentPath}.${process.pid}.${randomUUID()}.case`;
+  await rename(currentPath, aside);
+  try { await moveFileWithoutReplacing(aside, nextPath); }
+  catch (error) {
+    await rename(aside, currentPath).catch(() => undefined);
+    throw error;
+  }
+}
+
 /** Publish complete JSON in one rename; readers never see a truncated document. */
 export async function writeJsonAtomically(targetPath: string, value: unknown, beforePublish?: () => Promise<void>) {
   const createdRoot = await ensureParentDirectory(targetPath);

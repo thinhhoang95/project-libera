@@ -289,10 +289,11 @@ test("S47: a local-only file archived for an incoming entry gets an identity-bou
     writeFileSync(path.join(dir.dir, "b.png"), "local annotated image");
     const emitted: unknown[] = [];
     let saved = 0;
+    const store = new HostStore({ path: ":memory:" });
     const project = bare({
       info: { root: dir.dir, album: false, projectId: "p1", notebook: "NB" },
       state: { layout: {}, reconciliations: [] },
-      ctx: { emit: (event: unknown) => emitted.push(event) },
+      ctx: { emit: (event: unknown) => emitted.push(event), host: { store }, logger: quietLogger },
       diskGuard: () => ({ root: dir.dir, canCommit: async () => true }),
       saveSoon: () => { saved += 1; },
       liberaPath: (relative: string) => `NB/${relative}`,
@@ -308,9 +309,13 @@ test("S47: a local-only file archived for an incoming entry gets an identity-bou
     assert.equal(event.t, "tree-changed");
     assert.deepEqual(event.moves.map((move) => [move.from, move.to]), [["NB/b.png", "NB/_archive/b.png"]]);
     assert.match(event.moves[0].fileId, /^displaced-[0-9a-f]{24}$/);
+    // Wiring (H3 to B2): the same move is in the durable transition log, in the same table and sequence as the manifest's moves, so Next's next drain moves the records with the displaced file.
+    const logged = store.transitionsAfter("p1");
+    assert.deepEqual(logged.map((row) => [row.fileId, row.kind, row.from, row.to]), [[event.moves[0].fileId, "file", "b.png", "_archive/b.png"]]);
     // Nothing archived: nothing to tell.
     project.displacedPath("c.png", null);
     assert.equal(emitted.length, 1);
+    assert.equal(store.transitionsAfter("p1").length, 1);
   } finally {
     dir.cleanup();
   }

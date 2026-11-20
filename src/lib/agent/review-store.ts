@@ -317,6 +317,21 @@ async function takenByOther(to: string, entry: ReviewEntry, baseline: string) {
   return !(existing.baseline === baseline && existing.created === entry.created && existing.runIds.join() === entry.runIds.join());
 }
 
+/**
+ * A shared file the host has already moved: its pending review follows (written at the new path, then removed from the old one),
+ * under both paths' locks. `held`: the destination has a review of its own, which is never replaced.
+ */
+export function moveReviewEntryAfterMove(from: string, to: string): Promise<"none" | "moved" | "held"> {
+  return withReviewFiles([from, to], async () => {
+    const entry = await readEntry(from);
+    if (!entry) return "none";
+    if (await takenByOther(to, entry, entry.baseline)) return "held";
+    await writeJsonState(entryPath(to), { ...entry, path: to, updatedAt: new Date().toISOString(), revision: randomUUID() });
+    await removeEntry(from);
+    return "moved";
+  });
+}
+
 /** Whether a file has a pending review stored, settled or not: a move onto its path would take it over. */
 export async function hasReviewEntry(filePath: string) {
   return (await readEntry(filePath)) !== null;

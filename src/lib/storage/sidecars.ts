@@ -111,6 +111,13 @@ export const SIDECAR_KINDS: readonly SidecarKind[] = [
 ];
 
 /** The path helpers in paths.ts that are per-file sidecars, for the guard test. */
+/**
+ * Records of a shared file that SIDECAR_KINDS lists and that something else owns or moves in a shared notebook: the host (ink and
+ * transcripts are manifest entries), the PDF reconciliation (a PDF's notes), or nothing (a waveform cache is made again).
+ * Next never moves, removes or writes these on disk itself.
+ */
+export const HOST_OWNED_SIDECARS: ReadonlySet<string> = new Set(["ink", "transcript", "audio-peaks", "pdf-annotations", "pdf-outline", "pdf-text"]);
+
 export const SIDECAR_PATH_HELPERS = ["pdfAnnotationsPath", "pdfOutlinePath", "pdfTextCachePath", "imageAnnotationsPath", "transcriptPath", "audioPeaksPath", "definitionsPath"] as const;
 
 async function moveKind(kind: SidecarKind, from: string, to: string) {
@@ -125,13 +132,13 @@ async function moveKind(kind: SidecarKind, from: string, to: string) {
  * code) that a change of its file type would leave without a home: records of
  * a kind the new type has no use for. Caches are not records; they are made again.
  */
-export async function lostSidecarRecords(notebook: string, parts: string[], fromType: string, toType: string): Promise<string[]> {
+export async function lostSidecarRecords(notebook: string, parts: string[], fromType: string, toType: string, ignore: ReadonlySet<string> = new Set()): Promise<string[]> {
   if (fromType === toType) return [];
   const caches = new Set(SIDECAR_KINDS.filter((kind) => kind.cache).map((kind) => kind.id));
   const keptKinds = new Set(SIDECAR_KINDS.filter((kind) => kind.appliesTo(toType)).map((kind) => kind.id));
   const lost: string[] = [];
   for (const sidecar of await existingSidecars(notebook, parts, fromType)) {
-    if (caches.has(sidecar.kind)) continue;
+    if (caches.has(sidecar.kind) || ignore.has(sidecar.kind)) continue;
     if (keptKinds.has(sidecar.kind)) {
       // Both types take ink, but not the same chunks: the new editor would never show the old ones. A folder that can't be listed is not shown to fit.
       if (sidecar.kind === "ink" && (await inkChunksTheTypeLacks(sidecar.path, toType).catch(() => ["?"])).length) lost.push(sidecar.kind);
@@ -214,6 +221,19 @@ export async function removeFileSidecars(notebook: string, pathParts: string[], 
     await rm(kind.filePath(notebook, pathParts), { force: true, recursive: true }).catch(kind.cache ? () => undefined : (error) => { throw error; });
   }
   if (fileType === "markdown") await deletePythonSidecar(`${notebook}/${pathParts.join("/")}`);
+}
+
+/**
+ * A shared file was deleted: the sidecars Next itself keeps are removed, except those in `hostOwned`
+ * (ink, transcripts and the live PDF's notes: the host or the PDF reconciliation owns them) and the
+ * Python code (a manifest entry the host deletes). Never touches a folder-layout record.
+ */
+export async function removeLocalSidecars(notebook: string, pathParts: string[], fileType: string, hostOwned: ReadonlySet<string>) {
+  for (const kind of SIDECAR_KINDS) {
+    // A cache (a waveform, a PDF's text) is Next's own, made again: removed with the file.
+    if ((hostOwned.has(kind.id) && !kind.cache) || kind.layout === "folder" || !kind.appliesTo(fileType)) continue;
+    await rm(kind.filePath(notebook, pathParts), { force: true }).catch(kind.cache ? () => undefined : (error) => { throw error; });
+  }
 }
 
 /**
