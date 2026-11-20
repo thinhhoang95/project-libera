@@ -976,11 +976,11 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
       for (const reference of written) {
         await disk.check(reference.candidates);
         if (reference.candidates.some(disk.exists)) continue;
-        // A file the tree does not list (.sty, .cls, an image type it does not show) may still be on disk.
+        // A file the tree does not list (.sty, .cls, an image type it does not show) may still be on disk; TeX needs a readable file, so a folder or a dangling link is not one.
         let state: "present" | "absent" | "unknown" = "absent";
         for (const candidate of reference.candidates) {
           const [owner, ...parts] = candidate.split("/");
-          const found = await probe(path.join(notebookPath(owner), ...parts));
+          const found = await probeFileOnce(path.join(notebookPath(owner), ...parts));
           if (found === "present") { state = "present"; break; }
           if (found === "unknown") state = "unknown";
         }

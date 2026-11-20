@@ -471,7 +471,8 @@ test("a tether whose folder can't be checked is not offered", () => withTemporar
     try {
       const plan = await planNotebookCleanup("Nb");
       assert.deepEqual(plan.items, []);
-      assert.match(plan.notes.join("\n"), /tether is left out/);
+      // The verifier marks the references check partial for a folder it cannot read, and offers nothing from it: the plan says so as for any partial check.
+      assert.match(plan.notes.join("\n"), /1 check ran only in part/);
     } finally { mock.restoreAll(); }
   } finally { await rm(outside, { recursive: true, force: true }); }
 }));
