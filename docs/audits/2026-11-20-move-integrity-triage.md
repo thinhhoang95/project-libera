@@ -11,6 +11,8 @@ the link refactor on move that follows this round.
 - Try to fix stays name-based (docs/features/notebook-integrity.md): no fingerprints, stamps, retention or merge
   layers. Gaps inside the name rule are fixed.
 - Markdown links and image paths are not rewritten on move in this round; the link refactor comes after it.
+- F64, decided by the user: Try to fix goes back to name-only. The content-identity pairing added in `2632bbd`
+  (2026-11-18) is removed from `repair.ts`, and the tests that encode it are rewritten to the name rule.
 - Destructive steps fail closed: when a check cannot establish that something is stale, free or unique, the step is
   refused or held, and the report says so.
 - Tests: the package's own test files, once; `npx tsc --noEmit -p .` and eslint on changed files, once.
