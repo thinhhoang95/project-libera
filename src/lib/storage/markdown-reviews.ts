@@ -165,6 +165,32 @@ export async function moveReviewPaths(moves: ReadonlyMap<string, string>, option
     return [...stayed];
   });
 }
+/**
+ * A move rewrote these notes' paths (storage/move-links.ts). A review taken
+ * of the text before gets the text after, its comments' anchors mapped
+ * through each edit in turn (`edits` run from the end of the text to its
+ * start), so a comment is never taken for one on changed text. A review of
+ * another text is left to sync when the note is next opened.
+ */
+export async function rewriteReviewSnapshots(changes: readonly { path: string; before: string; edits: readonly { start: number; end: number; text: string }[] }[]) {
+  const byPath = new Map(changes.filter((change) => change.edits.length).map((change) => [change.path, change]));
+  if (!byPath.size) return;
+  return transaction(async (tx) => {
+    for (const [id, key] of tx.keys()) {
+      const change = byPath.get(key);
+      if (!change) continue;
+      const doc = await tx.getIfPresent(id);
+      if (!doc || doc.snapshot !== change.before) continue;
+      let text = change.before;
+      let next = doc;
+      for (const edit of change.edits) {
+        text = text.slice(0, edit.start) + edit.text + text.slice(edit.end);
+        next = syncReview(next, text, false);
+      }
+      tx.put({ ...next, revision: doc.revision + 1 });
+    }
+  });
+}
 export async function deleteReviewPath(key: string) {
   return transaction((tx) => { for (const [id, stored] of tx.keys()) if (under(stored, key)) tx.remove(id); });
 }

@@ -33,11 +33,57 @@ const INCLUDE_EXTENSIONS = [".tex"];
 const PDF_EXTENSIONS = [".pdf"];
 
 /** A name that depends on a macro (`#1` in a definition, `\figdir`): TeX would only know it after expanding. */
-const needsExpansion = (reference: string) => /[#\\]/.test(reference);
+export const needsExpansion = (reference: string) => /[#\\]/.test(reference);
 
-function graphicsPaths(text: string) {
+/**
+ * How a reference is read: `include` (`\input`, `\include`, `\subfile`; `.tex`
+ * added to a name without an extension, as readLatexIncludes does),
+ * `bibliography` (`\bibliography`; `.bib` added), `bibresource` (a name taken
+ * as written), `pdf`, `listing`, `graphics` (also through `\graphicspath`).
+ */
+export type LatexCandidateKind = "include" | "bibliography" | "bibresource" | "pdf" | "listing" | "graphics";
+
+/** A path from `base`'s folder, then with each extension TeX adds. None outside the notebook (another notebook, `..` past its folder): not the check's to judge. */
+function resolveFrom(notebook: string, base: string, reference: string, extensions: string[] = []) {
+  const resolved = resolveRelativeNotebookPath(base, reference);
+  if (!resolved || !resolved.startsWith(`${notebook}/`)) return [];
+  // TeX tries the name as written, then with each extension: a dot in
+  // `plot.v2` is not an extension unless it is one of theirs.
+  return extensions.includes(path.extname(resolved).toLowerCase()) ? [resolved] : [resolved, ...extensions.map((extension) => `${resolved}${extension}`)];
+}
+
+/**
+ * The library paths TeX tries, in order, for `reference` in a build that
+ * reads from `base`'s folder (its main file; the file itself for
+ * `\subimport`). One rule for the check (latexDependencies) and for the
+ * rewrite of a move (storage/move-links.ts).
+ */
+export function latexCandidates(notebook: string, base: string, kind: LatexCandidateKind, reference: string, prefixes: readonly string[] = []): string[] {
+  switch (kind) {
+    case "include": return resolveFrom(notebook, base, /\.[a-z]+$/i.test(reference) ? reference : `${reference}.tex`, INCLUDE_EXTENSIONS);
+    case "bibliography":
+    case "bibresource": {
+      const name = kind === "bibliography" && !/\.bib$/i.test(reference) ? `${reference}.bib` : reference;
+      const fromRoot = resolveFrom(notebook, base, name);
+      // Also from the notebook folder (BIBINPUTS, latex/build.ts).
+      return [...fromRoot, ...resolveFrom(notebook, `${notebook}/main.tex`, name).filter((candidate) => !fromRoot.includes(candidate))];
+    }
+    case "pdf": return resolveFrom(notebook, base, reference, PDF_EXTENSIONS);
+    case "listing": return resolveFrom(notebook, base, reference);
+    case "graphics": return ["", ...prefixes].flatMap((prefix) => resolveFrom(notebook, base, `${prefix}${reference}`, GRAPHICS_EXTENSIONS));
+  }
+}
+
+/** A main file's `\graphicspath` folders, as written. */
+export function graphicsPaths(text: string) {
   const match = /\\graphicspath\s*\{((?:\s*\{[^}]*\})+)\s*\}/.exec(stripLatexComments(text));
   return match ? [...match[1].matchAll(/\{([^}]*)\}/g)].map((group) => group[1].trim()) : [];
+}
+
+/** A source as the disk has it. */
+async function readSourceFile(file: string) {
+  const { notebook, pathParts } = splitFilePath(file);
+  return readFile(filePathFromParts(notebook, pathParts), "utf8");
 }
 
 /**
@@ -46,29 +92,21 @@ function graphicsPaths(text: string) {
  * found or not), its main files, and whether the sources were only partly read.
  * `builds` lists the references once per main file that reaches the source
  * (`references` keeps the first), so a chapter shared by two mains is checked
- * from each.
+ * from each. `read` gives a source's text by its library path (the disk by
+ * default); the rewrite of a move reads the layout before the move through it.
  */
-export async function latexDependencies(notebook: string, files: readonly string[]) {
+export async function latexDependencies(notebook: string, files: readonly string[], read: (file: string) => Promise<string> = readSourceFile) {
   const visible = new Set(files);
   const texFiles = files.filter((file) => isLatexCitingPath(file));
   let incomplete = texFiles.length > MAX_LATEX_FILES;
   const texts = new Map<string, string>();
   for (const file of texFiles.slice(0, MAX_LATEX_FILES)) {
     try {
-      const { notebook: owner, pathParts } = splitFilePath(file);
-      const text = await readFile(filePathFromParts(owner, pathParts), "utf8");
+      const text = await read(file);
       if (text.length > MAX_LATEX_CHARACTERS) incomplete = true;
       texts.set(file, text.slice(0, MAX_LATEX_CHARACTERS));
     } catch { incomplete = true; }
   }
-  const resolveFrom = (base: string, reference: string, extensions: string[] = []) => {
-    const resolved = resolveRelativeNotebookPath(base, reference);
-    // Outside the notebook (another notebook, `..` past its folder): not this check's to judge.
-    if (!resolved || !resolved.startsWith(`${notebook}/`)) return [];
-    // TeX tries the name as written, then with each extension: a dot in
-    // `plot.v2` is not an extension unless it is one of theirs.
-    return extensions.includes(path.extname(resolved).toLowerCase()) ? [resolved] : [resolved, ...extensions.map((extension) => `${resolved}${extension}`)];
-  };
 
   const dependencies = new Map<string, Set<string>>();
   const references = new Map<string, LatexReference[]>();
@@ -96,27 +134,25 @@ export async function latexDependencies(notebook: string, files: readonly string
     };
     for (const include of readLatexIncludes(text)) {
       if (needsExpansion(include.path)) { unresolved.add(`${file}\0${include.path}`); continue; }
-      const targets = resolveFrom(include.relativeToFile ? file : root, include.path, INCLUDE_EXTENSIONS);
+      const targets = latexCandidates(notebook, include.relativeToFile ? file : root, "include", include.path);
       note("include", include.path, targets);
       for (const target of targets) if (texts.has(target)) visit(root, target, prefixes, seen);
     }
-    for (const bibliography of readLatexBibliographyReferences(text)) {
-      const fromRoot = resolveFrom(root, bibliography);
-      note("bibliography", bibliography, [...fromRoot, ...resolveFrom(`${notebook}/main.tex`, bibliography).filter((candidate) => !fromRoot.includes(candidate))]);
-    }
+    // Names come with `.bib` added where `\bibliography` adds it, so each is taken as written.
+    for (const bibliography of readLatexBibliographyReferences(text)) note("bibliography", bibliography, latexCandidates(notebook, root, "bibresource", bibliography));
     const stripped = stripLatexComments(text);
     // pdfpages and listings read their file from the main file's folder too.
     for (const match of stripped.matchAll(/\\includepdf\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}/g)) {
       const reference = match[1].trim();
-      note("include", reference, resolveFrom(root, reference, PDF_EXTENSIONS));
+      note("include", reference, latexCandidates(notebook, root, "pdf", reference));
     }
     for (const match of stripped.matchAll(/\\lstinputlisting\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}/g)) {
       const reference = match[1].trim();
-      note("include", reference, resolveFrom(root, reference));
+      note("include", reference, latexCandidates(notebook, root, "listing", reference));
     }
     for (const match of stripped.matchAll(/\\includegraphics\*?\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}/g)) {
       const reference = match[1].trim();
-      note("graphics", reference, ["", ...prefixes].flatMap((prefix) => resolveFrom(root, `${prefix}${reference}`, GRAPHICS_EXTENSIONS)));
+      note("graphics", reference, latexCandidates(notebook, root, "graphics", reference, prefixes));
     }
   };
   const known = new Set(texts.keys());
@@ -124,5 +160,5 @@ export async function latexDependencies(notebook: string, files: readonly string
   for (const root of roots) visit(root, root, graphicsPaths(texts.get(root)!), new Set());
   // Sources no main file includes are read on their own.
   for (const file of texts.keys()) if (!mainFiles.has(file)) visit(file, file, [], new Set());
-  return { dependencies, references, builds, mainFiles, incomplete, unresolved: unresolved.size };
+  return { dependencies, references, builds, mainFiles, roots, incomplete, unresolved: unresolved.size };
 }

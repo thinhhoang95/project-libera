@@ -129,7 +129,8 @@ function getParentPath(pathValue: string) {
   return pathValue.split("/").slice(0, -1).join("/");
 }
 
-function getRelativePath(fromDirectory: string, targetPath: string) {
+/** `targetPath` as written from `fromDirectory` (library paths): `../b/c.md`. The links the editor writes, and the ones a move rewrites, use it. */
+export function getRelativePath(fromDirectory: string, targetPath: string) {
   const fromParts = fromDirectory ? fromDirectory.split("/") : [];
   const targetParts = targetPath.split("/");
   let sharedCount = 0;

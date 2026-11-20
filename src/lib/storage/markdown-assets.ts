@@ -27,7 +27,7 @@ import { MARKDOWN_ASSETS_DIR, MARKDOWN_EXTENSIONS } from "@/lib/storage/constant
 import type { MarkdownImageAssetPayload } from "@/lib/types";
 import { assertNotSharedItem, isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { readSharedAuthorityBytes } from "@/lib/storage/shared-source";
-import { markdownImageSources, rewriteMarkdownImageSources } from "@/lib/markdown-image-sources";
+import { markdownImageSources, rawFileSourcePath, rewriteMarkdownImageSources } from "@/lib/markdown-image-sources";
 import { isInkBlockRenderingName } from "@/lib/ink/block";
 import { legacyPythonSidecarPath, ownsPythonFigureSource, parsePythonFigureSource, previousPythonFigureSources, pythonFigureFolder, pythonFigureSourcePrefix, pythonSidecarPath, withPreviousPythonFigureSources } from "@/lib/python/sidecar";
 import { assertNotMigrating } from "@/lib/storage/migration-fence";
@@ -56,18 +56,6 @@ function markdownAssetSourceTarget(documentPath: string, source: string) {
     documentPath,
     assetPath: normalizeMarkdownAssetPath(source.split(/[?#]/, 1)[0]),
   };
-}
-
-function rawFileSourcePath(source: string) {
-  if (!source.startsWith("/api/files/raw/")) {
-    return null;
-  }
-
-  return new URL(source, "http://libera.local").pathname
-    .slice("/api/files/raw/".length)
-    .split("/")
-    .map(decodeURIComponent)
-    .join("/");
 }
 
 function referencedMarkdownAssetPaths(documentPath: string, markdown: string) {

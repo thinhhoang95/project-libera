@@ -22,7 +22,7 @@ export const runtime = "nodejs";
 function handleError(error: unknown) {
   const storageError = toStorageError(error);
   // A move that happened but whose result could not be built: say where the file is, so the caller can still retarget.
-  const committed = storageError instanceof MoveCommittedError ? { moved: storageError.moved, unfinished: storageError.unfinished } : {};
+  const committed = storageError instanceof MoveCommittedError ? { moved: storageError.moved, unfinished: storageError.unfinished, ...(storageError.links ? { links: storageError.links } : {}) } : {};
   return NextResponse.json({ error: storageError.message, ...committed }, { status: storageError.status });
 }
 
