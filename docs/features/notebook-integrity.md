@@ -62,6 +62,17 @@ Moving, renaming or archiving a file (`moveFileToDirectory`, `moveFile`, `archiv
 
 Tests: `scripts/editor/notebook-move-integrity.test.ts`.
 
+### Copies and shared writes
+
+- **A copy takes a free name** (`findAvailableCopyPath`): no file there, and none of the records a file deleted outside the app left (`destinationRecords`), so a copy never inherits or replaces them; its own records are published exclusively. A name that holds records is skipped like a taken one (`copy-1.md`).
+- **A copy keeps the file type** (`assertCopyKeepsType`): its bytes, records and viewer follow the source, so another extension is refused (400). Changing type is a rename, which checks what the records can keep.
+- **A note copied to another notebook** runs `copyCitedReferences` like a move: cited references are copied or mapped, the copy's text is rewritten, and the copied review's snapshot follows the same key map. The result carries `references`.
+- **Copying shared text** reads the host's current text. Only when there is no shared authority (collaboration off here, notebook not joined) is the disk copy used; a host that cannot answer refuses the copy.
+- **Shared moves** (`moveSharedFile`, `renameSharedFolder`) check the records this computer keeps at the destination before the host moves anything, as a local move does (409). Once the host has moved, every step runs and a record that could not follow is reported (500, Check Notebook settles it).
+- **Shared deletes** (`deleteSharedFile`, `deleteSharedFolder`) remove the records kept here after the host's deletion, as a local delete does: sidecars, review comments, reference attachments, stars and tags; failures are reported.
+
+Tests: `scripts/editor/notebook-operations-integrity.test.ts` (copy), `scripts/editor/notebook-shared-move-integrity.test.ts`.
+
 ## Bounds, progress and stopping
 
 A check runs under limits (`DEFAULT_INTEGRITY_LIMITS`: 20,000 entries, 64 MB read, 30 s, 10,000 findings); reaching one makes the checks it cut short partial, saying which limit. The report carries what the check cost (`statistics`) and its `completeness`. With `?stream=1` the route sends newline-delimited JSON: one `progress` line as each check starts, then the `report` (or an `error`). The dialog shows the check it is on and a **Stop** button; stopping, closing the dialog or the request going away aborts the check between reads.
