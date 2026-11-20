@@ -18,7 +18,7 @@ import { getStateRoot } from "@/lib/storage/paths";
 type ActiveMigration = { notebooks: Set<string>; paths: Set<string>; folders: string[] };
 
 const CACHE = Symbol.for("libera.migrationFence");
-type Cache = { key: string; active: ActiveMigration[] };
+type Cache = { key: string; active: ActiveMigration[]; unreadable: number };
 
 export function migrationJournalDirectory() {
   return path.join(getStateRoot(), LIBERA_SYSTEM_DIR, "migrations");
@@ -27,7 +27,7 @@ export function migrationJournalDirectory() {
 /** Journal fields the fence reads; the full shape lives in migration.ts. */
 type JournalView = { state?: string; source?: string; destination?: { notebook?: string }; items?: { from: string; to: string }[]; folders?: { from: string; to: string }[] };
 
-async function activeMigrations(): Promise<ActiveMigration[]> {
+async function readFence(): Promise<{ active: ActiveMigration[]; unreadable: number }> {
   const directory = migrationJournalDirectory();
   let key = `${directory}:missing`;
   try {
@@ -35,9 +35,10 @@ async function activeMigrations(): Promise<ActiveMigration[]> {
     key = `${directory}:${stats.mtimeMs}:${stats.ctimeMs}`;
   } catch { /* No migration ever ran. */ }
   const holder = globalThis as { [CACHE]?: Cache };
-  if (holder[CACHE]?.key === key) return holder[CACHE].active;
+  if (holder[CACHE]?.key === key) return holder[CACHE];
 
   const active: ActiveMigration[] = [];
+  let unreadable = 0;
   let names: string[] = [];
   try { names = (await readdir(directory)).filter((name) => name.endsWith(".json")); } catch { /* None. */ }
   for (const name of names) {
@@ -46,6 +47,8 @@ async function activeMigrations(): Promise<ActiveMigration[]> {
     catch {
       // Its files are unknown, and blocking every save in the library would be worse:
       // new migrations refuse to start, and the migration dialog offers to set it aside.
+      // Operations that rewrite records wholesale (notebook operations below) fail closed on it.
+      unreadable += 1;
       continue;
     }
     if (journal.state === "done") continue;
@@ -57,9 +60,11 @@ async function activeMigrations(): Promise<ActiveMigration[]> {
       folders: (journal.folders ?? []).flatMap((folder) => [folder.from, folder.to]),
     });
   }
-  holder[CACHE] = { key, active };
-  return active;
+  holder[CACHE] = { key, active, unreadable };
+  return holder[CACHE];
 }
+
+const activeMigrations = async () => (await readFence()).active;
 
 /** Call after writing or removing a journal from this process, so the next check reads it again. */
 export function migrationJournalsChanged() {
@@ -109,4 +114,81 @@ export async function assertNotMigrating(...libraryPaths: string[]) {
 /** The library path of a notebook item, from the arguments the shared-notebook guards take. */
 export function itemLibraryPath(notebook: string, pathParts: readonly string[] = []) {
   return [notebook, ...pathParts].join("/");
+}
+
+// ---- Notebook operations ------------------------------------------------------
+//
+// Try to fix, Acknowledge and the tree's sidecar upkeep rewrite or delete a
+// notebook's records, which a migration that starts meanwhile has staged or
+// still needs. The journals alone cannot order them: an operation can pass the
+// "no migration" check and a migration then start before it is done. So both
+// sides register here, in this process, before they look at anything else:
+//   - an operation registers its notebook, then checks the claims and the
+//     journals (a migration that claimed first, or a journal on disk, refuses it);
+//   - a migration claims its notebooks synchronously (an operation that
+//     registered first refuses it), and holds the claim until its journal is
+//     written, from where the journals above keep the others away.
+// An unreadable journal could involve any notebook, so operations refuse while
+// one exists instead of guessing (the migration dialog offers to set it aside).
+// Another server process is only seen through the journals.
+
+const OPERATIONS = Symbol.for("libera.notebookOperations");
+type Operations = { running: Map<string, number>; claimed: Map<string, number> };
+
+function operations(): Operations {
+  const holder = globalThis as { [OPERATIONS]?: Operations };
+  return (holder[OPERATIONS] ??= { running: new Map(), claimed: new Map() });
+}
+
+const bump = (counts: Map<string, number>, notebook: string, by: number) => {
+  const next = (counts.get(notebook) ?? 0) + by;
+  if (next > 0) counts.set(notebook, next); else counts.delete(notebook);
+};
+
+/** Why a notebook operation may not start now, or null. */
+async function operationBlocker(notebook: string): Promise<string | null> {
+  if (operations().claimed.has(notebook)) return `${notebook} is about to be migrated. Try again when the migration has finished.`;
+  const { active, unreadable } = await readFence();
+  if (active.some((migration) => migration.notebooks.has(notebook))) return "A migration involving this notebook did not finish. Finish or stop it in Migration first.";
+  if (unreadable) return "An earlier migration's journal can't be read, so it can't be told whether it involves this notebook. Set it aside in the Migration dialog first.";
+  return null;
+}
+
+async function enterOperation(notebook: string) {
+  const running = operations().running;
+  bump(running, notebook, 1);
+  try {
+    const blocker = await operationBlocker(notebook);
+    if (blocker) throw new StorageError(blocker, 409);
+  } catch (error) {
+    bump(running, notebook, -1);
+    throw error;
+  }
+  return () => bump(running, notebook, -1);
+}
+
+/** Runs a record-rewriting operation on a notebook (Try to fix, Acknowledge), refused while a migration involves it or is about to. */
+export async function withNotebookOperation<T>(notebook: string, work: () => Promise<T>): Promise<T> {
+  const leave = await enterOperation(notebook);
+  try { return await work(); } finally { leave(); }
+}
+
+/** Like `withNotebookOperation`, for routine upkeep: when it may not run now it is skipped (`false`) and tried again on a later pass. */
+export async function whenNotebookIdle(notebook: string, work: () => Promise<void>): Promise<boolean> {
+  let leave: () => void;
+  try { leave = await enterOperation(notebook); } catch (error) { if (error instanceof StorageError) return false; throw error; }
+  try { await work(); return true; } finally { leave(); }
+}
+
+/**
+ * A migration claims its notebooks before it plans its journal and releases
+ * them once the journal is on disk. Refused when an operation is running on
+ * one of them. Synchronous, so no operation can register in between.
+ */
+export function claimNotebooksForMigration(notebooks: string[]): () => void {
+  const state = operations();
+  const names = [...new Set(notebooks)];
+  if (names.some((name) => state.running.has(name))) throw new StorageError("Another operation is working on this notebook. Try again in a moment.", 409);
+  for (const name of names) bump(state.claimed, name, 1);
+  return () => { for (const name of names) bump(state.claimed, name, -1); };
 }
