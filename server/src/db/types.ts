@@ -311,6 +311,9 @@ export interface DB {
   revisions: RevisionsTable;
   blobs: BlobsTable;
   blob_orphans: BlobOrphansTable;
+  takedown_recoveries: { project_id: string; name: string; created_at: CreatedAt; expires_at: ColumnType<Date, Date | string, Date | string> };
+  takedown_recovery_members: { project_id: string; account_id: string };
+  takedown_recovery_blobs: { project_id: string; hash: string; size: number; mime: string };
   threads: ThreadsTable;
   messages: MessagesTable;
   suggestions: SuggestionsTable;

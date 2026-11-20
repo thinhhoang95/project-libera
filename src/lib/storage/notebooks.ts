@@ -139,6 +139,18 @@ export async function renameNotebook(
       existingMetadata.createdAt,
     ),
   );
+  await followNotebookRootRename(currentName, nextName);
+
+  return getTree();
+}
+
+/**
+ * The library-level records that name a notebook folder, moved to its new name: view options, panel
+ * expansion, review keys, agent run history, reference attachments, stars and tags, the last notebook.
+ * Also what a shared notebook's records need when the host rebinds it to a renamed folder
+ * (root-transitions.ts); every step is idempotent.
+ */
+export async function followNotebookRootRename(currentName: string, nextName: string) {
   await renameNotebookViewOption(currentName, nextName);
   await renameNotebookPanelExpandedPathPrefix(currentName, nextName);
   await moveReviewPath(currentName, nextName);
@@ -152,8 +164,6 @@ export async function renameNotebook(
   await renameFileMetadataPathPrefix(currentName, nextName);
   await remapLastNotebookName(currentName, nextName);
   if (currentName !== nextName) notifySearchChanges();
-
-  return getTree();
 }
 
 /** `byMigration`: the migration that made this notebook removes it again while undoing itself, so its own journal does not hold it. */

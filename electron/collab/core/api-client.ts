@@ -45,6 +45,7 @@ import type {
   Member,
   NotificationInfo,
   ProjectClosingResponse,
+  TakedownRecovery,
   ProjectSummary,
   ReattachThreadRequest,
   RefreshRequest,
@@ -312,8 +313,8 @@ export class ApiClient {
     return this.request("PATCH", ApiRoutes.project(projectId), { body });
   }
 
-  deleteProject(projectId: string, expectedManifestSeq?: number): Promise<void> {
-    return this.request("DELETE", ApiRoutes.project(projectId), expectedManifestSeq === undefined ? {} : { body: { expectedManifestSeq } });
+  deleteProject(projectId: string, expectedManifestSeq?: number, recovery?: TakedownRecovery): Promise<void> {
+    return this.request("DELETE", ApiRoutes.project(projectId), expectedManifestSeq === undefined ? {} : { body: { expectedManifestSeq, ...(recovery ? { recovery } : {}) } });
   }
 
   /** Starts a takedown: the server refuses later document updates and comment writes and reports every document's final sequence. */
@@ -445,6 +446,14 @@ export class ApiClient {
   /** Tells a shared album's other members about photos this account added (best effort). */
   albumActivity(projectId: string, body: AlbumActivityRequest): Promise<void> {
     return this.request("POST", ApiRoutes.albumActivity(projectId), { body });
+  }
+
+  /** A binary of a project that was taken down, still downloadable by its former members for a limited time. Verified like any blob. */
+  async downloadRecoveryBlob(projectId: string, hash: string): Promise<Uint8Array> {
+    const bytes = await this.request<Uint8Array>("GET", ApiRoutes.takedownRecoveryBlob(projectId, hash), { binary: true });
+    const actual = sha256Hex(bytes);
+    if (actual !== hash.toLowerCase()) throw new ApiClientError("hash-mismatch", 200, `Blob ${hash} arrived with hash ${actual}.`);
+    return bytes;
   }
 
   /** Downloads a blob and verifies its SHA-256 before returning it. */

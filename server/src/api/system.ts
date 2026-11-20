@@ -25,6 +25,7 @@ export function registerSystemRoutes(app: FastifyInstance, context: ServerContex
     projectCreationKeys: true,
     guardedProjectDeletion: true,
     takedownFence: true,
+    takedownRecovery: true,
     livePdfs: true,
     protocolVersion: PROTOCOL_VERSION,
     minProtocolVersion: minProtocolVersion(context),

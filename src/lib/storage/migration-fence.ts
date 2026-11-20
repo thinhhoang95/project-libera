@@ -1,8 +1,10 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import { isReservedBy, reserveLifecycle, ReservationConflictError, ReservationLostError, type Reservation } from "@/lib/collab/lifecycle-reservation";
 import { LIBERA_SYSTEM_DIR } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
-import { getStateRoot } from "@/lib/storage/paths";
+import { getAdminRoot, getStateRoot } from "@/lib/storage/paths";
 
 // What a notebook migration (storage/migration.ts) is moving, for the code
 // that must keep its hands off meanwhile: saves and other file operations
@@ -167,17 +169,60 @@ async function enterOperation(notebook: string) {
   return () => bump(running, notebook, -1);
 }
 
-/** Runs a record-rewriting operation on a notebook (Try to fix, Acknowledge), refused while a migration involves it or is about to. */
+// ---- Cross-process lifecycle reservation -----------------------------------------
+//
+// The claims above only see this process. Sharing runs in the collaboration
+// host, another process, which snapshots the notebook and installs the shared
+// marker. A migration, Try to fix or Acknowledge therefore also holds a
+// reservation (lib/collab/lifecycle-reservation.ts) for the notebooks it works
+// on, and revalidates it at its destructive commits: a share that holds one
+// refuses them (and they refuse it); a lease that lapsed or was taken over
+// stops the operation before it removes anything.
+
+const RESERVATIONS = new AsyncLocalStorage<Reservation>();
+
+const lifecycleDirectory = () => process.env.LIBERA_COLLAB_LIFECYCLE_DIR || undefined;
+const notebookRoot = (notebook: string) => path.join(getAdminRoot(), notebook);
+
+function asStorageError(error: unknown): unknown {
+  return error instanceof ReservationConflictError || error instanceof ReservationLostError ? new StorageError(error.message, 409) : error;
+}
+
+/** Holds a local-operation reservation on `notebooks` while `work` runs. Refused (409) while a share holds one. */
+export async function withLifecycleReservation<T>(notebooks: string[], work: () => Promise<T>): Promise<T> {
+  if (RESERVATIONS.getStore()) return work();
+  let reservation: Reservation;
+  try { reservation = reserveLifecycle(lifecycleDirectory(), notebooks.map(notebookRoot), "local"); }
+  catch (error) { throw asStorageError(error); }
+  try { return await RESERVATIONS.run(reservation, work); } finally { reservation.release(); }
+}
+
+/**
+ * Call at a destructive commit of an operation running under a reservation:
+ * throws (409) when a share took the notebook over meanwhile. Outside a reservation it does nothing.
+ */
+export function assertLifecycleReservation(): void {
+  const reservation = RESERVATIONS.getStore();
+  if (!reservation) return;
+  try { reservation.revalidate(); } catch (error) { throw asStorageError(error); }
+}
+
+/** Runs a record-rewriting operation on a notebook (Try to fix, Acknowledge), refused while a migration involves it or is about to, or while a share holds it. */
 export async function withNotebookOperation<T>(notebook: string, work: () => Promise<T>): Promise<T> {
   const leave = await enterOperation(notebook);
-  try { return await work(); } finally { leave(); }
+  try { return await withLifecycleReservation([notebook], work); } finally { leave(); }
 }
 
 /** Like `withNotebookOperation`, for routine upkeep: when it may not run now it is skipped (`false`) and tried again on a later pass. */
 export async function whenNotebookIdle(notebook: string, work: () => Promise<void>): Promise<boolean> {
   let leave: () => void;
   try { leave = await enterOperation(notebook); } catch (error) { if (error instanceof StorageError) return false; throw error; }
-  try { await work(); return true; } finally { leave(); }
+  try {
+    // Routine upkeep only looks: it steps aside for a share, and tries again on a later pass.
+    if (isReservedBy(lifecycleDirectory(), notebookRoot(notebook), "share")) return false;
+    await work();
+    return true;
+  } finally { leave(); }
 }
 
 /**

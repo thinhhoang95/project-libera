@@ -48,6 +48,8 @@ export async function collectOrphanedBlobs(context: ServerContext, { olderThanMs
   const { db } = context;
   const store = getBlobStore(context);
   const cutoff = new Date(Date.now() - olderThanMs);
+  // A taken-down project's former members may still download its final binaries until their recovery expires.
+  await db.deleteFrom("takedown_recoveries").where("expires_at", "<", new Date()).execute();
   const due = await db.selectFrom("blob_orphans").select("hash").where("orphaned_at", "<", cutoff).orderBy("orphaned_at").limit(limit).execute();
   let removed = 0;
   for (const { hash } of due) {
@@ -55,7 +57,8 @@ export async function collectOrphanedBlobs(context: ServerContext, { olderThanMs
     // upload also holds from before it writes the object until its row commits.
     await db.transaction().execute(async (trx) => {
       await lockBlobHash(trx, hash);
-      const referenced = await trx.selectFrom("blobs").select("hash").where("hash", "=", hash).executeTakeFirst();
+      const referenced = await trx.selectFrom("blobs").select("hash").where("hash", "=", hash).executeTakeFirst()
+        ?? await trx.selectFrom("takedown_recovery_blobs").select("hash").where("hash", "=", hash).executeTakeFirst();
       if (!referenced && store.delete) {
         await store.delete(hash);
         removed += 1;
