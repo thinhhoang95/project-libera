@@ -35,9 +35,9 @@ import { reportError } from "../observability/reporter.js";
 import { createSyncMetrics, type SyncMetrics } from "./metrics.js";
 import { InvalidUpdateError, Room, SERVER_ORIGIN } from "./room.js";
 import { Session, type OpenDoc } from "./session.js";
-import { findPersisted, loadDocument, persistUpdate, UpdateAccessChangedError, type PersistInput } from "./store.js";
+import { findPersisted, loadDocument, ManifestReferenceChangedError, persistUpdate, UpdateAccessChangedError, type PersistInput } from "./store.js";
 import { SyncTimings } from "./timings.js";
-import { actorForUpdate, annotationViolation, manifestViolation, newManifestReferences, sanitizeProvenance, type ManifestReferences } from "./validate.js";
+import { actorForUpdate, annotationViolation, docOwnershipViolation, manifestViolation, newManifestReferences, sanitizeProvenance, type ManifestReferences } from "./validate.js";
 
 /** An unwritten PDF document younger than this is a client that just opened one; it stays. */
 const EMPTY_PDF_GRACE_MS = 10 * 60_000;
@@ -358,6 +358,8 @@ export class SyncServer {
       return;
     }
 
+    // References this update introduces, checked again inside the persistence transaction (audit S60).
+    let persistRefs: Pick<PersistInput, "requiredDocIds" | "addedDocIds"> | undefined;
     let changed;
     try {
       changed = room.probe(subdoc, update);
@@ -382,13 +384,14 @@ export class SyncServer {
       // update introduces are looked up.
       if (room.projectKind === "notebook") {
         const references = newManifestReferences(room.shadow(subdoc), changed, room.live(subdoc));
-        let unresolved: string | null;
-        try { unresolved = await this.unresolvedReference(room.projectId, references); }
+        let unresolved: string | null = docOwnershipViolation(room.shadow(subdoc), references);
+        try { unresolved ??= await this.unresolvedReference(room.projectId, references); }
         catch (error) { room.discardShadow(subdoc); throw error; }
         if (unresolved) {
           room.discardShadow(subdoc);
           return session.sendReject(message, "invalid-update", unresolved);
         }
+        persistRefs = { requiredDocIds: [...references.docs.keys()] };
       }
       const previousFiles = manifestFileIdsAfter(room.live(subdoc));
       const addedFiles = [...manifestFileIdsAfter(room.shadow(subdoc))].filter((id) => !previousFiles.has(id));
@@ -411,6 +414,7 @@ export class SyncServer {
       // A stale offline rename must not resurrect a document already deleted by another member.
       const previous = manifestDocIds(room.live(subdoc), room.projectId);
       const added = [...manifestDocIds(room.shadow(subdoc), room.projectId)].filter((id) => !previous.has(id));
+      persistRefs = { ...persistRefs, addedDocIds: added };
       if (added.length) {
         const deleted = await this.context.db.selectFrom("documents").select("id")
           .where("project_id", "=", room.projectId).where("id", "in", added)
@@ -436,9 +440,10 @@ export class SyncServer {
         provenance,
         update,
         requiredAccess: { projectId: room.projectId, role: validatedRole },
-      });
+      }, persistRefs);
     } catch (error) {
       if (error instanceof UpdateAccessChangedError) return session.sendReject(message, "forbidden", error.message);
+      if (error instanceof ManifestReferenceChangedError) return session.sendReject(message, "invalid-update", error.message);
       throw error;
     }
     if (serverSeq === null) return session.sendReject(message, "not-open", "The document was deleted.");
@@ -469,13 +474,18 @@ export class SyncServer {
    */
   private async unresolvedReference(projectId: string, references: ManifestReferences): Promise<string | null> {
     if (references.docs.size > 0) {
-      const rows = await this.context.db.selectFrom("documents").select(["id", "kind"])
+      const rows = await this.context.db.selectFrom("documents").select(["id", "kind", "file_id"])
         .where("project_id", "=", projectId).where("id", "in", [...references.docs.keys()]).execute();
-      const found = new Map(rows.map((row) => [row.id, row.kind]));
+      const found = new Map(rows.map((row) => [row.id, row]));
       for (const [id, kind] of references.docs) {
         const actual = found.get(id);
         if (actual === undefined) return `files: document ${id} is not a document of this project.`;
-        if (actual !== kind) return `files: document ${id} is a ${actual} document, not ${kind}.`;
+        if (actual.kind !== kind) return `files: document ${id} is a ${actual.kind} document, not ${kind}.`;
+        // The document was created for one file id; no other entry may claim it (audit S59).
+        const bound = references.bindings.get(id);
+        if (actual.file_id !== null && bound !== undefined && actual.file_id !== bound) {
+          return `files: document ${id} belongs to file ${actual.file_id}, not ${bound}.`;
+        }
       }
     }
     if (references.blobs.size > 0) {
@@ -496,6 +506,7 @@ export class SyncServer {
     room: Room,
     subdoc: Subdoc,
     input: Omit<PersistInput, "docId" | "subdoc" | "removedDocIds">,
+    references?: Pick<PersistInput, "requiredDocIds" | "addedDocIds">,
   ): Promise<number | null> {
     const stop = this.metrics.persistSeconds.startTimer();
     let serverSeq: number | null;
@@ -518,7 +529,7 @@ export class SyncServer {
       }
       const remainingFiles = subdoc === "manifest" ? manifestFileIdsAfter(room.shadow(subdoc)) : null;
       const removedFileIds = remainingFiles ? [...manifestFileIdsAfter(room.live(subdoc))].filter((id) => !remainingFiles.has(id)) : [];
-      serverSeq = await persistUpdate(this.context.db, { docId: room.docId, subdoc, ...input, removedDocIds, removedPdfFiles, removedFileIds });
+      serverSeq = await persistUpdate(this.context.db, { docId: room.docId, subdoc, ...input, ...references, removedDocIds, removedPdfFiles, removedFileIds });
     } catch (error) {
       room.discardShadow(subdoc);
       throw error;

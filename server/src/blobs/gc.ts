@@ -26,9 +26,15 @@ export async function lockBlobHash(trx: Kysely<DB>, hash: string): Promise<void>
   await sql`select pg_advisory_xact_lock(hashtextextended(${"libera-blob:" + hash}, 0))`.execute(trx);
 }
 
-/** Inside the transaction that removed `hashes`' rows: records the ones no project references now. */
+/**
+ * Inside the transaction that removed `hashes`' rows: records the ones no project references now.
+ * Takes each hash's lock (sorted, so two retirements cannot deadlock) before it looks, so
+ * two projects retiring the last two references to one blob serialize: the second sees the
+ * first's committed delete and records the orphan (audit S62).
+ */
 export async function recordOrphanedBlobs(trx: Kysely<DB>, hashes: readonly string[]): Promise<void> {
-  const unique = [...new Set(hashes)];
+  const unique = [...new Set(hashes)].sort();
+  for (const hash of unique) await lockBlobHash(trx, hash);
   for (let start = 0; start < unique.length; start += 500) {
     const batch = unique.slice(start, start + 500);
     const referenced = new Set((await trx.selectFrom("blobs").select("hash").where("hash", "in", batch).execute()).map((row) => row.hash));
