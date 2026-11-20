@@ -211,6 +211,17 @@ export class DocHub implements CompactionTarget {
   private resyncPending = false;
   private resyncTimer: TimerHandle | null = null;
   private resyncError: string | undefined;
+  /** Failed re-open or local-commit attempts in a row: capped exponential backoff, reset by real progress only. */
+  private resyncAttempts = 0;
+  private persistAttempts = 0;
+  /**
+   * Bumped whenever this document's state may lag the server's again: a new
+   * connection (until its `Opened` is handled), a reject rollback, a remote
+   * update that could not be stored. `caughtUpEpoch` is the epoch whose
+   * `Opened` completed (S53): disk work done for an older epoch is stale.
+   */
+  private catchUpEpoch = 0;
+  private caughtUpEpoch = -1;
   /** A local update exceeded the server limit; shown until the document is closed. */
   private unsendableDetail: string | undefined;
   private lastLocalUpdate: { origin: Origin; update: Uint8Array } | null = null;
@@ -350,6 +361,30 @@ export class DocHub implements CompactionTarget {
   }
 
   get hasOpened(): boolean { return this.opened; }
+
+  /** The state in memory has heard the server's answer since the last connection, rollback or lost update. */
+  get caughtUp(): boolean {
+    return !this.closed && this.caughtUpEpoch === this.catchUpEpoch && !this.resyncPending;
+  }
+
+  /** Identifies the current catch-up generation: work started under one epoch must not commit under another. */
+  get catchUpGeneration(): number { return this.catchUpEpoch; }
+
+  /**
+   * Commits any local update still waiting for SQLite now (S54). True: every
+   * accepted change is saved on this device. False: some are only in memory and
+   * are retried on a backoff; a control caller must not report success then.
+   */
+  flushDurable(): boolean {
+    if (this.unpersisted.length === 0) return true;
+    const committed = this.drainUnpersisted();
+    for (const entry of committed) this.outbound.enqueue(entry.subdoc, entry.localSeq, entry.update, entry.provenance);
+    if (committed.length > 0) {
+      this.flushReplicaAcks();
+      this.status.changed();
+    }
+    return this.unpersisted.length === 0;
+  }
 
   /** Holds state from this device's store or the server, rather than being empty because it was never loaded. */
   get hasState(): boolean { return this.hasData; }
@@ -665,6 +700,8 @@ export class DocHub implements CompactionTarget {
         this.logger.error(`Could not persist a local update for ${this.docId}`, error);
         this.broadcast({ t: "error", docId: this.docId, message: `Could not save on this device: ${this.persistError}` });
         if (!this.persistRetry) {
+          const delay = Math.min(30_000, 1000 * 2 ** Math.min(this.persistAttempts, 5));
+          this.persistAttempts += 1;
           this.persistRetry = this.clock.setTimeout(() => {
             this.persistRetry = null;
             for (const entry of this.drainUnpersisted()) {
@@ -672,11 +709,12 @@ export class DocHub implements CompactionTarget {
             }
             this.flushReplicaAcks();
             this.status.changed();
-          }, 1000);
+          }, delay);
         }
         return committed;
       }
       this.unpersisted.shift();
+      this.persistAttempts = 0;
       this.persistError = undefined;
       this.hasData = true;
       this.pendingLocal.set(localSeq, { subdoc: next.subdoc, createdAt: this.clock.now() });
@@ -714,13 +752,18 @@ export class DocHub implements CompactionTarget {
     this.logger.error(`Could not persist a server update for ${this.docId}; it will be fetched again`, error);
     this.broadcast({ t: "error", docId: this.docId, message: `Could not save on this device: ${this.resyncError}` });
     this.resyncPending = true;
+    this.catchUpEpoch += 1;
     if (!this.resyncTimer && !this.closed) {
+      // Capped exponential backoff, reset when an `Opened` completes: a database that stays
+      // broken is retried ever less often, and no other document is reopened by this.
+      const delay = Math.min(30_000, 1000 * 2 ** Math.min(this.resyncAttempts, 5));
+      this.resyncAttempts += 1;
       this.resyncTimer = this.clock.setTimeout(() => {
         this.resyncTimer = null;
         if (this.closed || !this.resyncPending) return;
         this.resyncPending = false;
         this.link?.reopen();
-      }, 1000);
+      }, delay);
     }
     this.status.changed();
   }
@@ -768,6 +811,8 @@ export class DocHub implements CompactionTarget {
     this.resyncPending = false;
     if (this.resyncTimer) this.clock.clearTimeout(this.resyncTimer);
     this.resyncTimer = null;
+    // A new connection must hear the server again before the state counts as caught up.
+    if (transport) this.catchUpEpoch += 1;
     this.transport = transport;
     this.link = transport;
     this.connected = transport !== null;
@@ -787,6 +832,16 @@ export class DocHub implements CompactionTarget {
   handleOpened(message: OpenedMessage): void {
     if (this.closed) return;
     if (this.meta.readOnlyReason === "document-deleted") return;
+    try {
+      this.processOpened(message);
+    } catch (error) {
+      // A durable step failed (S55): not opened, in an explicit catch-up state, and re-opened on a backoff.
+      this.opened = false;
+      this.noteRemotePersistFailure(error);
+    }
+  }
+
+  private processOpened(message: OpenedMessage): void {
     const schemaNewer = message.schemaVersion > DOC_SCHEMA_VERSION;
     const reason: ReadOnlyReason | null = schemaNewer
       ? "schema-newer"
@@ -815,6 +870,9 @@ export class DocHub implements CompactionTarget {
     this.store.noteServerSeq(this.docId, message.serverSeq);
     this.hasData = true;
     this.opened = true;
+    this.caughtUpEpoch = this.catchUpEpoch;
+    this.resyncAttempts = 0;
+    this.resyncError = undefined;
     this.connectionDetail = undefined;
     if (this.link && this.meta.readOnlyReason !== "access-revoked") this.transport = this.link;
     this.refreshMeta();
@@ -875,6 +933,7 @@ export class DocHub implements CompactionTarget {
       this.store.wipeSubdoc(this.docId, subdoc);
     });
     this.rejected.set(subdoc, edit);
+    this.catchUpEpoch += 1;
     this.outbound.dropSubdoc(subdoc);
     for (const [localSeq, info] of this.pendingLocal) if (info.subdoc === subdoc) this.pendingLocal.delete(localSeq);
     for (let index = this.unpersisted.length - 1; index >= 0; index -= 1) {

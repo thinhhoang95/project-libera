@@ -148,7 +148,7 @@ export const MOVE_CONFLICT_GRACE_MS = 5 * 60_000;
  * holds identical bytes). A journal for a file the manifest no longer lists is
  * archived the same way, since nothing will place it.
  */
-export async function placeStagedMoves(root: string, destinations: Map<string, string>, guard?: WriteGuard, options: { conflictGraceMs?: number; now?: number } = {}): Promise<StagedMoveResults> {
+export async function placeStagedMoves(root: string, destinations: Map<string, string>, guard?: WriteGuard, options: { conflictGraceMs?: number; now?: number; listed?: ReadonlySet<string> } = {}): Promise<StagedMoveResults> {
   const results: StagedMoveResults = { placed: [], waiting: new Set() };
   const directory = movingDirectory(root);
   let names: string[];
@@ -186,6 +186,11 @@ export async function placeStagedMoves(root: string, destinations: Map<string, s
     };
     try {
       if (wanted === undefined) {
+        // Still listed by the manifest but not placeable now (a refused path): not removed, so the stage is kept.
+        if (options.listed?.has(entry.fileId)) {
+          results.waiting.add(entry.fileId);
+          continue;
+        }
         await archive();
         continue;
       }

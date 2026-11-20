@@ -37,7 +37,7 @@ import type { DocHub } from "../core/doc-hub";
 import type { CollabHost } from "../core/host";
 import { ControlError } from "../control/types";
 import { classifyFile, createSharedDocument, mimeForPath } from "./documents";
-import { clearMoveJournal, placeStagedMoves, recoverInterruptedMoves, writeMoveJournal } from "./move-journal";
+import { clearMoveJournal, placeStagedMoves, writeMoveJournal } from "./move-journal";
 import {
   ARCHIVE_DIRECTORY,
   PathRefusedError,
@@ -76,7 +76,7 @@ import {
   type NotebookWalk,
   type WriteGuard,
 } from "./fs-ops";
-import { computeLayout, entriesUnder, entryRecord, manifestEntryBytes, readManifest, splitManifestBatches } from "./layout";
+import { MANIFEST_BATCH_BYTES, computeLayout, entriesUnder, entryRecord, manifestEntryBytes, readManifest, splitManifestBatches } from "./layout";
 import { ManifestIntents, trackEntryWrites } from "./manifest-intents";
 import { FRESH_RETAIN_BYTES, MAX_UPLOAD_BYTES, SCAN_READ_BUDGET_BYTES, noteTruncatedWalk, quietWaitMs, readShared, scanReadState, withinMs } from "./scan-reads";
 import { ScanFairness } from "./scan-fairness";
@@ -366,7 +366,14 @@ export class SharedProject {
   /** The state.json text last written (or found unchanged), so an identical state is not written again. */
   private savedState: string | null = null;
   /** Hubs (by document id) that heard the server's answer since this runtime started: a writer does no disk work before that (finding 2). */
-  private readonly caughtUp = new Set<string>();
+  private readonly caughtUp = new Map<string, number>();
+  /** The manifest change this runtime made is in memory only (SQLite refused it): disk work waits for the hub's retry (S54). */
+  private durableWaiting = false;
+  /** While a manifest pass runs: the catch-up generation its disk writes are bound to (S53). */
+  private epochFence: { hub: DocHub; generation: number } | null = null;
+  /** Folder paths whose placement on disk this runtime confirmed, and why the others could not be placed (S52). */
+  private readonly placedFolders = new Set<string>();
+  private readonly folderErrors = new Map<string, string>();
   /** Documents whose write was skipped because their move is still pending; written once it is placed. */
   private readonly moveDeferred = new Set<string>();
   /** state.json is behind the in-memory state; kept until a write succeeds. */
@@ -447,14 +454,9 @@ export class SharedProject {
     }
     if (project.state.externalAdoptionRequired) ctx.host.store.requireExternalAdoption(info.projectId);
     if (ctx.host.store.requiresExternalAdoption(info.projectId)) project.state.externalAdoptionRequired = true;
-    if (!project.follower && !info.album) {
-      // Staged bytes of a move an earlier run never finished (STALE-3).
-      const recovered = await recoverInterruptedMoves(info.root, project.diskGuard()).catch((error) => {
-        ctx.logger.warn(`Shared notebook ${info.notebook}: could not resolve interrupted moves`, error);
-        return [];
-      });
-      for (const move of recovered) if (move.outcome === "archived") ctx.logger.warn(`Shared notebook ${info.notebook}: an interrupted move's file was kept in the archive as ${move.archivedAs}`);
-    }
+    // Staged bytes of a move an earlier run never finished (STALE-3) stay under .libera/collab/moving/ until a
+    // caught-up manifest pass (placeStagedMoves) supplies the entry's current destination or confirms its removal:
+    // resolving them here, against the journal's possibly obsolete destination, consumed them too early (S48).
     if (!info.follower) {
       // State/marker can arrive ahead of files through a cloud provider.
       // Absence at startup or takeover is not an observed user deletion.
@@ -505,7 +507,11 @@ export class SharedProject {
     // Eligibility is asked again after the marker read: a lease that expired
     // (or a role that changed) during a slow provider read never commits.
     const eligible = () => finalizing || (!this.stopped && !this.follower);
-    return { root: this.info.root, canCommit: async () => eligible() && await this.rootAvailable() && eligible() };
+    // A pass of disk work is bound to the manifest generation it started under: a reconnect or a
+    // rollback in between sends it back to wait for the replacement state (S53).
+    const fence = this.epochFence;
+    const current = () => finalizing || !fence || (!fence.hub.isClosed && fence.hub.caughtUp && fence.hub.catchUpGeneration === fence.generation);
+    return { root: this.info.root, canCommit: async () => eligible() && current() && await this.rootAvailable() && eligible() && current() };
   }
 
   // ------------------------------------------------------------ lifecycle
@@ -533,6 +539,12 @@ export class SharedProject {
       }),
       hub.onStatus(() => {
         this.scheduleIntents();
+        // The retry that saved a change which was only in memory: its disk work may run now (no timer of its own).
+        if (this.durableWaiting && hub.unpersistedCount === 0) {
+          this.durableWaiting = false;
+          this.scheduleManifest(30);
+          this.scheduleScan(30);
+        }
         if (this.noteCaughtUp(hub)) {
           // The manifest is the gate for every document's write too, and for the scan.
           this.scheduleManifest(30);
@@ -794,12 +806,21 @@ export class SharedProject {
     if (this.follower) return this.manifestWasReady && this.awaitedOnDisk.size === 0;
     if (!this.manifestCaughtUp()) return false;
     const layout = computeLayout(this.readEntries().values());
-    for (const fileId of layout.paths.keys()) {
+    for (const [fileId, directory] of layout.paths) {
       const record = this.state.layout[fileId];
       if (!record) return false;
-      if (record.kind !== "folder" && !record.hash) return false;
+      if (record.kind === "folder" ? !this.placedFolders.has(directory) : !record.hash) return false;
     }
+    for (const directory of layout.directories) if (this.folderErrors.has(directory)) return false;
     return true;
+  }
+
+  /** Why a folder of the manifest could not be placed on disk, in a sentence the user can act on (S52). */
+  placementProblem(): string | null {
+    for (const [directory, reason] of this.folderErrors) {
+      return `Could not create the folder "${directory}" in this notebook's folder (${reason}). Check that the location is writable and has free space; Libera tries again by itself.`;
+    }
+    return null;
   }
 
   /**
@@ -873,14 +894,15 @@ export class SharedProject {
    * and a cache older than them must not be taken for the baseline (finding 2).
    */
   private noteCaughtUp(hub: DocHub): boolean {
-    if (hub.isClosed || this.caughtUp.has(hub.docId) || !hub.hasOpened) return false;
-    this.caughtUp.add(hub.docId);
+    // Caught up for the hub's current generation only: a new connection, a rollback or a lost update starts over (S53).
+    if (hub.isClosed || !hub.caughtUp || this.caughtUp.get(hub.docId) === hub.catchUpGeneration) return false;
+    this.caughtUp.set(hub.docId, hub.catchUpGeneration);
     return true;
   }
 
   private hubCaughtUp(hub: DocHub): boolean {
     this.noteCaughtUp(hub);
-    return this.caughtUp.has(hub.docId);
+    return !hub.isClosed && hub.caughtUp;
   }
 
   /** The manifest has caught up with the server: until then a writer does no disk work. */
@@ -904,7 +926,18 @@ export class SharedProject {
 
   /** Makes the folder match the manifest: removals, moves, folders, new and changed files. */
   private async applyManifest(): Promise<void> {
+    const hub = this.manifestHub;
+    if (hub && !this.follower && hub.caughtUp) this.epochFence = { hub, generation: hub.catchUpGeneration };
+    try { await this.applyManifestPass(); } finally { this.epochFence = null; }
+  }
+
+  private async applyManifestPass(): Promise<void> {
     if (!this.manifestReady()) return;
+    // A change the manifest holds only in memory is neither materialized nor followed up until SQLite has it (S54).
+    if (this.manifestHub && !this.manifestHub.flushDurable()) {
+      this.durableWaiting = true;
+      return;
+    }
     this.manifestWasReady = true;
     const pdfLive = this.pdfs.enabled;
     if (pdfLive !== this.pdfLiveSnapshot) {
@@ -940,7 +973,7 @@ export class SharedProject {
     const stagedMoves = new Map<string, "placed" | "archived">();
     const stagedWaiting = new Set<string>();
     if (!this.info.album) {
-      const results = await placeStagedMoves(this.info.root, layout.paths, this.diskGuard()).catch((error) => {
+      const results = await placeStagedMoves(this.info.root, layout.paths, this.diskGuard(), { listed: new Set(this.entries.keys()) }).catch((error) => {
         this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: could not retry staged moves`, error);
         return null;
       });
@@ -1024,9 +1057,10 @@ export class SharedProject {
         const staging = path.join(this.info.root, ...STATE_DIRECTORY, "moving", `${fileId}-${randomId("move")}`);
         const journalled = !this.info.album;
         // Journal first: a crash after staging must not leave bytes with no record of where they were going.
-        if (journalled) await writeMoveJournal(this.info.root, { fileId, source: record.path, destination: desired, staged: path.basename(staging), ...(record.hash ? { hash: record.hash } : {}), stagedAt: Date.now() }, this.diskGuard());
+        if (journalled) await writeMoveJournal(this.info.root, { fileId, source: record.path, destination: desired, staged: path.basename(staging), hash: owner.hash, stagedAt: Date.now() }, this.diskGuard());
         try {
-          await movePath(source, staging, this.diskGuard());
+          // Fenced to the source that was verified: replaced since (same name, other bytes), nothing moves.
+          await movePath(source, staging, this.sourceGuard(source, owner.key));
         } catch (error) {
           if (journalled) await clearMoveJournal(this.info.root, path.basename(staging)).catch(() => undefined);
           throw error;
@@ -1047,7 +1081,7 @@ export class SharedProject {
         const target = await resolveInside(this.info.root, desired);
         // A file whose own move failed still sits there: it is not ours to archive.
         if (occupied.has(desired)) throw new DestinationTakenError(target);
-        if (await statIfExists(target)) await this.archive(desired);
+        if (await statIfExists(target)) this.displacedPath(desired, await this.archive(desired));
         await movePathExclusive(staging, target, this.diskGuard());
         if (!this.info.album) await clearMoveJournal(this.info.root, path.basename(staging)).catch(() => undefined);
         next[fileId] = { ...record, path: desired };
@@ -1068,12 +1102,19 @@ export class SharedProject {
       try {
         const absolute = await resolveInside(this.info.root, directory);
         const stats = await statIfExists(absolute);
-        if (stats && !stats.isDirectory()) await this.archive(directory);
+        if (stats && !stats.isDirectory()) this.displacedPath(directory, await this.archive(directory));
         if (!stats || !stats.isDirectory()) {
           await ensureDirectory(absolute, this.diskGuard());
+          if (!(await statIfExists(absolute))?.isDirectory()) throw new Error("the folder was not created");
           touched.add(directory);
         }
+        this.placedFolders.add(directory);
+        this.folderErrors.delete(directory);
       } catch (error) {
+        // Placement is confirmed, never assumed: the join status and isMaterialized see this.
+        this.placedFolders.delete(directory);
+        this.folderErrors.set(directory, error instanceof Error ? error.message : String(error));
+        if (!(error instanceof PathRefusedError)) needsRetry = true;
         this.refuse(directory, error);
       }
     }
@@ -1372,7 +1413,9 @@ export class SharedProject {
       // An online-only file nobody explains (existingHash undefined) is archived like any unexplained one.
       if (existingHash !== null && existingHash !== record.hash && !(existingHash !== undefined && existingStats && isStaleCopy(record, existingHash, existingStats.mtimeMs))) {
         this.baselineMissing.add(entry.fileId);
-        await this.archive(record.path, guard);
+        const archived = await this.archive(record.path, guard);
+        // An entry never placed here claiming a path: what was there is a local file that was not shared.
+        if (!record.hash) this.displacedPath(record.path, archived);
         expected = null;
       }
       const stats = await writeFileAtomic(target, bytes, guard);
@@ -1436,21 +1479,46 @@ export class SharedProject {
    * every member's computer (members keep a photo by saving it to their
    * gallery, which copies it out of the album).
    */
-  private async archive(relative: string, guard = this.diskGuard()): Promise<void> {
+  private async archive(relative: string, guard = this.diskGuard()): Promise<string | null> {
     let source: string;
     try {
       source = await resolveInside(this.info.root, relative);
     } catch {
-      return;
+      return null;
     }
-    if (!(await statIfExists(source))) return;
+    if (!(await statIfExists(source))) return null;
     if (!(await guard.canCommit())) throw new WriteCancelledError();
     if (this.info.album) {
       await fs.rm(source, { recursive: true, force: true });
-      return;
+      return null;
     }
     const archiveRoot = path.join(this.info.root, ARCHIVE_DIRECTORY);
-    await movePathUnique(source, archiveRoot, path.posix.basename(relative), guard);
+    const archived = await movePathUnique(source, archiveRoot, path.posix.basename(relative), guard);
+    return path.relative(this.info.root, archived).split(path.sep).join("/");
+  }
+
+  /**
+   * A file nobody had shared (not yet imported) was archived because an incoming
+   * entry claims its path (S47). The path-keyed records of the displaced file
+   * (annotations, tags, sidecars) must not stay behind for the new occupant: the
+   * file's identity is its archive path, so a move from the claimed path to it is
+   * recorded in state.json and told to Next as a tree move under a synthetic file
+   * id, which Next's follow-up moves the records along with.
+   */
+  private displacedPath(relative: string, archived: string | null): void {
+    if (!archived) return;
+    const fileId = `displaced-${sha256(new TextEncoder().encode(archived)).slice(0, 24)}`;
+    this.state.displaced = [...(this.state.displaced ?? []), { fileId, from: relative, to: archived, at: Date.now() }].slice(-100);
+    this.saveSoon();
+    this.ctx.emit({
+      t: "tree-changed", projectId: this.info.projectId, notebook: this.info.notebook,
+      added: [], moves: [{ from: this.liberaPath(relative), to: this.liberaPath(archived), fileId }], removed: [],
+    });
+  }
+
+  private sourceGuard(source: string, verifiedKey: string): WriteGuard {
+    const base = this.diskGuard();
+    return { root: base.root, canCommit: async () => await base.canCommit() && statsKey(await statIfExists(source)) === verifiedKey };
   }
 
   /**
@@ -1458,20 +1526,24 @@ export class SharedProject {
    * placed or adopted (any earlier one too), or for a document its base text.
    * A file the entry never had there is someone else's.
    */
-  private async holdsOwnBytes(source: string, record: LayoutRecord): Promise<boolean | typeof SLOW_READ> {
+  private async holdsOwnBytes(source: string, record: LayoutRecord): Promise<{ hash: string; key: string } | false | typeof SLOW_READ> {
     const known = new Set(knownHashes(record));
     if (record.docId) {
       const base = await readBase(this.info.root, record.docId).catch(() => null);
       if (base !== null) known.add(sha256(encodeText(base)));
     }
     if (known.size === 0) return false;
-    const stats = await statIfExists(source);
-    if (!stats) return false;
-    // Hashing a large file needs a read; the stats this host recorded answer first.
-    if (record.hash && record.size === stats.size && record.mtimeMs === stats.mtimeMs) return true;
+    const before = await statIfExists(source);
+    // An online-only placeholder is never read (downloaded) just to check it: not provably ours, so it stays put.
+    if (!before || isDataless(before)) return false;
+    // Same size and mtime prove nothing (S46): the bytes are hashed, once; the caller fences the move to this stat.
     const bytes = await readWithin(source, HYDRATION_WAIT_MS).catch(() => null);
     if (bytes === SLOW_READ) return SLOW_READ;
-    return bytes !== null && known.has(sha256(bytes));
+    if (bytes === null) return false;
+    const after = await statIfExists(source);
+    if (!after || statsKey(after) !== statsKey(before)) return false;
+    const hash = sha256(bytes);
+    return known.has(hash) ? { hash, key: statsKey(after) as string } : false;
   }
 
   /** Keep the latest CRDT text as well as any distinct on-disk version. */
@@ -1507,12 +1579,16 @@ export class SharedProject {
     this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: ${relative}`, error);
   }
 
-  private async writeManifest(fn: (files: Y.Map<unknown>, doc: Y.Doc) => void, provenance: Provenance): Promise<void> {
+  /** Commits a manifest change; returns the bytes of its (single) update. A control caller gets an error, not success, for a change SQLite did not take (S54). */
+  private async writeManifest(fn: (files: Y.Map<unknown>, doc: Y.Doc) => void, provenance: Provenance): Promise<number> {
     if (provenance.source === "external-file" && this.follower) throw new WriteCancelledError();
     const hub = this.manifestHub;
     if (!hub) throw new Error("The manifest is not open.");
+    // An automatic import commits only against a manifest that has heard the server (S53).
+    if (provenance.source === "external-file" && !this.manifestCaughtUp()) throw new WriteCancelledError();
+    let bytes = 0;
     // Every entry write goes through here, so this is where field changes are noted as intents.
-    trackEntryWrites(this.manifestDoc().getMap<unknown>(ManifestKeys.files), this.manifestIntents, () => hub.applyLocalChange("manifest", (doc) => {
+    trackEntryWrites(this.manifestDoc().getMap<unknown>(ManifestKeys.files), this.manifestIntents, () => { bytes = hub.applyLocalChange("manifest", (doc) => {
       const files = doc.getMap<unknown>(ManifestKeys.files);
       fn(files, doc);
       // A removed photo takes its details with it; a new one gets a record.
@@ -1526,8 +1602,31 @@ export class SharedProject {
           if (photo.addedBy) photos.set(fileId, { ...photo });
         }
       }
-    }, provenance));
+    }, provenance)?.length ?? 0; });
     this.entries = this.readEntries();
+    if (!hub.flushDurable()) {
+      // The change is applied in memory and retried by the hub on a backoff, but a crash now would lose it.
+      this.durableWaiting = true;
+      if (provenance.source !== "external-file") {
+        throw new ControlError(503, "not-saved", "The change could not be saved on this computer yet (the collaboration database is busy or unavailable). Files and records were not changed. Libera keeps trying to save it; check the notebook before repeating the action.");
+      }
+    }
+    return bytes;
+  }
+
+  /**
+   * Writes operations in groups whose real encoded size stays near the batch
+   * budget (S50): each group's actual update size sets the next group's length,
+   * so thousands of long-path entries never become one oversized update.
+   */
+  private async writeManifestOperations(operations: Array<(map: Y.Map<unknown>, doc: Y.Doc) => void>, provenance: Provenance): Promise<void> {
+    let group = 256;
+    for (let index = 0; index < operations.length;) {
+      const slice = operations.slice(index, index + group);
+      const bytes = await this.writeManifest((map, doc) => { for (const operation of slice) operation(map, doc); }, provenance);
+      index += slice.length;
+      if (bytes > 0) group = Math.max(1, Math.min(1024, Math.floor(MANIFEST_BATCH_BYTES / Math.max(1, bytes / slice.length))));
+    }
   }
 
   /** After a merge (or an acknowledgement): writes again a field change that a concurrent whole-entry write reverted. */
@@ -1768,7 +1867,7 @@ export class SharedProject {
         return;
       }
       if (!record.hash) {
-        try { await this.archive(record.path, contentGuard(target, expected, this.diskGuard())); }
+        try { this.displacedPath(record.path, await this.archive(record.path, contentGuard(target, expected, this.diskGuard()))); }
         catch (error) {
           if (!(error instanceof WriteCancelledError)) throw error;
           this.scheduleScan(0); this.scheduleRetry(); return;
@@ -2997,9 +3096,7 @@ export class SharedProject {
         this.missingSince.clear();
         return;
       }
-      await this.writeManifest((map, doc) => {
-        for (const operation of operations) operation(map, doc);
-      }, EXTERNAL);
+      await this.writeManifestOperations(operations, EXTERNAL);
       if (addedPhotos.length > 0) this.reportAddedPhotos(addedPhotos);
       for (const reconciliation of openedReconciliations) this.ctx.emit({ t: "reconcile-needed", reconciliation });
       if (openedReconciliations.length > 0) this.ctx.emit({ t: "project-changed", projectId: this.info.projectId });
