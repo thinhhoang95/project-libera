@@ -112,7 +112,8 @@ export const SIDECAR_KINDS: readonly SidecarKind[] = [
 export const SIDECAR_PATH_HELPERS = ["pdfAnnotationsPath", "pdfOutlinePath", "pdfTextCachePath", "imageAnnotationsPath", "transcriptPath", "audioPeaksPath", "definitionsPath"] as const;
 
 async function moveKind(kind: SidecarKind, from: string, to: string) {
-  if (!kind.cache) return moveFileIfExists(from, to);
+  // A person's record never replaces one that arrived at the destination since the move was checked.
+  if (!kind.cache) return moveWithoutReplacing(from, to);
   try { await moveFileIfExists(from, to); }
   catch { await rm(from, { force: true, recursive: true }).catch(() => undefined); }
 }
@@ -156,16 +157,17 @@ export async function moveFileSidecars(
 ): Promise<() => Promise<void>> {
   const lost = await lostSidecarRecords(fromNotebook, fromParts, fromType, toType);
   if (lost.length) throw new StorageError(`${fromNotebook}/${fromParts.join("/")} still has records (${lost.join(", ")}) that a ${toType} file cannot keep.`, 409);
-  const moved: { from: string; to: string }[] = [];
+  const moved: { from: string; to: string; cache: boolean }[] = [];
   let python: { from: string; to: string } | null = null;
   const undo = async () => {
     const stuck: string[] = [];
     if (python) {
       const { from, to } = python;
-      try { await movePythonSidecar(to, from); } catch { stuck.push(`its Python code is now at ${to}`); }
+      try { await movePythonSidecar(to, from, { exclusive: true }); } catch { stuck.push(`its Python code is now at ${to}`); }
     }
     for (const entry of [...moved].reverse()) {
-      try { await moveFileIfExists(entry.to, entry.from); } catch { stuck.push(`${entry.from} is now at ${entry.to}`); }
+      // Back only to a free place: what arrived at the old one meanwhile is not replaced.
+      try { await (entry.cache ? moveFileIfExists : moveWithoutReplacing)(entry.to, entry.from); } catch { stuck.push(`${entry.from} is now at ${entry.to}`); }
     }
     if (stuck.length) throw new StorageError(`Could not put the records of ${fromNotebook}/${fromParts.join("/")} back: ${stuck.join("; ")}.`, 500);
   };
@@ -177,7 +179,7 @@ export async function moveFileSidecars(
         const to = kind.filePath(toNotebook, toParts);
         const present = from !== to && await pathExists(from);
         await moveKind(kind, from, to);
-        if (present && (!kind.cache || await pathExists(to))) moved.push({ from, to });
+        if (present && (!kind.cache || await pathExists(to))) moved.push({ from, to, cache: Boolean(kind.cache) });
       } else {
         // Only a cache can be left here: the rest was refused above.
         await rm(from, { force: true, recursive: true }).catch(kind.cache ? () => undefined : (error) => { throw error; });
@@ -187,7 +189,7 @@ export async function moveFileSidecars(
       const from = `${fromNotebook}/${fromParts.join("/")}`;
       if (toType === "markdown") {
         const to = `${toNotebook}/${toParts.join("/")}`;
-        await movePythonSidecar(from, to);
+        await movePythonSidecar(from, to, { exclusive: true });
         python = { from, to };
       } else await deletePythonSidecar(from);
     }

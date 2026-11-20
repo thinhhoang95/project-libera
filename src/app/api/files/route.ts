@@ -3,7 +3,8 @@ import { requireAuth } from "@/lib/api";
 import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { copyFileIntoSharedDirectory, createSharedMarkdownFile, deleteSharedFile, moveSharedFile, saveSharedFileText } from "@/lib/collab/shared-writes";
 import { StorageError } from "@/lib/storage/errors";
-import { assertSafeSegment, splitFilePath } from "@/lib/storage/paths";
+import { assertSafeSegment, splitDirectoryPath, splitFilePath } from "@/lib/storage/paths";
+import { assertLocalFileIdentity, MoveCommittedError } from "@/lib/storage/files";
 import {
   archiveFile,
   copyFileToDirectory,
@@ -20,7 +21,19 @@ export const runtime = "nodejs";
 
 function handleError(error: unknown) {
   const storageError = toStorageError(error);
-  return NextResponse.json({ error: storageError.message }, { status: storageError.status });
+  // A move that happened but whose result could not be built: say where the file is, so the caller can still retarget.
+  const committed = storageError instanceof MoveCommittedError ? { moved: storageError.moved, unfinished: storageError.unfinished } : {};
+  return NextResponse.json({ error: storageError.message, ...committed }, { status: storageError.status });
+}
+
+/**
+ * The move from one notebook to another is the migration's (reviewed, crash
+ * safe, with the references it needs); the direct move stays inside a notebook.
+ */
+function assertSameNotebook(path: string, destinationNotebook: string) {
+  // An empty notebook is moveFile's own error to give.
+  if (!destinationNotebook || splitFilePath(path).notebook === destinationNotebook) return;
+  throw new StorageError("Moving a file to another notebook goes through the notebook migration, which carries its records and references. Use Move to notebook instead.", 409);
 }
 
 export async function GET(request: NextRequest) {
@@ -87,13 +100,17 @@ export async function PATCH(request: NextRequest) {
       destinationDirectory?: string;
       copy?: boolean;
       archive?: boolean;
-      /** The shared file the caller saw at `path`; a rename of another file there is refused. */
+      /**
+       * The file the caller saw at `path`; an action on another file there is refused. For a
+       * shared notebook the host's file id; for a local one localFileIdentity of the tree node.
+       */
       fileId?: string;
     };
+    const expectedFileId = typeof body.fileId === "string" && body.fileId ? body.fileId : undefined;
 
     if (body.archive) {
       if (isSharedNotebookPath(body.path ?? "")) throw new StorageError("The archive is local-only. To remove a file from a shared notebook, use Delete; collaboration keeps a local recovery copy.", 409);
-      return NextResponse.json(await archiveFile(body.path ?? ""));
+      return NextResponse.json(await archiveFile(body.path ?? "", { expectedFileId }));
     }
 
     if (body.copy && body.destinationDirectory) {
@@ -112,11 +129,13 @@ export async function PATCH(request: NextRequest) {
         return NextResponse.json(await moveSharedFile(body.path ?? "", body.destinationDirectory, body.destinationName, { expectedFileId: body.fileId }));
       }
       if (isSharedNotebookPath(body.destinationDirectory)) throw new StorageError("Moving files between shared and other notebooks is not supported. Use Copy to create a separate file in the destination notebook.", 409);
+      assertSameNotebook(body.path ?? "", splitDirectoryPath(body.destinationDirectory).notebook);
       return NextResponse.json(
         await moveFileToDirectory(
           body.path ?? "",
           body.destinationDirectory,
           body.destinationName,
+          { expectedFileId },
         ),
       );
     }
@@ -129,11 +148,13 @@ export async function PATCH(request: NextRequest) {
         return NextResponse.json(await moveSharedFile(body.path ?? "", [notebook, ...parent].join("/"), body.destinationName, { expectedFileId: body.fileId }));
       }
       if (isSharedNotebookPath(body.destinationNotebook ?? "")) throw new StorageError("Moving files between shared and other notebooks is not supported. Use Copy to create a separate file in the destination notebook.", 409);
+      assertSameNotebook(body.path ?? "", body.destinationNotebook ?? "");
       return NextResponse.json(
         await moveFile(
           body.path ?? "",
           body.destinationNotebook ?? "",
           body.destinationName ?? "",
+          { expectedFileId },
         ),
       );
     }
@@ -157,7 +178,10 @@ export async function DELETE(request: NextRequest) {
   try {
     const filePath = request.nextUrl.searchParams.get("path") ?? "";
     const fileId = request.nextUrl.searchParams.get("fileId") || undefined;
-    return NextResponse.json(isSharedNotebookPath(filePath) ? await deleteSharedFile(filePath, { expectedFileId: fileId }) : await deleteFile(filePath));
+    if (isSharedNotebookPath(filePath)) return NextResponse.json(await deleteSharedFile(filePath, { expectedFileId: fileId }));
+    // A local file: the one the person chose, not another that took its path (deleteFile's own records are not touched here).
+    if (fileId) await assertLocalFileIdentity(filePath, fileId);
+    return NextResponse.json(await deleteFile(filePath));
   } catch (error) {
     return handleError(error);
   }
