@@ -341,7 +341,7 @@ export async function reconcilePdfSidecars(notebook: string, pdfFiles: Array<{ p
   // A shared notebook's files have stable identities and its absences may be cloud lag:
   // content matching must not pick another PDF, and nothing is set aside or expires
   // here. Moves and removals reach it through followSharedPdfChanges.
-  const shared = Boolean(sharedNotebookMarker(notebook));
+  const shared = !upkeepReattachesByContent(notebook);
   // A moved PDF's bytes may have arrived since the host reported the move: reattach its side-cars at the active path.
   if (shared) reattached += await replayPendingPdfMoves(notebook);
   for (const found of shared ? [] : missing) {
@@ -391,6 +391,16 @@ export async function reconcilePdfSidecars(notebook: string, pdfFiles: Array<{ p
     if (!shared && now - Date.parse(record.orphanedAt) > ORPHAN_RETENTION_MS && !(await mayBeBack(record, pdfFiles, hashes, pdfExists))) await rm(file, { force: true });
   }
   return { reattached, setAside: setAsideCount };
+}
+
+/**
+ * Whether the tree's upkeep reattaches side files by content in this notebook.
+ * It does not in a shared notebook: its files have stable identities, absences
+ * may be cloud lag, and moves reach the records through the host. The notebook
+ * check predicts reattachment only where this says so.
+ */
+export function upkeepReattachesByContent(notebook: string) {
+  return !sharedNotebookMarker(notebook);
 }
 
 /**

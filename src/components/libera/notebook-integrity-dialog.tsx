@@ -162,7 +162,8 @@ function IntegrityBody({ notebook, tree, onOpenFile, onClose, onRepaired }: Dial
 
   const again = () => { setReport(null); setError(""); setStopped(false); setProgress(null); setRun((value) => value + 1); };
   const checkAgain = () => { setFixed(null); setCleaned(null); setFixError(""); again(); };
-  const canFix = !!report && report.findings.some((finding) => MOVABLE.has(finding.check));
+  // On a shared notebook the report says which findings Try to fix can pair (this computer's records only); elsewhere, what a move outside the app can cause.
+  const canFix = !!report && report.findings.some((finding) => finding.repairable ?? MOVABLE.has(finding.check));
   const canClear = !!report && report.findings.some((finding) => finding.clear?.length);
   const settle = async () => { try { await onRepaired?.(notebook); } catch { /* The check says what is left. */ } };
   const prepareFix = async () => {
@@ -367,6 +368,7 @@ function RepairPlanView({ plan }: { plan: RepairPlan }) {
   function unmatchedReason(item: RepairUnmatched) {
     if (item.reason === "none") return t("unmatchedNone");
     if (item.reason === "shared-name") return t("unmatchedSharedName");
+    if (item.reason === "host") return t("unmatchedHost");
     if (item.reason === "unread") return t("unmatchedUnread", { candidates: item.candidates.join(", ") });
     if (item.reason === "conflict") return t("unmatchedConflict", { candidates: item.candidates.join(", ") });
     if (item.reason === "own") return t("unmatchedOwn", { candidates: item.candidates.join(", "), count: item.candidates.length });
@@ -395,7 +397,7 @@ function RepairPlanView({ plan }: { plan: RepairPlan }) {
     {plan.unmatched.length > 0 && <section className="rounded-lg border border-border">
       <h3 className="px-3 py-2 font-medium">{t("leftAsTheyAre", { count: plan.unmatched.length })}</h3>
       <ul className="divide-y divide-border border-t border-border">
-        {plan.unmatched.map((item) => <li key={item.from} className="px-3 py-2">
+        {plan.unmatched.map((item) => <li key={`${item.from}-${item.reason}`} className="px-3 py-2">
           <p className="truncate text-xs font-medium" title={item.from}>{item.from}</p>
           <p className="text-xs text-muted-foreground">{t("unmatchedLine", { records: item.records.join(", "), reason: unmatchedReason(item) })}</p>
         </li>)}
