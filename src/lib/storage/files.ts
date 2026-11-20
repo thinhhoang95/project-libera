@@ -84,7 +84,8 @@ import { DEFINITIONS_FILE_TYPES } from "@/lib/definitions";
 import { notifyReferenceFilesAdded } from "@/lib/references/jobs";
 import { assertNotSharedItem, isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { assertNotMigrating, assertNothingMigratingWithin, itemLibraryPath } from "@/lib/storage/migration-fence";
-import { readSharedAuthorityBytes } from "@/lib/storage/shared-source";
+import { NO_AUTHORITY as NO_SHARED_AUTHORITY, readSharedAuthorityBytes } from "@/lib/storage/shared-source";
+import { destinationRecords } from "@/lib/storage/destination-records";
 
 /** Reads a file for a tab. Text files come with their content, except plain
  * text files that are too large or turn out to be binary: those throw when
@@ -462,7 +463,7 @@ const RECORD_NAMES: Record<string, string> = {
  * Caches are made again, so they may be replaced; so may an empty review,
  * which is what opening a note makes.
  */
-async function assertNoLeftoverRecords(notebook: string, parts: string[], fileType: string, ownSidecars = false) {
+export async function assertNoLeftoverRecords(notebook: string, parts: string[], fileType: string, ownSidecars = false) {
   const names = await leftoverRecords(notebook, parts, fileType, ownSidecars);
   if (!names.length) return;
   const list = names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names[0];
@@ -505,7 +506,7 @@ async function leftoverRecords(notebook: string, parts: string[], fileType: stri
  * there before (deleted outside the app): refused like a file move, before
  * anything moves. `ownSidecars`: the name is the folder's own under another spelling.
  */
-async function assertNoLeftoverFolderRecords(notebook: string, parts: string[], ownSidecars = false, incomingNotes: string[] = []) {
+export async function assertNoLeftoverFolderRecords(notebook: string, parts: string[], ownSidecars = false, incomingNotes: string[] = []) {
   const names = await leftoverFolderRecords(notebook, parts, ownSidecars, incomingNotes);
   if (!names.length) return;
   const list = names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names[0];
@@ -820,7 +821,7 @@ export async function copyFileToDirectory(
     ? assertSafeSegment(destinationName, "File name")
     : suggestedCopyName(current.name);
   const currentFileType = assertSupportedFileName(current.name);
-  assertSupportedFileName(requestedName);
+  assertCopyKeepsType(currentFileType, requestedName);
   const destinationPath = itemPath(destination.notebook, destination.pathParts);
   // Copying out of a shared notebook is a read; copying into one is a write.
   assertNotSharedItem(destination.notebook, [...destination.pathParts, requestedName]);
@@ -838,7 +839,7 @@ export async function copyFileToDirectory(
 
   let available;
   for (;;) {
-    available = await findAvailableFilePath(destinationPath, requestedName);
+    available = await findAvailableCopyPath(destination.notebook, destination.pathParts, requestedName, currentFileType);
     try {
       if (sharedBytes) await writeFile(available.path, sharedBytes, { flag: "wx" });
       else await copyFile(filePathFromParts(current.notebook, current.pathParts), available.path, constants.COPYFILE_EXCL);
@@ -880,10 +881,44 @@ export async function copyFileToDirectory(
     await updatePdfCommentThreads(copyPath, () => ({ threads: livePdf.threads, result: undefined }));
   }
 
-  await copyReviewPath(relativePath, relativeFilePath(destination.notebook, nextParts));
+  const copyPath = relativeFilePath(destination.notebook, nextParts);
+  // A copy in another notebook cites what that notebook's library holds: references are copied or
+  // mapped as for a move, and the copied review's snapshot follows the same key map.
+  const references = await copyCitedReferences(current.notebook, destination.notebook, relativePath, copyPath);
+  const keys = references?.drafts.find((draft) => draft.path === copyPath)?.map;
+  await copyReviewPath(relativePath, copyPath, keys ? (text) => rewriteCitationKeys(text, new Map(Object.entries(keys))).text : undefined);
   // A copy is a new file: no reference is attached to it, and the original keeps its references.
-  notifySearchChanges([relativeFilePath(destination.notebook, nextParts)]);
-  return readLiberaFile(relativeFilePath(destination.notebook, nextParts));
+  notifySearchChanges([copyPath]);
+  return withReferences(await readLiberaFile(copyPath), references);
+}
+
+/**
+ * A copy keeps the file's type: its bytes, records and viewer all follow the
+ * source, so another extension would open a PDF as an image or leave a note's
+ * records on a plain text file. Changing type is a rename, which checks what
+ * the records can keep.
+ */
+export function assertCopyKeepsType(sourceType: LiberaFileType, name: string) {
+  if (assertSupportedFileName(name) !== sourceType) {
+    throw new StorageError(`A copy keeps its file type (${sourceType}): "${name}" would be another type. Keep the extension, or rename the copy afterwards.`, 400);
+  }
+}
+
+/**
+ * A free name for a copy: no file there, and none of the records of a file
+ * that was there before (annotations, review comments, tags, ...), which the
+ * copy would otherwise take over or replace. Reads only.
+ */
+export async function findAvailableCopyPath(notebook: string, directoryParts: string[], fileName: string, fileType: string) {
+  const records = await destinationRecords();
+  const extension = path.extname(fileName);
+  const stem = path.basename(fileName, extension);
+  for (let index = 0; ; index += 1) {
+    const name = index ? `${stem}-${index}${extension}` : fileName;
+    const target = itemPath(notebook, [...directoryParts, name]);
+    if (await pathExists(target) || (await records.at(notebook, [...directoryParts, name], fileType)).length) continue;
+    return { name, path: target };
+  }
 }
 
 export async function deleteFile(relativePath: string) {
@@ -1097,11 +1132,24 @@ async function moveRelatedMetadata(
   await moveFileSidecars(currentNotebook, currentPathParts, nextNotebook, nextPathParts, currentFileType, nextFileType);
 }
 
-/** The shared document's text, or null (then the disk bytes are copied) when the host cannot answer. */
+/**
+ * The shared document's text. Null (then the disk bytes are copied) only when
+ * there is no shared authority to ask (collaboration is off here, the notebook
+ * is not joined). A host that cannot answer refuses the copy: the disk copy
+ * may lag collaborators' work.
+ */
 async function readSharedTextForCopy(sourcePath: string): Promise<string | null> {
   // Imported here: shared-writes reaches back into storage.
-  const { readSharedText } = await import("@/lib/collab/shared-writes");
-  return (await readSharedText(sourcePath).catch(() => null))?.text ?? null;
+  const { SharedWriteError, readSharedText } = await import("@/lib/collab/shared-writes");
+  try {
+    return (await readSharedText(sourcePath)).text;
+  } catch (error) {
+    if (error instanceof SharedWriteError && NO_SHARED_AUTHORITY.has(error.code)) return null;
+    if (error instanceof SharedWriteError) {
+      throw new StorageError(`${sourcePath} is not yet up to date on this device, so its current shared version was not copied (${error.message}). Try again when sync has caught up.`, error.status);
+    }
+    throw error;
+  }
 }
 
 /**
@@ -1137,16 +1185,18 @@ async function copyRelatedMetadata(
     await copyFileIfExists(
       pdfAnnotationsPath(currentNotebook, currentPathParts),
       pdfAnnotationsPath(nextNotebook, nextPathParts),
+      { exclusive: true },
     );
     await copyPdfTextCache(currentNotebook, currentPathParts, nextNotebook, nextPathParts);
     // The outline describes the bytes, which the copy shares.
-    await copyFileIfExists(pdfOutlinePath(currentNotebook, currentPathParts), pdfOutlinePath(nextNotebook, nextPathParts));
+    await copyFileIfExists(pdfOutlinePath(currentNotebook, currentPathParts), pdfOutlinePath(nextNotebook, nextPathParts), { exclusive: true });
   }
 
   if (currentFileType === "image") {
     await copyFileIfExists(
       imageAnnotationsPath(currentNotebook, currentPathParts),
       imageAnnotationsPath(nextNotebook, nextPathParts),
+      { exclusive: true },
     );
   }
 
@@ -1161,7 +1211,7 @@ async function copyRelatedMetadata(
   }
 
   if (supportsDefinitionsType(currentFileType)) {
-    await copyFileIfExists(definitionsPath(currentNotebook, currentPathParts), definitionsPath(nextNotebook, nextPathParts));
+    await copyFileIfExists(definitionsPath(currentNotebook, currentPathParts), definitionsPath(nextNotebook, nextPathParts), { exclusive: true });
   }
 
   if (supportsInk(currentFileType)) await copyInkFolder(currentNotebook, currentPathParts, nextNotebook, nextPathParts);

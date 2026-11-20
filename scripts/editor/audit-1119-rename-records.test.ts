@@ -22,6 +22,9 @@ import { bibTetherStatePath, resetBibTethers, settleBibTether } from "../../src/
 import { resetBibMirrorScheduler } from "../../src/lib/references/bib-mirror";
 import { definitionsPath, imageAnnotationsPath } from "../../src/lib/storage/paths";
 
+/** Runs while the host renames, as another process writing at the destination would. */
+let onRename: (() => void) | null = null;
+
 class Watcher extends EventEmitter {
   close() { /* nothing watched */ }
 }
@@ -48,7 +51,10 @@ class StubHost {
         if (/\/projects\/[^/]+\/file-entries$/.test(url.pathname)) return send(200, { entries: this.entries });
         if (!/\/projects\/[^/]+\/files$/.test(url.pathname)) return send(404, { error: { code: "not-found", message: "No route." } });
         const op = JSON.parse(body) as FileOpRequest;
-        if (op.op === "rename" && op.to) renameSync(path.join(this.notebook, op.path), path.join(this.notebook, op.to));
+        if (op.op === "rename" && op.to) {
+          renameSync(path.join(this.notebook, op.path), path.join(this.notebook, op.to));
+          onRename?.();
+        }
         return send(200, { paths: [`Shared/${op.to ?? op.path}`] });
       });
     });
@@ -88,6 +94,7 @@ async function withShared(run: (fixture: { notebook: string }) => Promise<void>)
     resetBibTethers();
     resetBibMirrorScheduler();
     mock.restoreAll();
+    onRename = null;
     await host.stop();
     keys.forEach((key, index) => { if (saved[index] === undefined) delete process.env[key]; else process.env[key] = saved[index]; });
     invalidateSharedNotebookCache();
@@ -141,8 +148,9 @@ test("13: a record that cannot move is reported, and never replaces one at the d
   const source = definitionsPath("Shared", ["sub", "note.md"]);
   const image = imageAnnotationsPath("Shared", ["sub", "photo.png"]);
   writeRecord(source, '{"entries":["old"]}');
-  writeRecord(taken, '{"entries":["mine"]}');
   writeRecord(image, '{"annotations":[]}');
+  // Written after the rename's preflight (which refuses a name that holds records), while the host renames.
+  onRename = () => writeRecord(taken, '{"entries":["mine"]}');
 
   await assert.rejects(renameSharedFolder("Shared/sub", "renamed"), /could not be moved[\s\S]*note\.md/);
   assert.equal(readFileSync(taken, "utf8"), '{"entries":["mine"]}');
