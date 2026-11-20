@@ -332,13 +332,9 @@ export async function reconcilePdfSidecars(notebook: string, pdfFiles: Array<{ p
   if (!missing.length && !stored.length) return { reattached: 0, setAside: 0 };
 
   const hashes = new Map<string, Promise<string | null>>();
-  /** Whether a PDF's slot for this kind is taken by the file system's own rules: `Foo.pdf` and `foo.pdf` are one slot on a case-insensitive disk and two on a case-sensitive one. */
-  const slotTaken = (store: KindStore, libraryPath: string) => {
-    const { notebook: owner, pathParts } = splitFilePath(libraryPath);
-    return pathExists(store.path(owner, pathParts));
-  };
+  const slotTaken = (store: KindStore, libraryPath: string) => slotTakenBy(store.path)(libraryPath);
   /** The one PDF without this kind of side-car whose bytes are `identity`; null when none or several. */
-  const match = (store: KindStore, identity: PdfIdentity) => matchByIdentity(identity, pdfFiles, (candidate) => slotTaken(store, candidate), hashes);
+  const match = (store: KindStore, identity: PdfIdentity) => matchByIdentity(identity, pdfFiles, slotTakenBy(store.path), hashes);
 
   let reattached = 0;
   let setAsideCount = 0;
@@ -398,18 +394,31 @@ export async function reconcilePdfSidecars(notebook: string, pdfFiles: Array<{ p
 }
 
 /**
+ * Whether a file's slot for one kind of side file is taken, by the file
+ * system's own rules: `Foo.pdf` and `foo.pdf` are one slot on a case-insensitive
+ * disk and two on a case-sensitive one. `sidecarPath` is the kind's path for a
+ * file (`pdfAnnotationsPath`, `inkFolderPath`, ...). The one test of occupancy:
+ * the tree's upkeep, ink's and the notebook check's prediction all use it.
+ */
+export function slotTakenBy(sidecarPath: (notebook: string, pathParts: string[]) => string) {
+  return (libraryPath: string) => {
+    const { notebook, pathParts } = splitFilePath(libraryPath);
+    return pathExists(sidecarPath(notebook, pathParts));
+  };
+}
+
+/**
  * The one file among `candidates` whose bytes are `identity` (its size, then
- * its SHA-256), leaving out those `taken`; null when none or several. `taken`
- * is a set of lower-cased library paths, or a test of the file system's own
- * slot, which follows its case rules. Only files of that size are hashed, each
+ * its SHA-256), leaving out those whose slot is `taken` (see `slotTakenBy`);
+ * null when none or several. Only files of that size are hashed, each
  * once per `hashes`. The rule by which side files follow a file moved outside
  * Libera, here and in ink.ts; the notebook check (storage/integrity.ts) reports it.
  */
-export async function matchByIdentity(identity: { size: number; contentHash: string }, candidates: Array<{ path: string; size: number }>, taken: ReadonlySet<string> | ((libraryPath: string) => Promise<boolean>), hashes: Map<string, Promise<string | null>>) {
+export async function matchByIdentity(identity: { size: number; contentHash: string }, candidates: Array<{ path: string; size: number }>, taken: (libraryPath: string) => Promise<boolean>, hashes: Map<string, Promise<string | null>>) {
   const matches: string[] = [];
   for (const candidate of candidates) {
     if (candidate.size !== identity.size) continue;
-    if (typeof taken === "function" ? await taken(candidate.path) : taken.has(candidate.path.toLowerCase())) continue;
+    if (await taken(candidate.path)) continue;
     if (await hashOf(candidate.path, hashes) === identity.contentHash) matches.push(candidate.path);
   }
   return matches.length === 1 ? matches[0] : null;
@@ -425,14 +434,17 @@ function hashOf(libraryPath: string, hashes: Map<string, Promise<string | null>>
 
 /**
  * Whether the file a set-aside record was made for may still come back, so its
- * work outlives the retention: a file with its bytes exists, whatever its slot
- * or the ambiguity (one that cannot be read counts), or, with no bytes
- * recorded, a file is at the old path or cannot be told to be gone. `exists`
- * is the owner's presence test (null: cannot be told).
+ * work outlives the retention. The one rule for "the owner is back", used by
+ * the upkeep's expiry, the notebook check's protection of set-aside work and
+ * (at the removal) Acknowledge's hold: a file is at the old path or cannot be
+ * told to be gone, or a file with its bytes exists, whatever its slot or the
+ * ambiguity (one that cannot be read counts). `exists` is the presence test
+ * (`fileExistence().isFile`; null: cannot be told).
  */
 export async function mayBeBack(record: { originalPath: string; source: { size: number; contentHash: string } | null }, candidates: Array<{ path: string; size: number }>, hashes: Map<string, Promise<string | null>>, exists: (libraryPath: string) => Promise<boolean | null>) {
+  if ((await exists(record.originalPath)) !== false) return true;
   const source = record.source;
-  if (!source) return (await exists(record.originalPath)) !== false;
+  if (!source) return false;
   for (const candidate of candidates) {
     if (candidate.size !== source.size) continue;
     const hash = await hashOf(candidate.path, hashes);

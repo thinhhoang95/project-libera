@@ -9,6 +9,7 @@ import { applyLibraryOps, attachmentIdentity, emptyReferenceLibrary, LibraryOpEr
 import { REFERENCE_LIBRARY_VERSION, type ReferenceAttachment, type ReferenceLibrary, type ReferenceLibraryOp } from "@/lib/references/types";
 import { StorageError } from "@/lib/storage/errors";
 import { pathExists, writeJsonAtomically } from "@/lib/storage/fs-utils";
+import { fileExistence } from "@/lib/storage/library-links";
 import { notifySearchReferenceChanges } from "@/lib/storage/search-updates";
 import {
   filePathFromParts,
@@ -469,15 +470,16 @@ async function missingAttachments(notebook?: string) {
     }
     return availableRoots.get(name)!;
   };
+  // "Gone" is Check Notebook's own test (an exact name in its folder's listing, a file): a case-only rename reads as moved here as it does there.
+  const disk = fileExistence();
   for (const { notebook: name, target } of await existingLibraries(notebook ? [notebook] : undefined)) {
     let library: ReferenceLibrary | null;
     try { library = await readLibraryFile(target); } catch { continue; }
     for (const entry of Object.values(library?.entries ?? {})) {
       for (const attachment of entry.attachments) {
         if (attachment.kind === "url" || !attachment.sha256 || typeof attachment.size !== "number") continue;
-        let absolutePath: string;
-        try { absolutePath = absoluteLibraryFile(attachment.path); } catch { continue; }
-        if (!(await pathExists(absolutePath)) && await rootAvailable(attachment.path)) {
+        try { absoluteLibraryFile(attachment.path); } catch { continue; }
+        if (await disk.isFile(attachment.path) === false && await rootAvailable(attachment.path)) {
           missing.push({ notebook: name, target, entryId: entry.id, path: attachment.path, sha256: attachment.sha256, size: attachment.size });
         }
       }
@@ -528,12 +530,13 @@ export async function reattachMissingReferenceFiles(notebook?: string): Promise<
       try { library = await readLibraryFile(target); } catch { return 0; }
       if (!library) return 0;
       // The scan ran outside this lock: what it saw is rechecked here, under it.
+      // Same test as the check's. The old path counts as present unless it is known to be gone, the new one as absent unless known to be a file: when it can't be told, nothing moves.
       const present = new Map<string, boolean>();
+      const disk = fileExistence();
       for (const byPath of byEntry.values()) {
         for (const [old, { next }] of byPath) {
-          for (const file of [old, next]) {
-            try { present.set(file, await pathExists(absoluteLibraryFile(file))); } catch { /* Unknown: stays "present" for the old path, so nothing moves. */ }
-          }
+          present.set(old, await disk.isFile(old) !== false);
+          present.set(next, await disk.isFile(next) === true);
         }
       }
       const existsAtCommit = (file: string) => present.get(file) ?? true;

@@ -123,12 +123,15 @@ async function stoppedWithUnfollowedSidecar() {
   const interrupted = await interruptAt(request, "published:Src/a.md");
 
   const target = definitionsPath("Dst", ["a.md"]);
-  const rename = fsp.rename;
+  // A record is now published by linking it into place (exclusively), with a rename only as the fallback: fail both.
   let failing = true;
-  mock.method(fsp, "rename", async (source: string, to: string) => {
-    if (failing && to === target) throw Object.assign(new Error("disk error"), { code: "EIO" });
-    return rename(source, to);
-  });
+  for (const name of ["rename", "link"] as const) {
+    const original = fsp[name] as (source: string, to: string) => Promise<void>;
+    mock.method(fsp, name, async (source: string, to: string) => {
+      if (failing && to === target) throw Object.assign(new Error("disk error"), { code: "EIO" });
+      return original(source, to);
+    });
+  }
   setMigrationFaultForTests((fault) => { if (fault === "finalize:folders") throw new Error("simulated crash"); });
   try { await resumeMigration(interrupted.id, "stop"); }
   catch (error) { assert.match((error as Error).message, /simulated crash/); }
