@@ -11,6 +11,7 @@ Source: a static Codex review (gpt-6.2-sol, xhigh) of `main` at `b3f6269`. It co
 - Migrations keep refusing shared notebooks.
 - **Destructive steps fail closed.** If a check cannot establish that something is stale, free, unique or owned, the step is refused or held, and the report says so.
 - **Once the host has committed a change, it cannot be taken back.** Every follow-up step runs, and anything that stays behind is reported as `SharedOperationUnfinishedError` (`src/lib/collab/shared-outcomes.ts`), which carries the committed mapping.
+- **No battery drain** (added by the user during the round). No new polling loops or fixed-interval timers: prefer existing events and operation completion. A timer that cannot be avoided reschedules itself, is scaled by the host's battery scale, is unref'd and stops when nothing is pending. Retries use capped backoff that resets only on real progress. No full tree fetches, walks, scans or whole-file hashes where the affected paths suffice. Recorded hashes are reused, and an online-only placeholder is never hydrated just to check it. Identical writes are skipped. Each package reports what it adds and how it is bounded (background: [2026-11-19-sync-onedrive-battery-audit.md](2026-11-19-sync-onedrive-battery-audit.md), findings 36–43).
 - Tests: run the package's own test files once, then `npx tsc --noEmit -p .` once (and `-p server` when server code changed), and eslint on the changed files once. No full suites, fuzz or soak loops.
 
 ## Decisions taken in triage
