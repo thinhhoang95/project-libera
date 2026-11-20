@@ -51,11 +51,12 @@ import {
   splitDirectoryPath,
   splitFilePath,
 } from "@/lib/storage/paths";
+import { MARKDOWN_ASSETS_DIR } from "@/lib/storage/constants";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { copyReviewPath, deleteReviewPath, moveReviewPath } from "@/lib/storage/markdown-reviews";
 import { detachReferenceAttachments, moveReferenceAttachments } from "@/lib/storage/references";
 import { getFileNode, getTree } from "@/lib/storage/tree";
-import { assertCopyKeepsType, assertNoLeftoverFolderRecords, assertNoLeftoverRecords, findAvailableCopyPath, movePathDerivedRecords, readLiberaFile } from "@/lib/storage/files";
+import { assertCopyKeepsType, assertNoLeftoverFolderRecords, assertNoLeftoverRecords, movePathDerivedRecords, readLiberaFile } from "@/lib/storage/files";
 import { removeFileSidecars, removeFolderSidecars, SIDECAR_KINDS } from "@/lib/storage/sidecars";
 import { readSharedAuthorityBytes, readSharedSourceSnapshot, sharedSourceGone } from "@/lib/storage/shared-source";
 import { removeFileMetadataPath, removeFileMetadataPathPrefix, renameFileMetadataPathPrefix, removeNotebookPanelExpandedPathPrefix, renameNotebookPanelExpandedPathPrefix } from "@/lib/storage/workspace-metadata";
@@ -66,7 +67,7 @@ import { CollabHostError, resolveSharedPdf, livePdfSnapshot, readProjectBlob, li
 import type { AnchoredThreadsResponse, CreateThreadAtRangeResponse, DocText, FileOpResult, ResolvedDoc, TextEdit, WithdrawSuggestionsResponse } from "./local-api";
 import type { AiActorHint, Provenance } from "./protocol/actor";
 import { canWriteSubdoc } from "./protocol/roles";
-import { SharedDocumentError, isSharedNotebookPath, sharedManifestPath, sharedNotebookMarker } from "./shared-notebook";
+import { SharedDocumentError, sharedManifestPath, sharedNotebookMarker } from "./shared-notebook";
 
 /** How long a save waits for the folder's writer before answering from what it knows. */
 const ARRIVAL_WAIT_MS = 1_000;
@@ -1163,7 +1164,7 @@ export async function copyFileIntoSharedDirectory(relativePath: string, destinat
     }
   });
   if (owned) {
-    const publish = async (what: string, filePath: string, bytes: Uint8Array) => { await step("metadata", what, () => writeSharedBlob(filePath, bytes, { ...options, createOnly: true })); };
+    const publish = async (what: string, filePath: string, bytes: Uint8Array) => { await step("metadata", what, () => writeSharedBlob(filePath, bytes, { ...options, createOnly: true, ...(placed.fileId ? { ownerFileId: placed.fileId } : {}) })); };
     if (python !== null) await publish("The Python code", pythonSidecarPath(placedPath), new TextEncoder().encode(withPreviousPythonFigureSources(python, [])));
     for (const file of ink) await publish("The ink", `${inkLibraryPath(destination.notebook, placedParts)}/${file.name}`, new Uint8Array(file.bytes));
     if (fileType === "audio") await step("metadata", "The transcript", () => copyTranscript(relativePath, placedPath));
@@ -1207,8 +1208,9 @@ async function createSharedBlobAtFreeName(directory: string, libraryPath: (name:
     const candidate = index === 0 ? fileName : `${stem}-${index}${extension}`;
     if (await pathExists(path.join(directory, candidate))) continue;
     // Not a name that still holds the records of an earlier file.
-    const named = splitFilePath(libraryPath(candidate));
-    if ((await records.at(named.notebook, named.pathParts, fileType)).length) continue;
+    // (A note's _assets folder holds uploads, not files with records.)
+    const [namedNotebook, ...namedParts] = libraryPath(candidate).split("/");
+    if (namedParts[0] !== MARKDOWN_ASSETS_DIR && (await records.at(namedNotebook, namedParts, fileType)).length) continue;
     try {
       const placed = await writeSharedBlob(libraryPath(candidate), bytes, { ...options, createOnly: true });
       // The name the host's layout gave it, which differs when another device created the same name at once.
