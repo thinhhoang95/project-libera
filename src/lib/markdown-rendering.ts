@@ -11,6 +11,7 @@ import { remarkMarkdownTextStyles } from "./markdown-text-styles";
 import { remarkMarkdownBoxes } from "./remark-markdown-boxes";
 import { remarkCitations } from "./remark-citations";
 import { remarkHideFrontMatter } from "./remark-front-matter";
+import { remarkTableWidths } from "./table-widths";
 import { citationRehypeHandlers, remarkBibliography } from "./remark-bibliography";
 import { remarkMarkdownMacros, type MarkdownMacroScope } from "./markdown-macros";
 
@@ -20,14 +21,15 @@ import { remarkMarkdownMacros, type MarkdownMacroScope } from "./markdown-macros
 // characters), and must follow remark-parse, which every user of this list
 // adds first. remarkBibliography runs after the source map, whose positions
 // the citation and bibliography elements keep. YAML front matter (a
-// document's `citation-style`) is metadata and is not rendered. Markdown
+// document's `citation-style`) is metadata and is not rendered; its
+// `table-widths` gives the tables their column widths. Markdown
 // macros come first: they expand the source before it is parsed and point
 // the tree back at the source (markdown-macros.ts).
 export function markdownRemarkPlugins(mathMarkers?: MathMarkerSettings, macroScope?: MarkdownMacroScope): PluggableList {
   return [[remarkMarkdownMacros, { mathMarkers, scope: macroScope }], remarkGfm, remarkMarkdownBoxes, remarkMarkdownHighlights, remarkMarkdownTextColors,
     remarkMarkdownUnderlines, remarkMarkdownTextStyles, remarkMarkdownSourceMap,
     ...(mathMarkers ? [[remarkMathMarkers, mathMarkers] as [typeof remarkMathMarkers, MathMarkerSettings]] : [remarkMath]),
-    remarkCitations, remarkHideFrontMatter, remarkBibliography];
+    remarkCitations, remarkHideFrontMatter, remarkTableWidths, remarkBibliography];
 }
 
 /** remark-rehype options for markdownRemarkPlugins: raw HTML kept for the sanitizer, citation and bibliography elements. */

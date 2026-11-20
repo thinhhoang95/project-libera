@@ -2477,6 +2477,11 @@ button.border[class*="border-white"]:hover {
 .libera-tiptap table { border-collapse: collapse; table-layout: fixed; width: 100%; margin: 1em 0; }
 .libera-tiptap :is(td,th) { border: 1px solid var(--border); padding: .5em .75em; vertical-align: top; position: relative; }
 .libera-tiptap th { background: var(--muted); font-weight: 600; }
+/* Resizable columns (tiptap-table-widths.ts): a table wider than the page scrolls; the border under the pointer can be dragged. */
+.libera-tiptap .tableWrapper { overflow-x: auto; margin: 1em 0; }
+.libera-tiptap .tableWrapper > table { margin: 0; }
+.libera-tiptap .column-resize-handle { position: absolute; top: 0; right: -2px; bottom: -1px; width: 4px; background: var(--ring); pointer-events: none; z-index: 1; }
+.libera-tiptap.resize-cursor, .libera-tiptap.resize-cursor * { cursor: col-resize; }
 
 /* Use the highlight palette's readable foreground throughout a colored box.
    Nested grey quotes and code/table surfaces keep their own theme foreground. */

@@ -59,6 +59,7 @@ import { NoteLinksButton } from "./note-links-dialog";
 import { TiptapCollabHistory } from "@/lib/collab/bindings/tiptap-history";
 import type { SharedVisualHandle, SharedVisualSource } from "@/lib/collab/bindings/react-visual";
 import { TableInsertButton } from "./table-grid-picker";
+import { isMarkdownSlidesPath } from "@/lib/markdown-slides";
 import { tableSizeMenu, useAppMenuEditor } from "./app-menu";
 import { setTiptapHeadingNumbering, TiptapHeadingNumbering } from "@/lib/tiptap-heading-numbering";
 import { TiptapBoldLeadIns } from "@/lib/tiptap-bold-lead-ins";
@@ -313,7 +314,8 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
   const extensions = useMemo(() => {
     const [InlineMath, BlockMath] = createMathExtensions(mathMarkers);
     return [
-    ...createMarkdownExtensions(documentPath, { citationNodeView: citations.nodeView, codeBlockNodeView, imageNodeView, frontMatterTitle }),
+    // Column widths go to the front matter, which a slide deck cannot have (`---` separates its slides).
+    ...createMarkdownExtensions(documentPath, { citationNodeView: citations.nodeView, codeBlockNodeView, imageNodeView, frontMatterTitle, resizableTables: !isMarkdownSlidesPath(documentPath) }),
     ...citations.extensions,
     // Routes undo to the bridge's Y.UndoManager and keeps ProseMirror history
     // from recording remote edits (shared tabs only).

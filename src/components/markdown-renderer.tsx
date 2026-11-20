@@ -9,6 +9,7 @@ import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markd
 import type { Root } from "hast";
 import type { PluggableList } from "unified";
 import { markdownRehypeOptions, markdownRemarkPlugins } from "@/lib/markdown-rendering";
+import { TABLE_WIDTHS_ATTRIBUTE, tableWidthsAttribute } from "@/lib/table-widths";
 import type { MarkdownMacroScope } from "@/lib/markdown-macros";
 import rehypeKatex from "rehype-katex";
 import type { MathMarkerSettings } from "@/lib/math-markers";
@@ -146,6 +147,19 @@ function resolveMarkdownImageSource(src: string | undefined, documentPath: strin
   return `/api/markdown-assets/raw?document=${encodeURIComponent(
     documentPath,
   )}&asset=${encodeURIComponent(src)}`;
+}
+
+// Column widths from the front matter (table-widths.ts), laid out as the
+// Visual editor's table view does: a table whose every column has a width is
+// exactly that wide; otherwise it fills the line, and the columns without a
+// width share what the others leave (each at least TABLE_MIN_COLUMN_WIDTH).
+const TABLE_MIN_COLUMN_WIDTH = 25;
+
+function tableWidthsStyle(widths: Array<number | null>): CSSProperties {
+  const total = widths.reduce<number>((sum, width) => sum + (width ?? TABLE_MIN_COLUMN_WIDTH), 0);
+  return widths.every((width) => width !== null)
+    ? { tableLayout: "fixed", width: total }
+    : { tableLayout: "fixed", minWidth: total };
 }
 
 function tableCellStyle(align: unknown): CSSProperties | undefined {
@@ -517,19 +531,25 @@ function MarkdownRendererContent({
               {children}
             </u>
           ),
-          table: ({ children, className, ...props }) => (
-            <div className="mb-4 overflow-x-auto rounded-lg border border-border">
-              <table
-                {...markdownElementProps(props)}
-                className={classNames(
-                  "w-full border-collapse text-left text-[calc(0.875rem*var(--markdown-text-scale))]",
-                  className,
-                )}
-              >
-                {children}
-              </table>
-            </div>
-          ),
+          table: ({ children, className, ...props }) => {
+            const elementProps = markdownElementProps(props);
+            const widths = tableWidthsAttribute((elementProps as Record<string, unknown>)[TABLE_WIDTHS_ATTRIBUTE]);
+            return (
+              <div className="mb-4 overflow-x-auto rounded-lg border border-border">
+                <table
+                  {...elementProps}
+                  className={classNames(
+                    "w-full border-collapse text-left text-[calc(0.875rem*var(--markdown-text-scale))]",
+                    className,
+                  )}
+                  style={widths ? tableWidthsStyle(widths) : undefined}
+                >
+                  {widths ? <colgroup>{widths.map((width, index) => <col key={index} style={width ? { width } : { minWidth: TABLE_MIN_COLUMN_WIDTH }} />)}</colgroup> : null}
+                  {children}
+                </table>
+              </div>
+            );
+          },
           thead: ({ children, className, ...props }) => (
             <thead
               {...markdownElementProps(props)}

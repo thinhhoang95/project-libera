@@ -8,8 +8,8 @@ import Highlight from "@tiptap/extension-highlight";
 import Underline from "@tiptap/extension-underline";
 import Image from "@tiptap/extension-image";
 import { TextStyle, FontSize, LineHeight, Color } from "@tiptap/extension-text-style";
-import { TableKit, Table, renderTableToMarkdown } from "@tiptap/extension-table";
-import { DOMSerializer, type Schema } from "@tiptap/pm/model";
+import { TableKit, Table, TableView, renderTableToMarkdown } from "@tiptap/extension-table";
+import { DOMSerializer, type Node as ProseMirrorNode, type Schema } from "@tiptap/pm/model";
 import { ListItem, OrderedList, TaskList, TaskItem } from "@tiptap/extension-list";
 import Link from "@tiptap/extension-link";
 import { MARKDOWN_HIGHLIGHT_COLORS } from "./markdown-colors";
@@ -17,6 +17,8 @@ import { markdownTextStyleAttributes } from "./markdown-text-styles";
 import { LiberaBlockquote } from "./tiptap-boxes";
 import { CitationNode, CITATION_NODE_NAME } from "./tiptap-citation";
 import { FrontMatterNode } from "./tiptap-front-matter";
+import { applyTableWidthsToJson, readTableWidths } from "./table-widths";
+import { TiptapTableWidths, tableColumnWidths } from "./tiptap-table-widths";
 import { FootnoteDefinition, FootnoteReference } from "./tiptap-footnotes";
 import { Superscript, Subscript } from "./tiptap-scripts";
 import { mathMarkerPairs, matchMath, type MathMarkerPair } from "./math-markers";
@@ -98,10 +100,23 @@ export function guardLiteralBrackets(markdown: string, pairs: MathMarkerPair[]) 
   return out + markdown.slice(from);
 }
 
+/** A parsed document with the column widths its front matter names (table-widths.ts). */
+function withFrontMatterTableWidths(json: JSONContent, markdown: string) {
+  return markdown.startsWith("---") ? applyTableWidthsToJson(json, readTableWidths(markdown)) : json;
+}
+
 const LiberaMarkdown = Markdown.extend({
   onBeforeCreate(event) {
+    const initial = this.editor.options.content;
     this.parent?.(event);
     const manager = this.storage.manager;
+    // Tables take their widths from the front matter wherever a whole document
+    // is read: the initial content (already parsed above) and setContent.
+    if (typeof initial === "string" && this.editor.options.content !== initial && typeof this.editor.options.content === "object" && this.editor.options.content) {
+      this.editor.options.content = withFrontMatterTableWidths(this.editor.options.content as JSONContent, initial);
+    }
+    const parse = manager.parse.bind(manager);
+    manager.parse = (markdown) => withFrontMatterTableWidths(parse(markdown), markdown);
     const serialize = manager.serialize.bind(manager);
     // The math extensions publish the configured markers (tiptap-math.ts).
     const pairs = () => ((this.editor?.storage as unknown as Record<string, { markerPairs?: MathMarkerPair[] } | undefined> | undefined)?.inlineMath?.markerPairs) ?? mathMarkerPairs();
@@ -223,6 +238,8 @@ function tableHtml(table: TableJson, schema: Schema) {
     const dom = DOMSerializer.fromSchema(schema).serializeNode(node) as HTMLElement;
     dom.querySelector("colgroup")?.remove();
     dom.removeAttribute("style");
+    // Column widths live in the front matter (table-widths.ts), as for pipe tables.
+    dom.querySelectorAll("[colwidth]").forEach((cell) => cell.removeAttribute("colwidth"));
     dom.querySelectorAll("span[data-type='inline-math']").forEach((span) => { span.textContent = `$${span.getAttribute("data-latex") ?? ""}$`; });
     return dom.outerHTML.replace(/\n/g, "&#10;");
   } catch {
@@ -234,6 +251,19 @@ function tableHtml(table: TableJson, schema: Schema) {
 // context. A bare MarkdownManager (the clipboard's, markdown-clipboard.ts) sets
 // none, and a merged table is then padded instead of written as HTML.
 let serializingSchema: Schema | null = null;
+
+/** TipTap's table view sets a column's width but never clears it, so a column
+ * that lost its width (an undo, a reload) kept showing the old one. */
+class LiberaTableView extends TableView {
+  update(node: ProseMirrorNode) {
+    if (!super.update(node)) return false;
+    const widths = tableColumnWidths(node);
+    Array.from(this.colgroup.children).forEach((col, index) => {
+      if (!widths[index]) (col as HTMLElement).style.removeProperty("width");
+    });
+    return true;
+  }
+}
 
 const LiberaTable = Table.extend({
   renderMarkdown(node, h) {
@@ -382,6 +412,8 @@ export type MarkdownExtensionOptions = {
   imageNodeView?: NodeViewRenderer;
   /** The front matter block's tooltip, in the interface language (lib.tiptapFrontMatter.frontMatterTitle). */
   frontMatterTitle?: string;
+  /** Columns can be resized by dragging their borders; the widths are kept in the front matter (tiptap-table-widths.ts). Not for slide decks, which have no front matter. */
+  resizableTables?: boolean;
 };
 
 export function createMarkdownExtensions(documentPath: string, options: MarkdownExtensionOptions = {}) {
@@ -432,7 +464,8 @@ export function createMarkdownExtensions(documentPath: string, options: Markdown
     // TipTap registers its tokenizers on the marked instance, so each editor gets its own;
     // the global one would grow by every tokenizer of every editor and slow every parse.
     LiberaMarkdown.configure({ marked: new Marked() as unknown as typeof marked }), LiberaHighlight, LiberaTextStyle, LiberaFontSize, LiberaLineHeight, Color,
-    TableKit.configure({ table: false }), LiberaTable, LiberaTaskList, TaskItem.configure({ nested: true }),
+    TableKit.configure({ table: false }), LiberaTable.configure({ resizable: options.resizableTables ?? false, View: LiberaTableView }),
+    ...(options.resizableTables ? [TiptapTableWidths] : []), LiberaTaskList, TaskItem.configure({ nested: true }),
     Image.extend({
       addNodeView() {
         if (options.imageNodeView) return options.imageNodeView;
