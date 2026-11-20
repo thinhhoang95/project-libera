@@ -79,6 +79,7 @@ import {
 import { computeLayout, entriesUnder, entryRecord, manifestEntryBytes, readManifest, splitManifestBatches } from "./layout";
 import { ManifestIntents, trackEntryWrites } from "./manifest-intents";
 import { FRESH_RETAIN_BYTES, MAX_UPLOAD_BYTES, SCAN_READ_BUDGET_BYTES, noteTruncatedWalk, quietWaitMs, readShared, scanReadState } from "./scan-reads";
+import { ScanFairness } from "./scan-fairness";
 import { PdfCommentService } from "./pdf-comments";
 import { AUDIO_EXTENSIONS, MARKDOWN_EXTENSIONS } from "../../../src/lib/storage/constants";
 import { pythonSidecarPath } from "../../../src/lib/python/sidecar";
@@ -87,6 +88,9 @@ import { PDF_LIVE_SETTING } from "../../../src/lib/collab/protocol/pdf";
 import { emptyState, isStaleCopy, isUncertainCopy, readBase, readMarker, readState, setMaterialized, writeBase, writeMarker, writeState, deleteBase, type LayoutRecord, type ProjectState } from "./state";
 import { diffText } from "./text-diff";
 import { chunkTextEdits } from "./text-edit-chunks";
+
+/** Scans a pairing of a missing file with a new one is held back for an uncertain absence before the usual restore-and-import applies. */
+const MAX_RENAME_DEFERRALS = 8;
 
 /** Where a notebook keeps its files' ink (INK_DIR in src/lib/storage/constants.ts). */
 const INK_DIRECTORY = "_ink";
@@ -369,6 +373,12 @@ export class SharedProject {
   private stateDirty = false;
   private saveFailures = 0;
   private readonly missingSince = new Map<string, number>();
+  /** Files a scan left out or failed to read, so the next scans serve them first; counted in scan passes (S49). */
+  private readonly scanFairness = new ScanFairness();
+  /** The disk spelling of a known name that another program changed (case, Unicode form), until it is seen at two scans in a row (S39). */
+  private readonly respellSeen = new Map<string, string>();
+  /** Scans a missing file's pairing with a new file was held back because its absence was uncertain (S41). */
+  private readonly renameDeferrals = new Map<string, number>();
   private readonly refusedLogged = new Set<string>();
   /** Blobs that could not be downloaded: failures so far and the earliest next try (finding 35). */
   private readonly blobFailures = new Map<string, { count: number; nextAt: number }>();
@@ -1124,6 +1134,7 @@ export class SharedProject {
    * the disk is left to the writer (its files arrive through the sync client).
    */
   private followManifest(): void {
+    const previousEntries = this.entries;
     this.entries = this.readEntries();
     const layout = computeLayout(this.entries.values());
     const previous = this.state.layout;
@@ -1133,7 +1144,14 @@ export class SharedProject {
       next[fileId] = entry.kind === "doc" ? { path: desired, kind: "doc", docId: entry.docId, docKind: entry.docKind } : { path: desired, kind: entry.kind };
     }
     for (const [fileId, record] of Object.entries(previous)) {
-      if (!next[fileId] || next[fileId].path !== record.path) this.retirePath(record.path, knownHashes(record));
+      if (!next[fileId] || next[fileId].path !== record.path) {
+        // A follower's record holds no hashes: the retired bytes are what the
+        // manifest said and what the shared text held, so that a later
+        // replacement is not taken for the removed file coming back (S44).
+        const runtime = record.docId ? this.docs.get(record.docId) : undefined;
+        const text = runtime && hubHasState(this.ctx.host, runtime.hub, "content") ? runtime.hub.getText("content") : null;
+        this.retirePath(record.path, retirementHashes(record, previousEntries.get(fileId), text));
+      }
       // Released, not tombstoned: only the server's document-deleted answer ends a document (finding 3).
       if (record.docId && next[fileId]?.docId !== record.docId) this.releaseDoc(record.docId);
     }
@@ -2321,6 +2339,12 @@ export class SharedProject {
     const fileKeys = new Map<string, WalkEntry>();
     for (const entry of files.values()) fileKeys.set(manifestPathKey(entry.relative), fileKeys.get(manifestPathKey(entry.relative)) ?? entry);
     const directoryKeys = new Set([...directories.values()].map((entry) => manifestPathKey(entry.relative)));
+    // How many spellings of a name the disk holds: with two (a case-sensitive
+    // volume) nothing says which one a manifest name became.
+    const fileVariants = new Map<string, number>();
+    for (const entry of files.values()) fileVariants.set(manifestPathKey(entry.relative), (fileVariants.get(manifestPathKey(entry.relative)) ?? 0) + 1);
+    const directoryByKey = new Map<string, WalkEntry[]>();
+    for (const entry of directories.values()) directoryByKey.set(manifestPathKey(entry.relative), [...(directoryByKey.get(manifestPathKey(entry.relative)) ?? []), entry]);
     const skipped = new Set(walked.skipped.map(manifestPathKey));
     // Compared as manifest keys: fs.watch can spell a name differently
     // (Unicode normalization, case) from the walk on the same volume.
@@ -2348,24 +2372,49 @@ export class SharedProject {
     let quietDeferMs = Infinity;
     /** Bytes still to read this scan, tracked files and new ones alike. */
     let readBudget = SCAN_READ_BUDGET_BYTES;
+    const fair = this.scanFairness;
+    fair.beginPass();
+    /** Known names another program spelled differently on disk (case, Unicode form): they take the disk's spelling and keep their ID (S39). */
+    const respelled: Array<{ fileId: string; record: LayoutRecord; to: string }> = [];
+    const noteRespelling = (fileId: string, record: LayoutRecord, variants: WalkEntry[] | undefined) => {
+      const to = variants?.length === 1 ? variants[0].relative : null;
+      if (!to || to === record.path || !isShareablePath(to)) {
+        this.respellSeen.delete(fileId);
+        return;
+      }
+      // A rename in progress, or the volume's own spelling of a name Libera just wrote, settles by the next scan (the usual cadence; no timer of its own).
+      if (this.respellSeen.get(fileId) !== to) {
+        this.respellSeen.set(fileId, to);
+        return;
+      }
+      respelled.push({ fileId, record, to });
+    };
 
-    for (const [fileId, record] of Object.entries(this.state.layout)) {
+    for (const [fileId, record] of fair.order(Object.entries(this.state.layout), ([id]) => id)) {
       const recordKey = manifestPathKey(record.path);
       if ([...skipped].some((item) => recordKey === item || recordKey.startsWith(`${item}/`))) {
         this.missingSince.delete(fileId);
         continue;
       }
       if (record.kind === "folder") {
-        if (directoryKeys.has(recordKey)) this.missingSince.delete(fileId);
-        else missing.push(fileId);
+        if (directoryKeys.has(recordKey)) {
+          this.missingSince.delete(fileId);
+          this.renameDeferrals.delete(fileId);
+          if (directories.has(record.path)) this.respellSeen.delete(fileId);
+          else noteRespelling(fileId, record, directoryByKey.get(recordKey));
+        } else missing.push(fileId);
         continue;
       }
-      const seen = files.get(record.path) ?? fileKeys.get(recordKey);
+      const exact = files.get(record.path);
+      const seen = exact ?? fileKeys.get(recordKey);
       if (!seen) {
         if (record.hash && !this.baselineMissing.has(fileId)) missing.push(fileId);
         continue;
       }
       this.missingSince.delete(fileId);
+      this.renameDeferrals.delete(fileId);
+      if (exact) this.respellSeen.delete(fileId);
+      else noteRespelling(fileId, record, fileVariants.get(recordKey) === 1 ? [seen] : undefined);
       // Finder is replacing this file: its bytes are not the new version yet.
       if (isFinderCopy(seen)) continue;
       // Stat equality is an optimization, never permanent proof of equality:
@@ -2397,8 +2446,12 @@ export class SharedProject {
         }
         continue;
       }
-      // One scan reads a bounded amount in all; the rest waits for the next.
+      // A path whose read failed sits out some scans, so it cannot take the budget at every one.
+      if (fair.skipped(fileId)) continue;
+      // One scan reads a bounded amount in all; the rest waits for the next
+      // and goes first there.
       if (seen.size > readBudget) {
+        fair.leftOut(fileId);
         needsRetry = true;
         continue;
       }
@@ -2407,9 +2460,11 @@ export class SharedProject {
       const absolute = await resolveInside(this.info.root, seen.relative).catch(() => null);
       const read = absolute ? await readShared(absolute, HYDRATION_WAIT_MS, seen, this) : null;
       if (read === SLOW_READ) {
+        fair.failed(fileId);
         needsRetry = true;
         continue;
       }
+      fair.served(fileId);
       let bytes: Uint8Array | null = read;
       if (!bytes || !absolute) continue;
       // Pending until what it found is handled; see settleVerification.
@@ -2529,6 +2584,29 @@ export class SharedProject {
     // Other roles cannot change the manifest; their local changes stay local.
     if (!this.canEdit) return;
 
+    // A known name another program spelled differently (case, Unicode form)
+    // is a rename to the spelling on disk: the ID stays, and the manifest,
+    // the tree and Check Notebook's exact-name rule agree (S39). Same name
+    // key, so nothing is retired.
+    for (const { fileId, record, to } of respelled) {
+      const from = record.path;
+      const folder = record.kind === "folder";
+      this.respellSeen.delete(fileId);
+      touched.add(from).add(to);
+      operations.push((map, doc) => {
+        const current = readManifest(doc).get(fileId);
+        if (!current || current.path !== from || !this.pathFree(doc, to, fileId, folder)) return;
+        map.set(fileId, entryRecord({ ...current, path: to, updatedAt: now }));
+        if (!folder) {
+          for (const ink of this.inkCompanionMoves(doc, from, to, false, now)) map.set(ink.fileId, entryRecord(ink));
+          for (const transcript of this.transcriptCompanionMoves(doc, from, to, now)) map.set(transcript.fileId, entryRecord(transcript));
+          for (const python of this.pythonCompanionMoves(doc, from, to, now)) map.set(python.fileId, entryRecord(python));
+        }
+        record.path = to;
+        if (record.docId) this.ctx.host.store.upsertDoc({ docId: record.docId, projectId: this.info.projectId, fileId, path: to, materializedHash: record.hash ?? null });
+      });
+    }
+
     // New files and folders the layout does not know.
     const fresh: Array<{ entry: WalkEntry; bytes: Uint8Array | null; hash: string; quiet: boolean }> = [];
     /** Bytes of new files held in memory (readBudget is shared with the tracked files above). */
@@ -2539,7 +2617,15 @@ export class SharedProject {
       const record = this.state.layout[fileId];
       if (record && record.kind !== "folder" && record.hash) missingSizes.add(record.size);
     }
-    for (const [relative, entry] of files) {
+    /** Document kinds of new files that have not settled: a missing document of such a kind may be their rename (S40). */
+    const arriving = new Set<string | null>();
+    /** Folders (as manifest keys) holding such files: no folder entry is made for them yet, and a missing folder waits (S43). */
+    const unsettledDirectories = new Set<string>();
+    const noteUnsettled = (relative: string) => {
+      arriving.add(docKindForPath(relative));
+      for (let at = relative.lastIndexOf("/"); at > 0; at = relative.lastIndexOf("/", at - 1)) unsettledDirectories.add(manifestPathKey(relative.slice(0, at)));
+    };
+    for (const [relative, entry] of fair.order([...files], ([name]) => `path:${name}`)) {
       if (known.has(manifestPathKey(relative))) continue;
       // An external LaTeX build's products would be uploaded again at every compile.
       if (isGeneratedPath(relative)) continue;
@@ -2549,7 +2635,10 @@ export class SharedProject {
       // from a delayed copy of a deleted identity. Explicit file operations
       // remain available; leave unexplained disk bytes untouched.
       // Judge a file only once it has arrived; the poll comes back to it.
-      if (mayStillBeCopying(entry, now)) continue;
+      if (mayStillBeCopying(entry, now)) {
+        noteUnsettled(relative);
+        continue;
+      }
       // And once no program has changed it for a while: a copy can pause
       // with some of its bytes in place.
       const stillChanging = quietWaitMs(entry, now, this.ctx.timings.importQuietMs);
@@ -2559,6 +2648,7 @@ export class SharedProject {
       const renameCandidate = stillChanging > 0 && missingSizes.has(entry.size);
       if (stillChanging > 0 && !renameCandidate) {
         quietDeferMs = Math.min(quietDeferMs, stillChanging);
+        noteUnsettled(relative);
         continue;
       }
       // Reading an online-only file downloads it: decide from the stat first.
@@ -2575,17 +2665,22 @@ export class SharedProject {
       if (this.state.externalAdoptionRequired
         && !missingSizes.has(entry.size) && !missingSizes.has(undefined)
         && !this.retired.has(manifestPathKey(relative)) && !this.conflictCopyOf(relative, "")) continue;
-      // One scan hydrates a bounded amount; the rest waits for the next.
+      const freshKey = `path:${relative}`;
+      if (fair.skipped(freshKey)) continue;
+      // One scan hydrates a bounded amount; the rest waits for the next and goes first there.
       if (entry.size > readBudget) {
+        fair.leftOut(freshKey);
         needsRetry = true;
         continue;
       }
       const absolute = await resolveInside(this.info.root, relative).catch(() => null);
       const read = absolute ? await readShared(absolute, HYDRATION_WAIT_MS, entry, this) : null;
       if (read === SLOW_READ) {
+        fair.failed(freshKey);
         needsRetry = true;
         continue;
       }
+      fair.served(freshKey);
       let bytes: Uint8Array | null = read;
       if (!bytes) continue;
       readBudget -= entry.size;
@@ -2604,7 +2699,7 @@ export class SharedProject {
         const canCommit = guard.canCommit;
         guard.canCommit = async () => await canCommit() && this.pathFree(this.manifestDoc(), relative);
         await this.archive(relative, guard);
-        this.reportArchived(relative, conflictOf ? "conflict-copy" : "removed");
+        this.reportArchived(relative, conflictOf ? "conflict-copy" : "removed", lateCopy && this.retirementEvidence(relative) === "unknown");
         touched.add(relative);
         continue;
       }
@@ -2618,23 +2713,28 @@ export class SharedProject {
     // nothing else could explain the new file: a delayed original or an
     // intentional byte-identical copy looks the same. Anything ambiguous is
     // imported as a new entry instead (the missing one is restored as usual).
-    for (const fileId of [...missing]) {
-      const record = this.state.layout[fileId];
-      if (record.kind === "folder" || !record.hash) continue;
-      const candidates = fresh.filter((candidate) => candidate.hash === record.hash);
-      if (candidates.length !== 1 || !compatibleKind(record, candidates[0].entry.relative)) continue;
-      const sameBytes = Object.entries(this.state.layout).filter(([otherId, other]) => otherId !== fileId && other.kind !== "folder" && other.hash === record.hash);
-      if (sameBytes.length > 0 || [...missing].some((otherId) => otherId !== fileId && this.state.layout[otherId]?.hash === record.hash)) continue;
-      // The original must still be absent now, not only when the walk began.
-      const original = await resolveInside(this.info.root, record.path).catch(() => null);
-      if (original && (await statIfExists(original))) continue;
-      const index = fresh.indexOf(candidates[0]);
-      const [match] = fresh.splice(index, 1);
-      missing.splice(missing.indexOf(fileId), 1);
-      this.missingSince.delete(fileId);
-      const entry = this.entries.get(fileId);
-      if (!this.canEdit || !entry) continue;
-      touched.add(record.path).add(match.entry.relative);
+    /** Renames this pass pairs, for a folder that moved with its files. */
+    const paired: Array<{ fileId: string; from: string; to: string }> = [];
+    /** Missing entries whose pairing waits for a clearer absence: neither restored nor paired this pass (S41). */
+    const held = new Set<string>();
+    /** Reconciliations opened for a rename that was also edited; announced once the manifest is written. */
+    const openedReconciliations: Reconciliation[] = [];
+    const holdPairing = (fileId: string, candidate: (typeof fresh)[number]): void => {
+      const count = (this.renameDeferrals.get(fileId) ?? 0) + 1;
+      // Held for a few scans (the usual cadence, no timer); if the absence never clears, the old path is restored and the new file imported (nothing is lost).
+      if (count > MAX_RENAME_DEFERRALS) {
+        this.renameDeferrals.delete(fileId);
+        return;
+      }
+      this.renameDeferrals.set(fileId, count);
+      held.add(fileId);
+      fresh.splice(fresh.indexOf(candidate), 1);
+    };
+    /** The manifest rename of one file (S42: its companions move as in an explicit rename). */
+    const planRename = (fileId: string, entry: ManifestEntry, record: LayoutRecord, match: (typeof fresh)[number], reconciliation?: Reconciliation) => {
+      const from = record.path;
+      paired.push({ fileId, from, to: match.entry.relative });
+      touched.add(from).add(match.entry.relative);
       operations.push((map, doc) => {
         const current = readManifest(doc).get(fileId);
         if (!current || current.kind !== entry.kind || current.docId !== entry.docId || current.path !== entry.path) {
@@ -2646,26 +2746,185 @@ export class SharedProject {
         if (!this.pathFree(doc, match.entry.relative, fileId)) return;
         map.set(fileId, entryRecord({ ...current, path: match.entry.relative, updatedAt: now }));
         // Its ink moves with it; the disk follows the manifest, as for any rename.
-        for (const ink of this.inkCompanionMoves(doc, record.path, match.entry.relative, false, now)) map.set(ink.fileId, entryRecord(ink));
-        // A recording's transcript follows it, as in an explicit rename.
-        for (const transcript of this.transcriptCompanionMoves(doc, record.path, match.entry.relative, now)) {
+        for (const ink of this.inkCompanionMoves(doc, from, match.entry.relative, false, now)) map.set(ink.fileId, entryRecord(ink));
+        // A recording's transcript and a note's Python code follow it, as in an explicit rename.
+        for (const transcript of this.transcriptCompanionMoves(doc, from, match.entry.relative, now)) {
           map.set(transcript.fileId, entryRecord(transcript));
           touched.add(transcript.path);
         }
-        this.retirePath(record.path, knownHashes(record));
+        for (const python of this.pythonCompanionMoves(doc, from, match.entry.relative, now)) {
+          map.set(python.fileId, entryRecord(python));
+          touched.add(python.path);
+        }
+        this.retirePath(from, knownHashes(record));
         Object.assign(record, { path: match.entry.relative, size: match.entry.size, mtimeMs: match.entry.mtimeMs });
+        if (reconciliation) {
+          this.state.reconciliations = [...this.state.reconciliations.filter((item) => item.docId !== reconciliation.docId), reconciliation];
+          openedReconciliations.push(reconciliation);
+        }
         if (record.docId) this.ctx.host.store.upsertDoc({ docId: record.docId, projectId: this.info.projectId, fileId, path: record.path, materializedHash: record.hash ?? null });
       });
+    };
+    /** Whether a move to `to` keeps what an explicit rename keeps (type, ink, transcript, Python code); otherwise it is not a rename (S42). */
+    const keepsRecords = (entry: ManifestEntry | undefined, from: string, to: string): boolean => {
+      if (!entry) return false;
+      try {
+        this.assertRenameKeepsRecords(entry, from, to);
+        return true;
+      } catch (error) {
+        if (!(error instanceof ControlError)) throw error;
+        this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: ${to} is not taken for ${from} renamed. ${error.message} ${from} was put back and ${to} is kept as a separate file.`);
+        return false;
+      }
+    };
+    for (const fileId of [...missing]) {
+      const record = this.state.layout[fileId];
+      if (record.kind === "folder" || !record.hash) continue;
+      const candidates = fresh.filter((candidate) => candidate.hash === record.hash);
+      if (candidates.length !== 1 || !compatibleKind(record, candidates[0].entry.relative)) continue;
+      const sameBytes = Object.entries(this.state.layout).filter(([otherId, other]) => otherId !== fileId && other.kind !== "folder" && other.hash === record.hash);
+      if (sameBytes.length > 0 || [...missing].some((otherId) => otherId !== fileId && this.state.layout[otherId]?.hash === record.hash)) continue;
+      // The original must still be absent now, not only when the walk began.
+      const absence = await this.sourceAbsence(record);
+      if (absence === "present") continue;
+      // A placeholder that is not the missing file's own stat, or a disk that will not say: do not hand over the identity yet.
+      const placeholder = candidates[0].entry.dataless === true && (record.size !== candidates[0].entry.size || record.mtimeMs !== candidates[0].entry.mtimeMs);
+      if (absence === "uncertain" || placeholder) {
+        holdPairing(fileId, candidates[0]);
+        continue;
+      }
+      const entry = this.entries.get(fileId);
+      if (!keepsRecords(entry, record.path, candidates[0].entry.relative)) continue;
+      const index = fresh.indexOf(candidates[0]);
+      const [match] = fresh.splice(index, 1);
+      missing.splice(missing.indexOf(fileId), 1);
+      this.missingSince.delete(fileId);
+      this.renameDeferrals.delete(fileId);
+      if (!this.canEdit || !entry) continue;
+      planRename(fileId, entry, record, match);
+    }
+
+    // A rename and an edit before the scan (S40): the bytes match nothing, but
+    // one missing document and one new text file of its type are plainly the
+    // same note. The document keeps its ID and moves to the new name; its
+    // shared text and the edited disk text wait for the user as a
+    // reconciliation, so neither input is lost or guessed. Uses the bytes
+    // this scan already read.
+    for (const fileId of [...missing]) {
+      if (held.has(fileId) || !this.canEdit) continue;
+      const record = this.state.layout[fileId];
+      if (record.kind !== "doc" || !record.docId || !record.hash) continue;
+      const runtime = this.docs.get(record.docId);
+      if (!runtime || this.reconciliationFor(record.docId) || !hubHasState(this.ctx.host, runtime.hub, "content")) continue;
+      const kind = docKindForPath(record.path);
+      if ([...missing].some((otherId) => otherId !== fileId && this.state.layout[otherId]?.kind === "doc" && docKindForPath(this.state.layout[otherId].path) === kind)) continue;
+      const trackedHashes = new Set(Object.values(this.state.layout).map((other) => other.hash));
+      const edited = fresh.filter((candidate) => candidate.bytes && !trackedHashes.has(candidate.hash) && docKindForPath(candidate.entry.relative) === kind && compatibleKind(record, candidate.entry.relative));
+      if (edited.length !== 1) continue;
+      const diskText = decodeText(edited[0].bytes as Uint8Array);
+      const sharedText = runtime.hub.getText("content");
+      if (diskText === null || !similarText(sharedText, diskText)) continue;
+      if ((await this.sourceAbsence(record)) !== "absent") continue;
+      const entry = this.entries.get(fileId);
+      if (!keepsRecords(entry, record.path, edited[0].entry.relative)) continue;
+      const [match] = fresh.splice(fresh.indexOf(edited[0]), 1);
+      missing.splice(missing.indexOf(fileId), 1);
+      this.missingSince.delete(fileId);
+      this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: ${record.path} looks renamed to ${match.entry.relative} and edited outside Libera; both versions are kept until you choose in the reconcile view.`);
+      planRename(fileId, entry as ManifestEntry, record, match, {
+        id: randomId("rec"),
+        docId: record.docId,
+        path: this.liberaPath(match.entry.relative),
+        shared: sharedText,
+        disk: diskText,
+        base: (await readBase(this.info.root, record.docId)) ?? "",
+        detectedAt: now,
+      });
+    }
+
+    // A folder moved with its files (S43): when every file below a missing
+    // folder entry was paired to the same names under one new folder, the
+    // folder entry moves too and keeps its ID, instead of a second folder
+    // identity appearing next to a restored copy of the old one. Works from
+    // this pass's pairs; no second walk.
+    for (const fileId of [...missing]) {
+      const record = this.state.layout[fileId];
+      if (record.kind !== "folder" || !this.canEdit) continue;
+      const from = record.path;
+      const depth = from.split("/").length;
+      const below = (relative: string) => manifestPathKey(relative).startsWith(`${manifestPathKey(from)}/`);
+      const inside = Object.entries(this.state.layout).filter(([otherId, other]) => otherId !== fileId && other.kind !== "folder" && below(other.path));
+      const moves = paired.filter((move) => below(move.from));
+      if (inside.length === 0 || moves.length !== inside.length) continue;
+      let destination: string | null = null;
+      for (const move of moves) {
+        const rest = move.from.split("/").slice(depth);
+        const target = move.to.split("/");
+        const where = target.length > rest.length ? target.slice(0, target.length - rest.length).join("/") : "";
+        if (!where || manifestPathKey(target.slice(target.length - rest.length).join("/")) !== manifestPathKey(rest.join("/")) || (destination !== null && destination !== where)) {
+          destination = null;
+          break;
+        }
+        destination = where;
+      }
+      if (!destination || !directories.has(destination) || known.has(manifestPathKey(destination))) continue;
+      const target = destination;
+      const moved: Array<{ id: string; record: LayoutRecord; to: string }> = [{ id: fileId, record, to: target }];
+      for (const [otherId, other] of Object.entries(this.state.layout)) {
+        if (otherId === fileId || other.kind !== "folder" || !below(other.path) || !missing.includes(otherId)) continue;
+        const to = [target, ...other.path.split("/").slice(depth)].join("/");
+        if (directories.has(to)) moved.push({ id: otherId, record: other, to });
+      }
+      for (const item of moved) {
+        missing.splice(missing.indexOf(item.id), 1);
+        this.missingSince.delete(item.id);
+        known.add(manifestPathKey(item.to));
+        touched.add(item.record.path).add(item.to);
+      }
+      operations.push((map, doc) => {
+        const current = readManifest(doc).get(fileId);
+        if (!current || current.kind !== "folder" || current.path !== from || !this.pathFree(doc, target, fileId, true)) return;
+        for (const item of moved) {
+          const entry = readManifest(doc).get(item.id);
+          if (!entry || entry.kind !== "folder") continue;
+          map.set(item.id, entryRecord({ ...entry, path: item.to, updatedAt: now }));
+          item.record.path = item.to;
+        }
+        for (const ink of this.inkCompanionMoves(doc, from, target, true, now)) map.set(ink.fileId, entryRecord(ink));
+        this.retirePath(from);
+      });
+    }
+
+    // A new file of a missing document's kind is still arriving or changing
+    // (a rename followed by an edit): the document is neither restored nor
+    // paired yet, so the next scans can pair it once the file is quiet. Held
+    // for a bounded number of scans.
+    for (const fileId of missing) {
+      const record = this.state.layout[fileId];
+      const waiting = record.kind === "folder" ? unsettledDirectories.size > 0 : record.kind === "doc" && Boolean(record.hash) && arriving.has(docKindForPath(record.path));
+      if (held.has(fileId) || !this.canEdit || !waiting) continue;
+      const count = (this.renameDeferrals.get(fileId) ?? 0) + 1;
+      if (count > MAX_RENAME_DEFERRALS) {
+        this.renameDeferrals.delete(fileId);
+        continue;
+      }
+      this.renameDeferrals.set(fileId, count);
+      held.add(fileId);
     }
 
     // Absence has no causality: a provider can deliver a deletion days after
     // a restore. Only explicit host delete operations remove shared entries.
     // Retain the manifest and recover the working copy on the next pass.
     for (const fileId of missing) {
+      if (held.has(fileId)) continue;
       this.baselineMissing.add(fileId);
       this.missingSince.delete(fileId);
+      // Nothing in the folder says whether it was moved out of the notebook
+      // (then what left is now a copy) or lost; the shared one comes back.
+      const restored = this.state.layout[fileId];
+      if (restored) this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: ${restored.path} is no longer in the folder, so the shared ${restored.kind === "folder" ? "folder" : "copy"} is put back. A file moved out of a shared notebook stays shared here, and the moved one is only a copy. Delete it in Libera to remove it for everyone.`);
     }
-    if (missing.length > 0) this.scheduleManifest(0);
+    if (missing.some((fileId) => !held.has(fileId))) this.scheduleManifest(0);
     if (this.canEdit) {
       for (const candidate of fresh) {
         if (this.state.externalAdoptionRequired) continue;
@@ -2715,7 +2974,7 @@ export class SharedProject {
       }
       for (const [relative, entry] of directories) {
         if (this.info.album) break;
-        if (known.has(manifestPathKey(relative)) || this.pathRetired(relative) || this.state.externalAdoptionRequired || isGeneratedPath(`${relative}/x`)) continue;
+        if (known.has(manifestPathKey(relative)) || unsettledDirectories.has(manifestPathKey(relative)) || this.pathRetired(relative) || this.state.externalAdoptionRequired || isGeneratedPath(`${relative}/x`)) continue;
         const fileId = randomId("fil");
         const created: ManifestEntry = { fileId, path: relative, kind: "folder", createdBy: accountId, createdAt: now, updatedAt: now };
         operations.push((map, doc) => {
@@ -2737,6 +2996,8 @@ export class SharedProject {
         for (const operation of operations) operation(map, doc);
       }, EXTERNAL);
       if (addedPhotos.length > 0) this.reportAddedPhotos(addedPhotos);
+      for (const reconciliation of openedReconciliations) this.ctx.emit({ t: "reconcile-needed", reconciliation });
+      if (openedReconciliations.length > 0) this.ctx.emit({ t: "project-changed", projectId: this.info.projectId });
       for (const [fileId, record] of Object.entries(this.state.layout)) {
         if (record.kind === "doc" && record.docId && !this.docs.has(record.docId)) this.ensureDoc(record.docId, fileId);
       }
@@ -2747,8 +3008,19 @@ export class SharedProject {
       this.treeChanged(previous, this.state.layout);
       this.filesChanged([...touched]);
     }
+    fair.keepOnly(new Set([...Object.keys(this.state.layout), ...[...files.keys()].map((name) => `path:${name}`)]));
     if (quietDeferMs !== Infinity) this.scheduleScan(Math.ceil(quietDeferMs) + 50);
     if (needsRetry) this.scheduleRetry();
+  }
+
+  /** Whether a missing entry's old path is really gone: the disk may also fail to say (S41). */
+  private async sourceAbsence(record: LayoutRecord): Promise<"absent" | "present" | "uncertain"> {
+    try {
+      const original = await resolveInside(this.info.root, record.path);
+      return (await statIfExists(original)) ? "present" : "absent";
+    } catch {
+      return "uncertain";
+    }
   }
 
   private retirePath(relative: string, hashes: string[] = []): void {
@@ -2776,10 +3048,18 @@ export class SharedProject {
     return hashes.size === 0 && !this.info.album;
   }
 
-  private reportArchived(relative: string, reason: "removed" | "conflict-copy" = "removed"): void {
+  /** What is known about a retired path's old bytes: nothing retired, known versions, or no history at all (S44). */
+  private retirementEvidence(relative: string): "none" | "hashes" | "unknown" {
+    const hashes = this.retired.get(manifestPathKey(relative));
+    return hashes === undefined ? "none" : hashes.size === 0 ? "unknown" : "hashes";
+  }
+
+  private reportArchived(relative: string, reason: "removed" | "conflict-copy" = "removed", unknownHistory = false): void {
     this.ctx.logger.warn(reason === "conflict-copy"
       ? `Shared notebook ${this.info.notebook}: ${relative} looks like a sync conflict copy of a shared file, so it was set aside instead of shared.`
-      : `Shared notebook ${this.info.notebook}: ${relative} matches a file removed from this notebook, so it was not shared again.`);
+      : unknownHistory
+        ? `Shared notebook ${this.info.notebook}: ${relative} is at the name of a removed file and this computer does not know what that file held, so it was set aside in _archive instead of shared. To keep it, restore it from _archive or add it again under another name.`
+        : `Shared notebook ${this.info.notebook}: ${relative} matches a file removed from this notebook, so it was not shared again.`);
     if (!this.info.album) this.ctx.emit({ t: "file-archived", projectId: this.info.projectId, notebook: this.info.notebook, path: this.liberaPath(relative), reason });
   }
 
@@ -3609,10 +3889,26 @@ function spreadFraction(fileId: string): number {
 }
 
 function compatibleKind(record: LayoutRecord, relative: string): boolean {
+  const wanted = docKindForPath(relative);
   // A document renamed to a name that is not text any more ("a.md" → "a.png")
-  // is a new file, not the same document.
-  if (record.kind === "doc") return classifyFile(relative, new Uint8Array(0)).kind === "doc";
-  return true;
+  // is a new file, not the same document, and not one of another document kind.
+  if (record.kind === "doc") return classifyFile(relative, new Uint8Array(0)).kind === "doc" && wanted === (record.docKind ?? null);
+  // A binary does not become a document kind (assertRenameKeepsRecords).
+  return wanted === null || wanted === docKindForPath(record.path);
+}
+
+/** The bytes a retired entry is known to have held: its record, its manifest entry, and the shared text it had. */
+export function retirementHashes(record: LayoutRecord, entry: ManifestEntry | undefined, sharedText: string | null): string[] {
+  const hashes = knownHashes(record, entry);
+  if (sharedText !== null) hashes.push(sha256(encodeText(sharedText)));
+  return [...new Set(hashes)];
+}
+
+/** Whether two texts are mostly the same: about half or less of the longer one differs (a note edited after a rename). */
+function similarText(before: string, after: string): boolean {
+  if (before.length < 16 || after.length < 16 || before.length > 1_000_000 || after.length > 1_000_000) return false;
+  const changed = diffText(before, after).reduce((sum, edit) => sum + edit.end - edit.start + edit.text.length, 0);
+  return changed <= Math.max(before.length, after.length) / 2;
 }
 
 function normalizeRelative(input: string): string {

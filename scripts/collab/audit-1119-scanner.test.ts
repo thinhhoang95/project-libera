@@ -119,7 +119,8 @@ test("findings 12, 19, 22, 28 and 34 through the host", { timeout: 180_000 }, as
     await pause(1500);
     await project.whenIdle();
     const photo = manifestPaths(peer, projectId).filter((name) => name.toLowerCase() === "photo.bin");
-    assert.deepEqual(photo, ["Photo.bin"], "the manifest keeps its spelling and gains no second entry");
+    // Since the 2026-11-20 review (S39) the manifest takes the spelling on disk, so the host, the tree and Check Notebook agree.
+    assert.deepEqual(photo, ["photo.bin"], "the manifest takes the disk's spelling and gains no second entry");
 
     // 12: unknown bytes with an old mtime at a retired notebook path are a new file.
     await peer.service.fileOp(projectId, { op: "delete", path: "gone.md" });
