@@ -191,21 +191,7 @@ async function copyReferences(sourceNotebook: string, destinationNotebook: strin
   const sourceByKey = libraryEntriesByKey(source);
   if (![...keys].some((key) => entryForKey(sourceByKey, key))) return;
 
-  let plan: ReferenceCopyPlan | null = null;
-  for (let attempt = 1; !plan; attempt += 1) {
-    const destination = await readReferenceLibrary(destinationNotebook);
-    const candidate = planReferenceCopy(source, destination, keys);
-    if (!candidate.ops.length) { plan = candidate; break; }
-    try {
-      result.destinationRevision = (await updateReferenceLibrary(destinationNotebook, destination.revision, candidate.ops)).revision;
-      plan = candidate;
-    } catch (error) {
-      // Another writer changed the destination meanwhile: plan again against its new state.
-      if (!(error instanceof ReferenceRevisionConflict) || attempt >= LIBRARY_ATTEMPTS) throw error;
-    }
-  }
-  result.copied = plan.copied;
-  result.reused = plan.reused;
+  const plan = await storeReferencePlan(source, destinationNotebook, keys, result);
 
   const renamed = new Map<string, { from: string; to: string; files: string[] }>();
   const rewrites: PlannedCitationRewrite[] = [];
@@ -227,6 +213,51 @@ async function copyReferences(sourceNotebook: string, destinationNotebook: strin
   if (!rewrites.length) return;
   await options.onPlan?.(result, rewrites);
   await applyCitationRewrites(rewrites);
+}
+
+/** Copies the entries behind the cited keys into the destination library (planned again when another writer changes it) and fills the result. */
+async function storeReferencePlan(source: ReferenceLibrary, destinationNotebook: string, keys: Set<string>, result: ReferenceMoveResult) {
+  let plan: ReferenceCopyPlan | null = null;
+  for (let attempt = 1; !plan; attempt += 1) {
+    const destination = await readReferenceLibrary(destinationNotebook);
+    const candidate = planReferenceCopy(source, destination, keys);
+    if (!candidate.ops.length) { plan = candidate; break; }
+    try {
+      result.destinationRevision = (await updateReferenceLibrary(destinationNotebook, destination.revision, candidate.ops)).revision;
+      plan = candidate;
+    } catch (error) {
+      // Another writer changed the destination meanwhile: plan again against its new state.
+      if (!(error instanceof ReferenceRevisionConflict) || attempt >= LIBRARY_ATTEMPTS) throw error;
+    }
+  }
+  result.copied = plan.copied;
+  result.reused = plan.reused;
+  return plan;
+}
+
+/**
+ * A note copied into another notebook, mapped before the copy exists (a shared
+ * notebook's document is created from this text): the cited references the
+ * destination library lacks are copied there, and the citations that must change
+ * are rewritten in the returned text. The same plan as a moved file's. Throws
+ * when the destination library cannot be written, so the caller can stop before
+ * it creates anything.
+ */
+export async function mapReferencesForCopyText(sourceNotebook: string, destinationNotebook: string, text: string): Promise<{ text: string; references: ReferenceMoveResult; map: Map<string, string> }> {
+  const result = emptyReferenceMoveResult();
+  const none = { text, references: result, map: new Map<string, string>() };
+  if (sourceNotebook === destinationNotebook) return none;
+  const keys = new Set(citedKeys(text, { allNarrative: true }));
+  if (!keys.size) return none;
+  const source = await readReferenceLibrary(sourceNotebook);
+  if (![...keys].some((key) => entryForKey(libraryEntriesByKey(source), key))) return none;
+  const plan = await storeReferencePlan(source, destinationNotebook, keys, result);
+  const map = new Map([...plan.keyMap].filter(([from]) => keys.has(from)));
+  if (!map.size) return { ...none, references: result };
+  const next = rewriteCitationKeys(text, map);
+  if (!next.count) return { ...none, references: result };
+  result.renamed = [...map].map(([from, to]) => ({ from, to, files: [] }));
+  return { text: next.text, references: result, map };
 }
 
 /**

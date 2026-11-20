@@ -345,7 +345,7 @@ async function writeSharedTetherFile(absolute: string, liberaPath: string, text:
       } else {
         // Shared as bytes: the host replaces them whole (last save wins), so check the copy the merge read first.
         if ((await readDiskTetherFile(absolute))?.text !== expectedText) throw new TetherError(`${name} changed before it could be saved.`, 409, true);
-        await saveSharedFileText(liberaPath, text);
+        await saveSharedFileText(liberaPath, text, { expectedText });
       }
     }
   } catch (error) {

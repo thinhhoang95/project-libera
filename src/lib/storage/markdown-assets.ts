@@ -35,7 +35,7 @@ import { libraryNotebookNames } from "@/lib/storage/library-links";
 
 export { markdownImageSources } from "@/lib/markdown-image-sources";
 
-function markdownAssetSourceTarget(documentPath: string, source: string) {
+export function markdownAssetSourceTarget(documentPath: string, source: string) {
   if (source.startsWith("/api/markdown-assets/raw")) {
     const url = new URL(source, "http://libera.local");
     return {
