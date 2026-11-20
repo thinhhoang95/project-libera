@@ -22,8 +22,8 @@ import path from "node:path";
 export type ReservationKind = "share" | "local";
 
 /** How long a holder's record counts without being renewed. Holders renew well inside it. */
-export const RESERVATION_LEASE_MS = 60_000;
-const RENEW_EVERY_MS = 15_000;
+export const RESERVATION_LEASE_MS = 120_000;
+const RENEW_EVERY_MS = 40_000;
 
 interface Held {
   version: 1;
@@ -147,14 +147,22 @@ export function reserveLifecycle(directory: string | undefined, roots: string[],
     releaseAll();
     throw error;
   }
-  const timer = setInterval(() => {
-    for (const item of held) {
-      if (!parse(item.file)) continue;
-      item.record.renewedAt = Date.now();
-      try { write(item.file, item.record); } catch { /* The next revalidation notices a lost record. */ }
-    }
-  }, RENEW_EVERY_MS);
-  timer.unref?.();
+  // Self-rescheduling, unref'd, and gone with release(): it exists only while something holds the reservation.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let released = false;
+  const renewLater = () => {
+    timer = setTimeout(() => {
+      if (released) return;
+      for (const item of held) {
+        if (!parse(item.file)) continue;
+        item.record.renewedAt = Date.now();
+        try { write(item.file, item.record); } catch { /* The next revalidation notices a lost record. */ }
+      }
+      renewLater();
+    }, RENEW_EVERY_MS);
+    timer.unref?.();
+  };
+  renewLater();
   return {
     kind,
     revalidate() {
@@ -164,12 +172,13 @@ export function reserveLifecycle(directory: string | undefined, roots: string[],
         if (Date.now() - saved.renewedAt >= RESERVATION_LEASE_MS) throw new ReservationLostError();
         const rival = liveHolders(directory, item.root).find((candidate) => candidate.token !== item.record.token && conflicts(kind, candidate.kind) && olderThan(candidate, item.record));
         if (rival) throw new ReservationLostError();
-        item.record.renewedAt = Date.now();
-        write(item.file, item.record);
+        // An identical renewal is skipped: the timer renews, a commit only when the record has aged.
+        if (Date.now() - saved.renewedAt >= RENEW_EVERY_MS / 2) { item.record.renewedAt = Date.now(); write(item.file, item.record); }
       }
     },
     release() {
-      clearInterval(timer);
+      released = true;
+      clearTimeout(timer);
       releaseAll();
     },
   };
