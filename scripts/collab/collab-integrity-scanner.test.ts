@@ -27,6 +27,7 @@ function manifestEntries(peer: Peer, projectId: string) {
   try { return [...readManifest(hub.getDoc("manifest")).values()]; } finally { peer.host.release(manifestId); }
 }
 
+const sleepFor = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const entryAt = (peer: Peer, projectId: string, name: string) => manifestEntries(peer, projectId).find((entry) => entry.path === name);
 
 test("S49: files left out go first, and a failing path sits out a capped number of scans", () => {
@@ -145,6 +146,28 @@ test("S39 to S44 through the host: outside renames keep identities and hold what
     const v1 = ids("v1.bin");
     renameSync(path.join(root, "v1.bin"), path.join(root, "v2.bin"));
     await until(() => entryAt(peer!, projectId, "v2.bin")?.fileId === v1, "with a clear absence the same bytes are a rename");
+
+    // S39: an entry another device renamed only in Unicode form is not renamed back when this disk keeps the other form.
+    writeFileSync(path.join(root, "Nor\u1e3f.bin"), "normalization ping-pong\n");
+    await until(() => entryAt(peer!, projectId, "Nor\u1e3f.bin") !== undefined, "the file is shared");
+    const normId = ids("Nor\u1e3f.bin");
+    await project.whenIdle();
+    await sleepFor(500);
+    await peer.service.fileOp(projectId, { op: "rename", path: "Nor\u1e3f.bin", to: "Nor\u006d\u0301.bin" });
+    await until(() => entryAt(peer!, projectId, "Nor\u006d\u0301.bin")?.fileId === normId, "the shared name takes the other normalization form");
+    await project.whenIdle();
+    const normState = () => (project as unknown as { state: { remoteRespells?: Record<string, { path: string }> } }).state.remoteRespells?.[normId]?.path;
+    assert.equal(normState(), "Nor\u006d\u0301.bin", "the rename is remembered as remote");
+    // The local disk keeps (or goes back to) the form the manifest left.
+    const onDisk = existsSync(path.join(root, "Nor\u006d\u0301.bin")) ? "Nor\u006d\u0301.bin" : "Nor\u1e3f.bin";
+    if (onDisk !== "Nor\u1e3f.bin") renameSync(path.join(root, onDisk), path.join(root, "Nor\u1e3f.bin"));
+    await sleepFor(1500);
+    await project.whenIdle();
+    assert.equal(entryAt(peer, projectId, "Nor\u006d\u0301.bin")?.fileId, normId, "no rename back");
+    assert.equal(entryAt(peer, projectId, "Nor\u1e3f.bin"), undefined);
+    // A case change is user intent and still renames.
+    renameSync(path.join(root, "Nor\u1e3f.bin"), path.join(root, "nor\u1e3f.bin"));
+    await until(() => manifestEntries(peer!, projectId).some((entry) => entry.path === "nor\u1e3f.bin" && entry.fileId === normId), "a case change still renames");
 
     // S44: a path retired with no history is named as such.
     internals.retirePath("nowhere.bin", []);
