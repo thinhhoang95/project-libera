@@ -1312,7 +1312,8 @@ async function finalize(journal: Journal, states: ItemState[]) {
   });
 
   await run("attachments", async () => {
-    const { changed, failures } = await moveReferenceAttachmentsBatch(moves);
+    const { changed, failures, offline } = await moveReferenceAttachmentsBatch(moves);
+    if (offline.length) note(journal, `${offline.join(", ")} ${offline.length === 1 ? "is" : "are"} not connected, so reference attachments or a tethered .bib file there may still point at the old paths. Check Notebook finds them once ${offline.length === 1 ? "it is" : "they are"} connected.`);
     for (const failure of failures) note(journal,`Reference attachments in ${failure.notebook || "a library"} still point at the old paths: ${errorText(failure.error)}`);
     // Open References panels of the libraries that changed reload (one event per library, not per file).
     for (const notebook of changed) {

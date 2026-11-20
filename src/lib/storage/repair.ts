@@ -617,7 +617,8 @@ export async function applyNotebookRepair(name: string, token: string): Promise<
     });
     await step("Stars and tags", () => renameFileMetadataPaths(pairs));
     await step("Reference attachments", async () => {
-      const { changed, failures } = await moveReferenceAttachmentsBatch(pairs);
+      const { changed, failures, offline } = await moveReferenceAttachmentsBatch(pairs);
+      if (offline.length) problems.push(`${offline.join(", ")} ${offline.length === 1 ? "is" : "are"} not connected, so reference attachments or a tethered .bib file there may still point at the old paths.`);
       for (const failure of failures) problems.push(`Reference attachments in ${failure.notebook || "a library"} still point at the old paths.`);
       for (const library of changed) {
         try { publishReferenceEvent({ type: "library", notebook: library, revision: (await readReferenceLibrary(library)).revision }); }
