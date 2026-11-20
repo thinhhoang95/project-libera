@@ -100,12 +100,14 @@ interface ScanScratch {
   respellLogged: Set<string>;
   ownRespells: Set<string>;
   renameDeferrals: Map<string, number>;
+  /** The latest renames the scanner paired, for a folder whose files pair across scans (S43). */
+  recentMoves: Array<{ from: string; to: string }>;
 }
 const scanScratches = new WeakMap<object, ScanScratch>();
 function scanScratch(owner: object): ScanScratch {
   let scratch = scanScratches.get(owner);
   if (!scratch) {
-    scratch = { fairness: new ScanFairness(), respellSeen: new Map(), respellLogged: new Set(), ownRespells: new Set(), renameDeferrals: new Map() };
+    scratch = { fairness: new ScanFairness(), respellSeen: new Map(), respellLogged: new Set(), ownRespells: new Set(), renameDeferrals: new Map(), recentMoves: [] };
     scanScratches.set(owner, scratch);
   }
   return scratch;
@@ -113,6 +115,9 @@ function scanScratch(owner: object): ScanScratch {
 
 /** Entries remembered as spelled by a remote normalization-only rename. */
 const MAX_REMOTE_RESPELLS = 200;
+
+/** Renames remembered across scans to recognize a moved folder. */
+const MAX_RECENT_MOVES = 500;
 
 /** Where a notebook keeps its files' ink (INK_DIR in src/lib/storage/constants.ts). */
 const INK_DIRECTORY = "_ink";
@@ -2955,6 +2960,10 @@ export class SharedProject {
     const planRename = (fileId: string, entry: ManifestEntry, record: LayoutRecord, match: (typeof fresh)[number], reconciliation?: Reconciliation) => {
       const from = record.path;
       paired.push({ fileId, from, to: match.entry.relative });
+      // Files of one moved folder can pair in different scans: later scans still know where earlier ones went.
+      const recent = scanScratch(this).recentMoves;
+      recent.push({ from, to: match.entry.relative });
+      if (recent.length > MAX_RECENT_MOVES) recent.shift();
       touched.add(from).add(match.entry.relative);
       operations.push((map, doc) => {
         const current = readManifest(doc).get(fileId);
@@ -3075,8 +3084,10 @@ export class SharedProject {
       const depth = from.split("/").length;
       const below = (relative: string) => manifestPathKey(relative).startsWith(`${manifestPathKey(from)}/`);
       const inside = Object.entries(this.state.layout).filter(([otherId, other]) => otherId !== fileId && other.kind !== "folder" && below(other.path));
-      const moves = paired.filter((move) => below(move.from));
-      if (inside.length === 0 || moves.length !== inside.length) continue;
+      const pairedNow = paired.filter((move) => below(move.from));
+      // Every file still below the folder paired in this pass; files that moved in earlier scans are remembered.
+      const moves = [...scanScratch(this).recentMoves.filter((move) => below(move.from) && !(pairedNow as Array<{ from: string; to: string }>).includes(move)), ...pairedNow];
+      if (moves.length === 0 || !inside.every(([, other]) => pairedNow.some((move) => move.from === other.path))) continue;
       let destination: string | null = null;
       for (const move of moves) {
         const rest = move.from.split("/").slice(depth);
