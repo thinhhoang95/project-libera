@@ -146,6 +146,31 @@ test("S57: a command that cannot be sent does not hold unrelated commands back",
   store.close();
 });
 
+test("S57: the blocked-command backoff is longer on battery and normal again on AC", async () => {
+  const delays: number[] = [];
+  let scale = 1;
+  const store = new HostStore({ path: ":memory:" });
+  const queue = new PendingCommands({ store, logger: quietLogger, random: () => 1, backoffBaseMs: 1000, backoffMaxMs: 1_000_000, delayScale: () => scale, beforeSend: () => { throw Object.assign(new Error("wait"), { status: 0 }); } });
+  queue.on((event) => { if (event.type === "retrying") delays.push(event.delayMs); });
+  queue.setApi(new ApiClient({ baseUrl: "https://collab.test", tokenProvider: new TestTokens(), fetch: async () => json(500, {}) }));
+  queue.enqueue(thread("a", "doc-a"));
+  queue.setOnline(true);
+  await waitFor(() => delays.length === 1);
+  await queue.idle();
+  scale = 4;
+  queue.retryNow();
+  await waitFor(() => delays.length === 2);
+  await queue.idle();
+  scale = 1;
+  queue.retryNow();
+  await waitFor(() => delays.length === 3);
+  assert.equal(delays[0], 1000);
+  assert.equal(delays[1], 4000, "on battery the same backoff step is four times longer");
+  assert.equal(delays[2], 1000, "and normal again on AC");
+  queue.stop();
+  store.close();
+});
+
 test("S57: commands about the same thing share a key; unrelated ones do not", () => {
   const keys = (command: Command) => new Set(commandKeys(command));
   const create = keys(thread("a", "d1"));

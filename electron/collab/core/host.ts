@@ -72,6 +72,8 @@ export interface CollabHostOptions {
   /** Compaction settings, or false to disable local snapshots. */
   compaction?: Omit<CompactorOptions, "store" | "logger"> | false;
   connectTimeoutMs?: number;
+  /** Retry-delay multiplier for the offline command queue while on battery (default 4). */
+  batteryScale?: number;
   /** How long a nudge waits for a pong before replacing a live-looking socket. */
   nudgePongTimeoutMs?: number;
   /** Telemetry schedule (tests shorten it), or false for no reports. */
@@ -124,11 +126,14 @@ async function probeServer(serverUrl: string, fetchImpl?: FetchLike): Promise<bo
  * acknowledged must not hold every later command in the FIFO queue for good.
  */
 const COMMAND_HOLD_MAX_MS = 120_000;
+/** On battery the offline command queue's retry delay is this many times longer (the notebooks' batteryScale). */
+const BATTERY_BACKOFF_SCALE = 4;
 /** A PDF comment waits this long (active waiting, as above) for its document to open before it is refused, visibly, instead of retried forever. */
 const PDF_OPEN_MAX_MS = 600_000;
 
 export class CollabHost {
   /** Commands currently held back for a document's unacknowledged edits, by command row id. */
+  private onBattery = false;
   private readonly heldCommands = new Map<string, { docId: string; waitedMs: number; lastSeen: number }>();
   private readonly options: CollabHostOptions;
   private readonly clock: Clock;
@@ -224,6 +229,7 @@ export class CollabHost {
       logger: this.logger,
       backoffBaseMs: this.options.limits?.backoffBaseMs,
       backoffMaxMs: this.options.limits?.backoffMaxMs,
+      delayScale: () => (this.onBattery ? Math.max(1, this.options.batteryScale ?? BATTERY_BACKOFF_SCALE) : 1),
     });
     this.commandsInstance.on((event) => {
       if (event.type === "settled" && !event.ok) {
@@ -419,6 +425,11 @@ export class CollabHost {
   }
 
   /** Resume from sleep or network online: reconnect now and retry queued commands. */
+  /** Power source changed: blocked commands back off longer on battery and normally again on AC. */
+  setOnBattery(onBattery: boolean): void {
+    this.onBattery = onBattery;
+  }
+
   nudge(): void {
     this.syncClient?.nudge();
     this.commandsInstance?.kick();
