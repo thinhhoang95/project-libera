@@ -3,6 +3,7 @@ import { constants, type Dirent } from "node:fs";
 import { copyFile, link, lstat, mkdir, readdir, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
+import { hostOwnsSideFile, readManifestView, type ManifestView } from "@/lib/storage/shared-manifest-view";
 import { pythonSidecarDocumentPath, pythonSidecarPath } from "@/lib/python/sidecar";
 import { hasReviewEntry, withMovedReview } from "@/lib/agent/review-store";
 import { moveTetheredFilesBatch, readTetherTarget } from "@/lib/references/bib-tether";
@@ -49,6 +50,14 @@ import { isTextFileType } from "@/lib/types";
 // there) before the old one goes, so a try that stopped in between is told
 // from someone else's records by the link, and a retry finishes it.
 //
+// On a shared notebook only this computer's records are paired (stars, tags,
+// review comments, reference attachments, local side files such as image
+// annotations and definitions), and only to a file the host's manifest lists
+// (read once for the plan, and again right before anything is written) whose
+// old path the manifest no longer has. What the host owns (ink, transcripts,
+// Python code, live PDF marks) or moves together with the file is refused with
+// the reason, and so is everything when the host cannot confirm the manifest.
+//
 // Like moves in the app, Markdown links are not rewritten
 // (docs/features/related-notebooks.md). Runs only when asked; the plan reads
 // only (withReadOnlyStorage), and applying writes each store once.
@@ -80,8 +89,8 @@ export type RepairMove = { from: string; to: string; records: string[] };
 export type RepairUnmatched = {
   from: string;
   records: string[];
-  /** `none`: no file of that name. `several`: more than one could be it. `shared-name`: other missing files have the same name. `own`: the only one has records of its own. `unread`: a store of records could not be read, so uniqueness or ownership can't be known. `conflict`: more than one copy of a side file was set aside for the path. */
-  reason: "none" | "several" | "shared-name" | "own" | "unread" | "conflict";
+  /** `none`: no file of that name. `several`: more than one could be it. `shared-name`: other missing files have the same name. `own`: the only one has records of its own. `unread`: a store of records could not be read, so uniqueness or ownership can't be known. `conflict`: more than one copy of a side file was set aside for the path. `host`: a shared notebook's record that the host owns (ink, transcripts, Python code, live marks) or that moves only together with the file (agent changes, undo history, the tether): not moved here. */
+  reason: "none" | "several" | "shared-name" | "own" | "unread" | "conflict" | "host";
   candidates: string[];
 };
 export type RepairPlan = { notebook: string; moves: RepairMove[]; unmatched: RepairUnmatched[]; token: string };
@@ -92,7 +101,7 @@ export type RepairResult = { notebook: string; moved: RepairMove[]; outcomes: Re
 
 /** A side file set aside for a path, in the record's own words (SIDECAR_RECORDS). Ink is a folder with its record; the others one record file holding the side file. */
 type SetAside = { record: string; /** The side file kind (sidecars.ts). */ kind: string; /** The record file, or for ink its folder. */ at: string; sidecar?: unknown };
-type Fingerprint = { size: number; mtimeMs: number };
+type Fingerprint = { size: number; mtimeMs: number; /** A shared notebook's file: the manifest's identity for it. */ fileId?: string };
 /** Where a destination stands for a side file: `free`; `same` (a case-only rename: it is the source itself); `ours` (an earlier try linked all of it there); `taken` (something else is there). */
 type Slot = "free" | "same" | "ours" | "taken";
 /** The kinds readOrphans lists, by the side file kind that holds them. */
@@ -107,11 +116,10 @@ const nameKey = (libraryPath: string) => foldedFileName(baseName(libraryPath));
 const errorCode = (error: unknown) => (error as NodeJS.ErrnoException).code ?? "";
 const digest = (text: string) => createHash("sha256").update(text).digest("hex").slice(0, 16);
 
-/** A notebook this computer may change records of: not shared, and connected. Also used by Acknowledge (cleanup.ts). */
+/** A notebook this computer may change records of: connected (a shared one is checked against the host's manifest by the callers). Also used by Acknowledge (cleanup.ts). */
 export function assertRepairable(name: string) {
   const notebook = assertSafeSegment(name, "Notebook name");
   if (notebook.startsWith(".")) throw new StorageError("That is not a notebook.", 400);
-  if (isSharedNotebookPath(notebook)) throw new StorageError("Shared notebooks are kept in step by collaboration and can't be fixed here.", 409);
   if (getLinkedFolder(notebook)?.unresolved) throw new StorageError(`${notebook} is not connected on this computer. Reconnect it first.`, 409);
   return notebook;
 }
@@ -285,8 +293,27 @@ type Instance = () => Promise<string>;
 async function plan(name: string): Promise<{ plan: RepairPlan; asides: Map<string, SetAside[]>; files: Record<string, Fingerprint | null> }> {
   const notebook = assertRepairable(name);
   if (!(await lstat(notebookPath(notebook)).catch(() => null))?.isDirectory()) throw new StorageError("Notebook not found.", 404);
+  const shared = isSharedNotebookPath(notebook);
+  // TODO(B1): drainSharedRecordTransitions(notebook) here, for a shared notebook, before the records are read.
+  // A shared notebook's files are the host's manifest: fail closed when it can't be had.
+  let manifest: Extract<ManifestView, { state: "ok" }> | null = null;
+  if (shared) {
+    const view = await readManifestView(notebook);
+    if (view.state !== "ok") throw new StorageError(`The host can't confirm which files ${notebook} has right now (${view.reason}), so no record is matched to a file. Try again when collaboration is connected.`, 409);
+    manifest = view;
+  }
+  /** What a candidate file is, for the confirmation: the disk's size and time, or on a shared notebook the manifest's identity (a file not yet on the disk is still a file the host lists). */
+  const fingerprint = async (libraryPath: string): Promise<Fingerprint | null> => {
+    if (!manifest) return fingerprintOf(libraryPath);
+    const entry = manifest.files.get(libraryPath);
+    return entry ? { size: entry.size ?? 0, mtimeMs: entry.updatedAt, fileId: entry.fileId } : null;
+  };
+  /** Records of a shared notebook that the host owns or moves with the file: never paired here. */
+  const hostRecords = new Set<string>();
+  const hostKey = (libraryPath: string, record: string) => `${libraryPath}\0${record}`;
   // The archive counts: a file moved there in Finder is a candidate, and a second file of its name there makes "several".
-  const visible = await listNotebookInventory(notebook);
+  // A shared notebook's files are the manifest's (the archive is local only there).
+  const visible = manifest ? { files: [...manifest.files.keys()].sort(), truncated: false, unreadable: [] as string[] } : await listNotebookInventory(notebook);
   // A name is unique only if every file was seen.
   if (!inventoryComplete(visible) && visible.truncated) throw new StorageError(`${notebook} has too many files to match moved files by name.`, 413);
   if (!inventoryComplete(visible)) throw new StorageError(`${plural(visible.unreadable.length, "folder")} of ${notebook} could not be read (${visible.unreadable.slice(0, 3).join(", ")}${visible.unreadable.length > 3 ? ", ..." : ""}), so a file's name can't be known to be the only one. Fix its permissions or reconnect the drive, then try again.`, 409);
@@ -303,13 +330,19 @@ async function plan(name: string): Promise<{ plan: RepairPlan; asides: Map<strin
 
   const { sidecars, unreadable } = await listSidecars(notebook);
   if (unreadable.length) unread.add("side files");
-  for (const sidecar of sidecars) { const record = SIDECAR_RECORDS[sidecar.kind]; if (record) add(sidecar.filePath, record, () => signature(sidecar.path)); }
+  for (const sidecar of sidecars) {
+    const record = SIDECAR_RECORDS[sidecar.kind];
+    if (!record) continue;
+    add(sidecar.filePath, record, () => signature(sidecar.path));
+    if (shared && hostOwnsSideFile(sidecar.kind, notebook)) hostRecords.add(hostKey(sidecar.filePath, record));
+  }
 
   // Side files set aside for files that left are records of their original path, unless a live side file of that kind is there.
   const asides = new Map<string, SetAside[]>();
   const aside = (originalPath: string, entry: SetAside) => {
     if (!under(originalPath, notebook) || !getFileType(baseName(originalPath)) || records.get(originalPath)?.has(entry.record)) return;
     asides.set(originalPath, [...asides.get(originalPath) ?? [], entry]);
+    if (shared && hostOwnsSideFile(entry.kind, notebook)) hostRecords.add(hostKey(originalPath, entry.record));
   };
   for (const { file, record } of await readOrphans(notebook)) {
     if (record.sidecar !== undefined && record.sidecar !== null) aside(record.originalPath, { record: record.kind, kind: SET_ASIDE_KINDS[record.kind], at: file, sidecar: record.sidecar });
@@ -338,7 +371,7 @@ async function plan(name: string): Promise<{ plan: RepairPlan; asides: Map<strin
   for (const asset of unused ?? []) {
     if (!asset.toLowerCase().endsWith(".py")) continue;
     const note = pythonSidecarDocumentPath(asset);
-    if (note) add(note, PYTHON, () => signatureAt(asset));
+    if (note) { add(note, PYTHON, () => signatureAt(asset)); if (shared) hostRecords.add(hostKey(note, PYTHON)); }
   }
 
   const metadata = await readWorkspaceMetadata();
@@ -358,18 +391,18 @@ async function plan(name: string): Promise<{ plan: RepairPlan; asides: Map<strin
     }
     const tether = await readTetherTarget(library).catch(() => ({ damaged: "unreadable" }));
     if (tether && "damaged" in tether) unread.add("reference libraries");
-    else if (tether && "libraryPath" in tether) add(tether.libraryPath, TETHER, async () => library);
+    else if (tether && "libraryPath" in tether) { add(tether.libraryPath, TETHER, async () => library); if (shared) hostRecords.add(hostKey(tether.libraryPath, TETHER)); }
   }
   // The agent's changes waiting for review, and the runs that can still be undone, are the note's records too.
   const agent = await readAgentReviews();
   if (agent.unreadable) unread.add("agent changes");
-  for (const entry of agent.found) add(entry.path, AGENT, async () => entry.stamp);
+  for (const entry of agent.found) { add(entry.path, AGENT, async () => entry.stamp); if (shared) hostRecords.add(hostKey(entry.path, AGENT)); }
   const { listRunFiles } = await import("@/lib/agent/snapshots");
   const runs = await listRunFiles();
   if (runs.unreadable) unread.add("agent undo history");
   const runsAt = new Map<string, string[]>();
   for (const file of runs.files) if (!file.shared && !file.reverted) runsAt.set(file.path, [...runsAt.get(file.path) ?? [], file.runId]);
-  for (const [filePath, runIds] of runsAt) add(filePath, UNDO, async () => runIds.sort().join(","));
+  for (const [filePath, runIds] of runsAt) { add(filePath, UNDO, async () => runIds.sort().join(",")); if (shared) hostRecords.add(hostKey(filePath, UNDO)); }
 
   // Paths whose records stay behind: not in the notebook, and surely gone
   // (a path that could not be checked is never taken for missing).
@@ -377,7 +410,7 @@ async function plan(name: string): Promise<{ plan: RepairPlan; asides: Map<strin
   const disk = fileExistence();
   const missing: string[] = [];
   for (const libraryPath of records.keys()) {
-    if (!listed.has(libraryPath) && await absent(disk, libraryPath)) missing.push(libraryPath);
+    if (!listed.has(libraryPath) && (shared || await absent(disk, libraryPath))) missing.push(libraryPath);
   }
 
   const filesByName = new Map<string, string[]>();
@@ -435,7 +468,11 @@ async function plan(name: string): Promise<{ plan: RepairPlan; asides: Map<strin
   const moves: RepairMove[] = [];
   const unmatched: RepairUnmatched[] = [];
   for (const from of missing.sort()) {
-    const kept = [...records.get(from)!.keys()].sort();
+    const everything = [...records.get(from)!.keys()].sort();
+    // A shared notebook: what the host owns is refused, the rest is paired as below.
+    const refused = everything.filter((record) => hostRecords.has(hostKey(from, record)));
+    const kept = everything.filter((record) => !refused.includes(record));
+    if (!kept.length) { unmatched.push({ from, records: refused, reason: "host", candidates: [] }); continue; }
     const key = nameKey(from);
     const named = [...filesByName.get(key) ?? []].sort();
     // The name is all there is: it must be exactly one missing path's and exactly one file's.
@@ -448,7 +485,10 @@ async function plan(name: string): Promise<{ plan: RepairPlan; asides: Map<strin
     if (conflicting.has(from)) { unmatched.push({ from, records: kept, reason: "conflict", candidates: [target] }); continue; }
     const own = await ownRecords(target, from);
     if (kept.some((record) => own.has(record))) unmatched.push({ from, records: kept, reason: "own", candidates: [target] });
-    else moves.push({ from, to: target, records: kept });
+    else {
+      moves.push({ from, to: target, records: kept });
+      if (refused.length) unmatched.push({ from, records: refused, reason: "host", candidates: [] });
+    }
   }
 
   // One file takes the records of one path.
@@ -467,7 +507,7 @@ async function plan(name: string): Promise<{ plan: RepairPlan; asides: Map<strin
   // would move (a store changed since it was shown does too).
   const watched = [...new Set([...moves.map((move) => move.to), ...unmatched.flatMap((item) => item.candidates)])].sort();
   const files: Record<string, Fingerprint | null> = {};
-  for (const file of watched) files[file] = await fingerprintOf(file);
+  for (const file of watched) files[file] = await fingerprint(file);
   const instances: Record<string, string[]> = {};
   for (const move of moves) instances[move.from] = await Promise.all(move.records.map(async (record) => `${record}=${await records.get(move.from)!.get(record)!()}`));
   const token = createHash("sha256").update(JSON.stringify({ moves, unmatched, files, instances })).digest("hex").slice(0, 32);
@@ -542,6 +582,8 @@ async function applyRepair(name: string, token: string): Promise<RepairResult> {
     throw new StorageError("A migration involving this notebook did not finish. Finish or stop it in Migration first.", 409);
   }
 
+  const shared = isSharedNotebookPath(notebook);
+  let view: ManifestView | null = null;
   const problems: string[] = [];
   const status = new Map<RepairMove, Map<string, RepairOutcome["status"]>>();
   const completed: RepairMove[] = [];
@@ -551,14 +593,22 @@ async function applyRepair(name: string, token: string): Promise<RepairResult> {
     // All of the pair is in the try: one reserved segment must not stop the other pairs after some side files moved.
     try {
       // Right before writing: nothing may have come back at the source or replaced the file shown.
+      if (shared) {
+        // The host's manifest decides, read once for the pairs; when it can't be had nothing is written.
+        view ??= await readManifestView(notebook);
+        if (view.state !== "ok") { problems.push(`The host could not confirm the files of ${notebook} (${view.reason}), so the records of ${move.from} stayed.`); for (const record of move.records) done.set(record, "stayed"); continue; }
+        if (view.files.has(move.from)) { problems.push(`${move.from} is back in the shared notebook, so its records stayed.`); for (const record of move.records) done.set(record, "stayed"); continue; }
+        if (view.files.get(move.to)?.fileId !== files[move.to]?.fileId) { problems.push(`${move.to} is not the file that was shown, so the records of ${move.from} stayed.`); for (const record of move.records) done.set(record, "stayed"); continue; }
+      } else {
       if (!(await absent(fileExistence(), move.from))) { problems.push(`${move.from} is back, so its records stayed.`); for (const record of move.records) done.set(record, "stayed"); continue; }
       if (JSON.stringify(await fingerprintOf(move.to)) !== JSON.stringify(files[move.to])) { problems.push(`${move.to} is not the file that was shown, so the records of ${move.from} stayed.`); for (const record of move.records) done.set(record, "stayed"); continue; }
+      }
       const from = splitFilePath(move.from);
       const to = splitFilePath(move.to);
       const fileType = getFileType(from.name) ?? "";
       const jobs: Job[] = [];
       for (const kind of SIDECAR_KINDS) {
-        if (!kind.appliesTo(fileType)) continue;
+        if (!kind.appliesTo(fileType) || (shared && hostOwnsSideFile(kind.id, notebook))) continue;
         const source = kind.filePath(notebook, from.pathParts);
         const destination = kind.filePath(notebook, to.pathParts);
         if (!(await pathExists(source))) continue;
@@ -566,7 +616,7 @@ async function applyRepair(name: string, token: string): Promise<RepairResult> {
       }
       for (const entry of asides.get(move.from) ?? []) {
         const kind = SIDECAR_KINDS.find((candidate) => candidate.id === entry.kind);
-        if (!kind?.appliesTo(fileType)) continue;
+        if (!kind?.appliesTo(fileType) || (shared && hostOwnsSideFile(kind.id, notebook))) continue;
         const destination = kind.filePath(notebook, to.pathParts);
         if (entry.record === "ink") {
           const source = path.join(entry.at, "ink");
@@ -588,7 +638,7 @@ async function applyRepair(name: string, token: string): Promise<RepairResult> {
           });
         }
       }
-      if (fileType === "markdown") {
+      if (fileType === "markdown" && !shared) {
         const source = splitFilePath(pythonSidecarPath(move.from));
         const destination = splitFilePath(pythonSidecarPath(move.to));
         const sourceFile = filePathFromParts(source.notebook, source.pathParts);

@@ -28,7 +28,9 @@ import { assertSafeSegment, audioPeaksPath, getLinkedFolder, withReadOnlyStorage
 import { inspectReferenceLibrary } from "@/lib/storage/references";
 import { inspectLegacyReviewKeys, inspectReviewDocumentProblems, inspectReviewKeys } from "@/lib/storage/review-files";
 import { listSidecars, findOrphanedSidecars, SIDECAR_KINDS, type SidecarInspection } from "@/lib/storage/sidecars";
-import { matchByIdentity, mayBeBack, readOrphans, slotTakenBy } from "@/lib/storage/pdf-sidecars";
+import { matchByIdentity, mayBeBack, readOrphans, slotTakenBy, upkeepReattachesByContent } from "@/lib/storage/pdf-sidecars";
+import { hostOwnsSideFile, livePdfMarkIds, mayBeArriving, readManifestView, readSharedSync } from "@/lib/storage/shared-manifest-view";
+import { isGeneratedPath, isShareablePath } from "../../../electron/collab/notebooks/fs-ops";
 import { getFileType } from "@/lib/storage/file-types";
 import { pythonSidecarDocumentPath, pythonSidecarPath } from "@/lib/python/sidecar";
 import { foldedFileName } from "@/lib/storage/file-names";
@@ -47,7 +49,7 @@ import { StorageError } from "@/lib/storage/errors";
 
 export type IntegritySeverity = "error" | "warning" | "info";
 
-export type IntegrityCheckId = "notebook" | "sidecars" | "assets" | "images" | "links" | "latex" | "records" | "references" | "indexes" | "migrations";
+export type IntegrityCheckId = "notebook" | "sidecars" | "assets" | "images" | "links" | "latex" | "records" | "references" | "indexes" | "migrations" | "sharing";
 
 /** Arguments of a `lib.storage.integrity` message. */
 export type SayParams = Record<string, string | number>;
@@ -75,8 +77,13 @@ export type IntegrityFinding = {
   code?: string;
   params?: SayParams;
   fixCode?: string;
-  /** What Acknowledge (cleanup.ts) removes to clear this finding, on confirmation. */
+  /** What Acknowledge (cleanup.ts) removes to clear this finding, on confirmation. On a shared notebook only what is this computer's, once the host has confirmed the manifest. */
   clear?: CleanupAction[];
+  /**
+   * Shared notebooks only: whether Try to fix can pair this finding's record with the file of the same name (this computer's records,
+   * with the host's file list confirming). Not set on other notebooks, where Try to fix is offered for what a move outside the app can cause.
+   */
+  repairable?: boolean;
 };
 
 /**
@@ -209,6 +216,7 @@ const LABELS: Record<IntegrityCheckId, string> = {
   references: "Reference attachments and .bib tether",
   indexes: "Link, citation and search indexes, .bib mirror",
   migrations: "Migrations",
+  sharing: "Shared notebook",
 };
 
 const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
@@ -415,6 +423,19 @@ async function recordsLeftAt(files: { label: string; libraryPath: string }[], le
   }
 }
 
+/**
+ * What Acknowledge may remove in a shared notebook: this computer's own records (stars, tags, review comments, attachments, local side files
+ * of a file the manifest no longer lists, caches, set-aside copies, the citation index). Never what the host owns (ink, transcripts, live
+ * marks, Python code, images and files of the notebook) and never a record judged only by the version of a file that may still be arriving.
+ */
+export function sharedMayClear(action: CleanupAction, notebook: string): boolean {
+  switch (action.type) {
+    case "star": case "tags": case "review": case "attachment": case "set-aside": case "citations": return true;
+    case "side-file": return !hostOwnsSideFile(action.kind, notebook) && (Boolean(action.gone) || action.kind === "pdf-text" || action.kind === "audio-peaks");
+    default: return false;
+  }
+}
+
 type NoteDocument = { documentPath: string; content: string };
 
 /**
@@ -475,6 +496,7 @@ async function readNotes(notebook: string, budget: IntegrityBudget, byteLimit: n
  * Findings say what is wrong and how to set it right.
  */
 export function verifyNotebook(name: string, options: VerifyOptions = {}): Promise<IntegrityReport> {
+  // TODO(B1): drainSharedRecordTransitions(notebook) for a shared notebook, here and not inside withReadOnlyStorage: the drain writes this computer's records, and the check itself stays read only.
   return withReadOnlyStorage(() => checkNotebook(name, options));
 }
 
@@ -487,9 +509,28 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
   if (getLinkedFolder(notebook)?.unresolved) throw new StorageError(`${notebook} is not connected on this computer. Reconnect it to check it.`, 409);
   if (!(await lstat(notebookPath(notebook)).catch(() => null))?.isDirectory()) throw new StorageError("Notebook not found.", 404);
 
+  const shared = isSharedNotebookPath(notebook);
+  /** A shared notebook is compared with the host's file list (read only), read before the walk so that a change during the check shows. */
+  const manifestBefore = shared ? await readManifestView(notebook) : null;
+  /** The file list was the same at the end of the check, so what was concluded from it stands. */
+  let manifestStable = manifestBefore?.state === "ok";
+  const checkIds = (Object.keys(LABELS) as IntegrityCheckId[]).filter((id) => id !== "sharing" || shared);
   const findings: IntegrityFinding[] = [];
   const checks: IntegrityCheckResult[] = [];
   const disk = fileExistence();
+  /** The shared notebook lists this file (so one the disk lacks is still arriving, not gone). */
+  const listed = (libraryPath: string) => manifestBefore?.state === "ok" && manifestBefore.files.has(libraryPath);
+  /** Files the manifest lists that this computer does not have yet. */
+  let undeliveredFiles: Promise<string[]> | null = null;
+  const undelivered = () => undeliveredFiles ??= (async () => {
+    if (manifestBefore?.state !== "ok") return [];
+    const files = [...manifestBefore.files.keys()];
+    await disk.check(files);
+    return files.filter((file) => !disk.exists(file) && !disk.unknown(file));
+  })();
+  const manifestUnavailable = manifestBefore?.state === "unavailable"
+    ? said("sharedManifestUnavailable", `The host could not give the shared notebook's file list (${manifestBefore.reason}), so what depends on it was not judged.`, { reason: manifestBefore.reason })
+    : null;
   const counts = { files: 0, notes: 0, sidecars: 0 };
   /** The notebooks in the library; a linked folder that is not connected here is still a notebook, never a vanished one. */
   const knownNotebooks = await libraryNotebookNames();
@@ -497,7 +538,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
 
   // One walk and one read of the notes, shared by every check. Progress is
   // reported before them: on a large or slow notebook they are most of the wait.
-  options.onProgress?.({ check: "notebook", label: LABELS.notebook, index: 0, total: Object.keys(LABELS).length });
+  options.onProgress?.({ check: "notebook", label: LABELS.notebook, index: 0, total: checkIds.length });
   let announced = true;
   const staged: string[] = [];
   // One archive scope for every check: the archive is listed, as Try to fix
@@ -543,7 +584,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
 
   const absoluteOf = (libraryPath: string) => { const [owner, ...parts] = libraryPath.split("/"); return path.join(notebookPath(owner), ...parts); };
 
-  const order = Object.keys(LABELS) as IntegrityCheckId[];
+  const order = checkIds;
   let findingsCut = false;
   const run = async (id: IntegrityCheckId, check: (add: (finding: Omit<IntegrityFinding, "check">) => void) => Promise<Said | Said[] | void>) => {
     if (cancelled) return;
@@ -577,7 +618,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
   };
 
   await run("notebook", async (add) => {
-    if (isSharedNotebookPath(notebook)) add({ severity: "info", path: notebook, message: "This is a shared notebook. Its files are kept in step by collaboration; this check covers what is on this computer.", ...say("sharedNotebook") });
+    if (isSharedNotebookPath(notebook)) add({ severity: "info", path: notebook, message: "This is a shared notebook. Its files are kept in step by collaboration; this check compares this computer with the host's file list.", ...say("sharedNotebook") });
     let text: string | null = null;
     try { text = await readFile(notebookMetadataPath(notebook), "utf8"); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") return said("settingsUnreadable", "The notebook's settings file could not be read."); }
@@ -593,7 +634,10 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
   await run("sidecars", async (add) => {
     const { sidecars, unreadable } = await listSidecars(notebook);
     counts.sidecars = sidecars.length;
-    const orphans = await findOrphanedSidecars(notebook, sidecars);
+    // A shared notebook's files are the manifest's: a side file is orphaned when the host's list has no file at its path (a listed file not yet on the disk is arriving; a retired copy still on the disk is gone). Without the list nothing is judged.
+    const orphans = manifestBefore
+      ? manifestBefore.state === "ok" ? sidecars.filter((sidecar) => !manifestBefore.files.has(sidecar.filePath)).map(({ kind, path, filePath }) => ({ kind, path, filePath })) : []
+      : await findOrphanedSidecars(notebook, sidecars);
     const orphaned = new Set(orphans.map((orphan) => orphan.path));
     /** The file each side file was made for (size and content hash), as it recorded it. */
     const identities = new Map<string, { size: number; contentHash: string }>();
@@ -756,12 +800,13 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     for (const orphan of orphans) {
       if (!budget.allows()) break;
       const what = `Saved ${name(orphan.kind)} of ${orphan.filePath}, which is not in the notebook`;
-      const moved = await owner(orphan.kind, getFileType(orphan.filePath), identities.get(orphan.path));
+      // The upkeep reattaches by content only where upkeepReattachesByContent says so: never promised in a shared notebook, where it does not.
+      const moved = upkeepReattachesByContent(notebook) ? await owner(orphan.kind, getFileType(orphan.filePath), identities.get(orphan.path)) : null;
       // Offered for removal only when every input is known: a side file that could not be read, a listing that was cut, a candidate that could not be hashed may each hide the file it follows.
-      const decided = moved === null && !unread.has(orphan.path) && !inventoryCut && !candidatesCut;
+      const decided = moved === null && !unread.has(orphan.path) && (shared || (!inventoryCut && !candidatesCut));
       add(moved !== null && moved !== "unknown"
         ? { severity: "info", path: orphan.filePath, message: `${what}, belong to ${moved}: the same file, moved outside the app. They go to it the next time the notebook is opened.`, ...say("orphanSideFileMoved", { kind: orphan.kind, path: orphan.filePath, moved }) }
-        : { severity: "warning", path: orphan.filePath, message: `${what}.`, fix: "Put the file back where it was and it is found again. If it is gone for good, the side file can be removed from the notebook's .libera folder; keep a copy if unsure.", ...(decided ? { clear: [{ type: "side-file", kind: orphan.kind, filePath: orphan.filePath, gone: orphan.filePath }] } : {}), ...say("orphanSideFile", { kind: orphan.kind, path: orphan.filePath }, "orphanSideFileFix") });
+        : { severity: "warning", path: orphan.filePath, message: `${what}.`, fix: "Put the file back where it was and it is found again. If it is gone for good, the side file can be removed from the notebook's .libera folder; keep a copy if unsure.", ...(decided ? { clear: [{ type: "side-file", kind: orphan.kind, filePath: orphan.filePath, gone: orphan.filePath }] } : {}), ...say("orphanSideFile", { kind: orphan.kind, path: orphan.filePath }, shared ? "orphanSideFileSharedFix" : "orphanSideFileFix") });
     }
     // Notes still in an older layout, keyed by file name alone: read without
     // upgrading them (annotations.ts listLegacyAnnotations). The migrator gives
@@ -785,14 +830,25 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     // (pdf-sidecars.ts reconcilePdfSidecars, ink.ts reconcileInkFolders): the
     // same bytes, or, with none recorded, the file back under its old path
     // without side files of that kind. They are never stale.
-    const comesBack = async (kind: string, fileType: string | null, originalPath: string, identity: { size: number; contentHash: string } | null) =>
-      identity ? owner(kind, fileType, identity) : (await disk.isFile(originalPath)) === true && !(await slotTaken(kind)(originalPath)) ? originalPath : null;
+    const comesBack = async (kind: string, fileType: string | null, originalPath: string, identity: { size: number; contentHash: string } | null): Promise<string | null | "unknown"> => {
+      if (!upkeepReattachesByContent(notebook)) {
+        // The shared upkeep (reconcilePdfSidecars): only back under its old path, as the same bytes, with the slot free; ink never.
+        if (kind === "ink" || !identity || (await disk.isFile(originalPath)) !== true || await slotTaken(kind)(originalPath)) return null;
+        // The host records each blob's hash: it is compared, and the file is never read (an online-only placeholder would be downloaded).
+        if (manifestBefore?.state !== "ok") return "unknown";
+        const recorded = manifestBefore.files.get(originalPath)?.blobHash;
+        return !recorded ? "unknown" : recorded.toLowerCase() === identity.contentHash.toLowerCase() ? originalPath : null;
+      }
+      return identity ? owner(kind, fileType, identity) : (await disk.isFile(originalPath)) === true && !(await slotTaken(kind)(originalPath)) ? originalPath : null;
+    };
     /**
      * Whether the owner of a set-aside record may be back though nothing is
      * reattached (its slot is taken, or its bytes match several files): the
      * upkeep's expiry rule (`mayBeBack`), so such work is kept, never offered.
      */
     const mayReturn = async (kind: string, fileType: string | null, originalPath: string, identity: { size: number; contentHash: string } | null) => {
+      // A shared notebook's owner may be back when the host lists its old path (or cannot say), or the disk has it.
+      if (shared) return manifestBefore?.state !== "ok" || manifestBefore.files.has(originalPath) || (await disk.isFile(originalPath)) !== false;
       const candidates = identity && follows(kind, fileType) ? (kind === "ink" ? [...await filesOfType("pdf"), ...await filesOfType("image")] : await filesOfType(fileType!)) : [];
       if (identity) await hashSameSize(candidates.filter((candidate) => candidate.size === identity.size));
       return mayBeBack({ originalPath, source: identity }, candidates, hashes, (libraryPath) => disk.isFile(libraryPath));
@@ -839,6 +895,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     // A file back in a folder that could not be listed is not seen to be back: what is kept for it can't be called stale.
     if (visible.truncated) partial.push(notebookTooLarge);
     else if (visible.unreadable.length && !partial.length) partial.push(unreadableFolders);
+    if (manifestUnavailable) partial.push(manifestUnavailable);
     return partial;
   });
 
@@ -887,7 +944,10 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
           ? { severity: "info", path: asset, message: "An image no note shows, but a note shows a missing image of this name: probably this one, left behind when the note moved.", fix: "Point the note's image at this file, or insert it again.", ...say("imageLeftBehind", undefined, "imageLeftBehindFix") }
           : { severity: "info", path: asset, message: "An image no note shows (an open, unsaved note may still use it).", fix: "It can be removed once no note needs it.", clear: [{ type: "asset", path: asset }], ...say("imageUnused", undefined, "imageUnusedFix") });
     }
-    if (ownersCut) return visible.truncated ? notebookTooLarge : visible.unreadable.length ? unreadableFolders : unknownOwners ? filesUnchecked(unknownOwners) : undefined;
+    // A shared notebook's notes (or images) not yet on this computer may be the ones that use this code or these images.
+    const waiting = shared && (manifestBefore?.state !== "ok" || (await undelivered()).length) ? [manifestUnavailable ?? said("sharedFilesNotHere", "Some of the shared notebook's files are not on this computer yet, so images and code that only they use can't be told apart.")] : [];
+    if (ownersCut) return [visible.truncated ? notebookTooLarge : visible.unreadable.length ? unreadableFolders : unknownOwners ? filesUnchecked(unknownOwners) : null, ...waiting].filter((item): item is Said => item !== null);
+    if (waiting.length) return waiting;
   });
 
   await run("images", async (add) => {
@@ -899,6 +959,8 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
         if (!target.absolutePath) { add({ severity: "warning", path: note.documentPath, message: `The image address "${target.source}" can't be read.`, ...say("imageAddressUnreadable", { source: target.source }) }); continue; }
         const state = await probeFileOnce(target.absolutePath);
         if (state === "unknown") unchecked += 1;
+        // A shared notebook's image the host lists is arriving, not missing.
+        if (state === "absent" && target.libraryPath && listed(target.libraryPath)) { unchecked += 1; continue; }
         if (state === "absent") add({ severity: "error", path: note.documentPath, message: `Shows ${target.libraryPath ?? target.source}, which is missing.`, fix: "Put the image back, or insert it again.", ...say("imageMissing", { target: target.libraryPath ?? target.source }, "imageMissingFix") });
       }
     }
@@ -928,6 +990,12 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
       return durations.get(libraryPath)!;
     };
     const opensAtStart = "it opens the file at its start.";
+    // A live PDF's marks are the live document's, not its recovery sidecar's (which lags or is absent): asked once per PDF, only for a PDF a link points into. Unknown is partial.
+    const annotationIdsOf = async (libraryPath: string): Promise<SavedAnnotationIds> => {
+      if (!shared || getFileType(libraryPath) !== "pdf") return savedAnnotationIds(libraryPath);
+      const live = await livePdfMarkIds(libraryPath);
+      return live.state === "ids" ? live : live.state === "sidecar" ? savedAnnotationIds(libraryPath) : { state: "unreadable" };
+    };
     for (const note of readable) {
       if (!budget.allows()) break;
       // A chart's data file is read from the note's folder, found as a link is (the exact name).
@@ -938,6 +1006,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
         const target = resolveDeckRelativePath(note.documentPath, data);
         await disk.check([target]);
         if (disk.unknown(target)) uncheckedLinks += 1;
+        else if (!disk.exists(target) && listed(target)) uncheckedLinks += 1;
         else if (!disk.exists(target)) add({ severity: "warning", path: note.documentPath, message: `The chart at line ${block.line} reads its data from "${data}", which is missing.`, fix: "Put the file back, or point the chart at its current place.", ...say("chartDataMissing", { line: block.line, data }, "chartDataMissingFix") });
       }
       for (const href of extractNotebookLinkDestinations(note.content)) {
@@ -950,7 +1019,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
         await disk.check(candidates);
         const target = resolveLinkTargetWith(href, note.documentPath, disk.exists);
         if (!target) {
-          if (candidates.some(disk.unknown)) { uncheckedLinks += 1; continue; }
+          if (candidates.some(disk.unknown) || candidates.some(listed)) { uncheckedLinks += 1; continue; }
           add({ severity: "warning", path: note.documentPath, message: `The link "${href}" finds no file.`, fix: "Point the link at the file's current place.", ...say("linkNoFile", { href }, "linkNoFileFix") });
           continue;
         }
@@ -963,7 +1032,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
         const annotation = view?.pdf?.selectedAnnotationId ?? view?.image?.selectedAnnotationId;
         if (annotation) {
           budget.probe();
-          if (!annotationIds.has(target.path)) annotationIds.set(target.path, savedAnnotationIds(target.path));
+          if (!annotationIds.has(target.path)) annotationIds.set(target.path, annotationIdsOf(target.path));
           const saved = await annotationIds.get(target.path)!;
           // No side file: the annotations are gone. An older layout or an unreadable one can't be judged here.
           if (saved.state === "legacy" || saved.state === "unreadable") uncheckedLinks += 1;
@@ -999,6 +1068,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
           if (found === "present") { state = "present"; break; }
           if (found === "unknown") state = "unknown";
         }
+        if (state === "absent" && reference.candidates.some(listed)) state = "unknown";
         if (state === "unknown") unchecked += 1;
         if (state === "absent" && reference.main === file) add({ severity: "error", path: file, message: `${what[reference.kind]} "${reference.written}", which is not found.`, fix: "Add the file, or correct the path (paths are read from the main file's folder).", ...say("latexMissing", { kind: reference.kind, written: reference.written }, "latexMissingFix") });
         // A chapter is built from its main file: the one that loses the file is named.
@@ -1020,7 +1090,13 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     if (damaged) add({ severity: "error", path: notebook, message: `The file that keeps stars, tags and notebook groups can't be read (${damaged}), so none are shown and none can be checked.`, fix: "Restore .libera-workspace.json from your sync service's version history before starring or tagging anything, which would replace it.", ...say("starsDamaged", { reason: damaged }, "starsDamagedFix") });
     // A file that could not be checked is never reported as missing.
     const unknownPaths = new Set<string>();
-    const missing = async (libraryPath: string) => { await disk.check([libraryPath]); if (disk.unknown(libraryPath)) unknownPaths.add(libraryPath); return !disk.exists(libraryPath) && !disk.unknown(libraryPath); };
+    const missing = async (libraryPath: string) => {
+      // A shared notebook's file is there when the host lists it (a listed file the disk lacks is arriving), gone when it does not. Without the list a missing file is not judged.
+      if (manifestBefore?.state === "ok") return !manifestBefore.files.has(libraryPath);
+      await disk.check([libraryPath]);
+      if (disk.unknown(libraryPath) || (manifestBefore && !disk.exists(libraryPath))) { unknownPaths.add(libraryPath); return false; }
+      return !disk.exists(libraryPath);
+    };
     for (const starred of metadata.starredFilePaths) {
       if (under(starred, notebook) && await missing(starred)) add({ severity: "warning", path: starred, message: "Starred, but the file is missing.", fix: "Unstar it, or put the file back.", clear: [{ type: "star", path: starred, gone: starred }], ...say("starredFileMissing", undefined, "starredFileMissingFix") });
     }
@@ -1092,7 +1168,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
       add({ severity: "warning", path: name, message: `Records are kept for a notebook named ${name}, which is not in the library any more (stars: ${entry.stars}, tags: ${entry.tags}, review comments: ${entry.reviews}, pending agent reviews: ${entry.pending}, undo history: ${entry.history}).${renamed === "none" ? "" : ` ${renamed} has files at the same paths: it may be the same notebook, renamed outside the app.`}`, fix: `Rename the folder back to ${name} to bring them back; nothing was changed.`, ...say("vanishedNotebookRecords", params, "vanishedNotebookRecordsFix") });
     }
     // A record whose file could not be checked is neither reported nor passed.
-    if (unknownPaths.size) return filesUnchecked(unknownPaths.size);
+    if (unknownPaths.size) return manifestUnavailable ?? filesUnchecked(unknownPaths.size);
   });
 
   let ownLibrary = null as ReferenceLibrary | null;
@@ -1116,7 +1192,13 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
           if (library !== notebook && !under(attachment.path, notebook)) continue;
           await disk.check([attachment.path]);
           if (disk.unknown(attachment.path)) unchecked += 1;
-          if (!disk.exists(attachment.path) && !disk.unknown(attachment.path)) {
+          // A shared notebook's attachment is missing when the host does not list it; without the list it is not judged.
+          let gone: boolean;
+          if (manifestBefore && under(attachment.path, notebook)) {
+            if (manifestBefore.state === "ok") gone = !manifestBefore.files.has(attachment.path);
+            else { gone = false; if (!disk.exists(attachment.path) && !disk.unknown(attachment.path)) unchecked += 1; }
+          } else gone = !disk.exists(attachment.path) && !disk.unknown(attachment.path);
+          if (gone) {
             add({ severity: "warning", path: attachment.path, message: `Attached to the reference "${entry.key}" in ${library}'s library, but missing.`, fix: "Put the file back (it is re-attached when found), or detach it in References.", clear: [{ type: "attachment", library, entry: entry.id, path: attachment.path, gone: attachment.path }], ...say("referenceAttachmentMissing", { key: entry.key, library }, "referenceAttachmentMissingFix") });
           }
         }
@@ -1269,6 +1351,65 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
       add({ severity: "warning", path: copy, message: "A prepared copy left by a migration.", fix: "Finish or stop the migration; if none is open, the copy can be deleted.", ...say("migrationPreparedCopy", undefined, "migrationPreparedCopyFix") });
     }
   });
+
+  if (shared) await run("sharing", async (add) => {
+    const before = manifestBefore!;
+    if (before.state !== "ok") { manifestStable = false; return manifestUnavailable!; }
+    // One more listing, to see that the host's view did not change during the check; if it did, nothing is concluded and nothing is retried.
+    const after = await readManifestView(notebook);
+    if (after.state !== "ok" || after.stamp !== before.stamp) {
+      manifestStable = false;
+      return said("sharedManifestChanged", "The shared notebook's file list changed while it was being checked, so this computer was not compared with it. Check again in a moment.");
+    }
+    const sync = await readSharedSync(notebook);
+    let syncUnknown = false;
+    let unchecked = 0;
+    const files = [...before.files.values()].sort((a, b) => a.path.localeCompare(b.path));
+    await disk.check(files.map((entry) => entry.path));
+    for (const entry of files) {
+      if (!budget.allows()) break;
+      budget.visit();
+      if (disk.unknown(entry.path)) { unchecked += 1; continue; }
+      let problem: "missing" | "differs" | null = null;
+      if (!disk.exists(entry.path)) problem = "missing";
+      else if (entry.kind === "blob" && entry.size !== undefined) {
+        // Size only, from a stat: a file is never read (or downloaded) for this.
+        budget.probe();
+        const stats = await lstat(absoluteOf(entry.path)).catch(() => null);
+        if (stats?.isFile() && stats.size !== entry.size) problem = "differs";
+      }
+      if (!problem) continue;
+      const arriving = mayBeArriving(entry, sync);
+      if (arriving === "unknown") syncUnknown = true;
+      if (arriving === true) add({ severity: "info", path: entry.path, message: "Sync is still bringing this file to this computer.", ...say("sharedFileArriving") });
+      else if (problem === "missing") add({ severity: "warning", path: entry.path, message: "The shared notebook has this file, but it is not on this computer, and sync is not behind.", fix: "Check again once sync has finished.", ...say("sharedFileMissingHere", undefined, "sharedFileMissingHereFix") });
+      else add({ severity: "warning", path: entry.path, message: "This computer has another version of this file than the shared notebook (its size differs), and sync is not behind.", fix: "Check again once sync has finished.", ...say("sharedFileDiffers", undefined, "sharedFileMissingHereFix") });
+    }
+    for (const file of visible.files) {
+      const relative = file.split("/").slice(1).join("/");
+      if (relative.split("/")[0] === ARCHIVE_DIR || before.files.has(file) || !isShareablePath(relative) || isGeneratedPath(relative)) continue;
+      add({ severity: "info", path: file, message: "This file is on this computer but not in the shared notebook's file list: the host has not added it yet, or it is an old copy of a file removed from the shared notebook.", fix: "Check again in a moment. If it stays, it is not shared: remove it if it is an old copy.", ...say("sharedFileNotListed", undefined, "sharedFileNotListedFix") });
+    }
+    const notes = [
+      unchecked ? filesUnchecked(unchecked) : null,
+      syncUnknown ? said("sharedSyncUnknown", "The host's sync state could not be read, so a file still arriving can't be told from one that is missing.") : null,
+      visible.truncated ? notebookTooLarge : visible.unreadable.length ? unreadableFolders : null,
+    ].filter((item): item is Said => item !== null);
+    if (notes.length) return notes;
+  });
+
+  if (shared) {
+    // What the report says can be done (the dialog offers only that): Acknowledge removes this computer's own records, never the host's, and only on a manifest the host confirmed and that held still; Try to fix pairs this computer's records the same way.
+    const usable = manifestBefore?.state === "ok" && manifestStable;
+    const pairable = new Set(["starredFileMissing", "taggedFileMissing", "reviewFileMissing", "referenceAttachmentMissing"]);
+    for (const finding of findings) {
+      if (finding.clear) {
+        const kept = usable ? finding.clear.filter((action) => sharedMayClear(action, notebook)) : [];
+        if (kept.length) finding.clear = kept; else delete finding.clear;
+      }
+      finding.repairable = usable && (pairable.has(finding.code ?? "") || (finding.code === "orphanSideFile" && !hostOwnsSideFile(String(finding.params?.kind ?? ""), notebook)));
+    }
+  }
 
   const partial = cancelled || checks.some((check) => check.status === "failed" || check.status === "incomplete");
   return {

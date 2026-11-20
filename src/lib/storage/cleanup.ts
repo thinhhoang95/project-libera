@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { lstat, readdir, readFile, realpath, rm, rmdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { hasReviewEntry, pruneReviews } from "@/lib/agent/review-store";
+import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { pythonSidecarDocumentPath } from "@/lib/python/sidecar";
 import { regenerateBibMirror } from "@/lib/references/bib-mirror";
 import { untetherBibFile } from "@/lib/references/bib-tether";
@@ -9,7 +10,8 @@ import { MARKDOWN_ASSETS_DIR, ORPHANED_SIDECARS_DIR } from "@/lib/storage/consta
 import { StorageError } from "@/lib/storage/errors";
 import { getFileType } from "@/lib/storage/file-types";
 import { inkFolderPath } from "@/lib/storage/ink";
-import { verifyNotebook, type CleanupAction, type IntegrityFinding, type IntegrityLimits } from "@/lib/storage/integrity";
+import { sharedMayClear, verifyNotebook, type CleanupAction, type IntegrityFinding, type IntegrityLimits } from "@/lib/storage/integrity";
+import { readManifestView, type ManifestView } from "@/lib/storage/shared-manifest-view";
 import { fileExistence } from "@/lib/storage/library-links";
 import { rawEmbedsInOtherNotebooks, unreferencedMarkdownAssets } from "@/lib/storage/markdown-assets";
 import { deleteReviewKey, findReview, reviewVersion } from "@/lib/storage/markdown-reviews";
@@ -42,7 +44,12 @@ import { readWorkspaceMetadata, setFileTagsForPath, setStarredFilePath } from "@
 // the check does; `remove`: the file is still the version shown), and what
 // can no longer be shown stale is held, not removed. Broken links, missing images and
 // LaTeX files, unreadable or damaged files and unfinished migrations are not
-// stale: they stay listed for you to set right. Two things are never offered
+// stale: they stay listed for you to set right. On a shared notebook only this
+// computer's own records are removed (never what the host owns: ink,
+// transcripts, live marks, Python code, the notebook's images), and a file is
+// gone when the host's manifest does not list it, read again right before the
+// removals; when the host can't confirm it, nothing is removed.
+// Two things are never offered
 // either: records Try to fix could not pair only because several files have
 // their file's name (they may belong to one of them), and anything a check that
 // ran only in part found (it can't tell what is stale).
@@ -212,7 +219,7 @@ async function versionOf(notebook: string, action: CleanupAction) {
   return found;
 }
 
-type HoldReason = "ambiguous" | "back" | "alias" | "unchecked" | "tether" | "image-used" | "images-unscanned";
+type HoldReason = "ambiguous" | "back" | "alias" | "unchecked" | "tether" | "image-used" | "images-unscanned" | "shared";
 type Hold = { reason: HoldReason; message: string };
 
 /** What a library path physically opens, whatever spelling it is given (a disk that ignores case or Unicode form answers for an alias). */
@@ -243,6 +250,13 @@ async function goneHold(disk: ReturnType<typeof fileExistence>, libraryPath: str
   return null;
 }
 
+/** The shared version of "still gone": the host's manifest does not list the file (a copy left on the disk does not make it back; a listed file not yet delivered does). */
+function sharedGoneHold(view: ManifestView, libraryPath: string): Hold | null {
+  if (view.state !== "ok") return { reason: "unchecked", message: `The host can't confirm which files the shared notebook has (${view.reason}); the records of ${libraryPath} are kept.` };
+  if (view.files.has(libraryPath)) return { reason: "back", message: `${libraryPath} is in the shared notebook; its records are kept.` };
+  return null;
+}
+
 /** An absolute tether is stale only when its file is known to be missing from a folder that can be read. */
 async function absoluteTetherHold(target: string): Promise<Hold | null> {
   const state = async (candidate: string) => lstat(candidate).then((info) => (info.isDirectory() ? "folder" : "file"), (error: NodeJS.ErrnoException) => (["ENOENT", "ENOTDIR"].includes(error.code ?? "") ? "absent" : "unknown"));
@@ -254,11 +268,13 @@ async function absoluteTetherHold(target: string): Promise<Hold | null> {
 }
 
 /** Why an action is not stale (any more), or null: the one decision the plan and the removal share. */
-async function staleness(notebook: string, action: CleanupAction, disk = fileExistence()): Promise<Hold | null> {
-  if (action.gone) { const hold = await goneHold(disk, action.gone); if (hold) return hold; }
+async function staleness(notebook: string, action: CleanupAction, disk = fileExistence(), view: ManifestView | null = null): Promise<Hold | null> {
+  if (view && !sharedMayClear(action, notebook)) return { reason: "shared", message: "The host keeps this in the shared notebook; it is kept." };
+  const gone = (libraryPath: string) => view ? sharedGoneHold(view, libraryPath) : goneHold(disk, libraryPath);
+  if (action.gone) { const hold = await gone(action.gone); if (hold) return hold; }
   if (action.type === "set-aside") {
     const origin = await setAsideOrigin(notebook, action.file);
-    if (origin) return goneHold(disk, origin);
+    if (origin) return gone(origin);
   }
   if (action.type === "tether" && !action.gone) return absoluteTetherHold(action.target);
   return null;
@@ -288,6 +304,8 @@ async function collect(notebook: string, repair: RepairPlan, options: CleanupOpt
   let heldPartial = 0;
   let reduced = 0;
   const disk = fileExistence();
+  // A shared notebook: the host's manifest, read once for the plan.
+  const view = isSharedNotebookPath(notebook) ? await readManifestView(notebook) : null;
   // Images are looked for in every notebook's notes by address too (the check's own scan sees relative embeds only); one scan, when there are images.
   let embeds: Set<string> | null | undefined;
   for (const finding of report.findings) {
@@ -297,7 +315,7 @@ async function collect(notebook: string, repair: RepairPlan, options: CleanupOpt
     for (const action of finding.clear) {
       const subject = ambiguous.size ? await subjectOf(notebook, action) : null;
       if (subject && ambiguous.has(subject)) { hold("ambiguous"); continue; }
-      const stale = await staleness(notebook, action, disk);
+      const stale = await staleness(notebook, action, disk, view);
       if (stale) { hold(stale.reason); continue; }
       if (isImage(action)) {
         if (embeds === undefined) embeds = await rawEmbedsInOtherNotebooks(notebook, { includeOwn: true });
@@ -325,6 +343,7 @@ async function collect(notebook: string, repair: RepairPlan, options: CleanupOpt
   const aliased = count("alias") + count("back");
   if (aliased) notes.push(`${plural(aliased, "record")} left out: a file is there under another spelling of the name (letter case or accents) or has come back, so ${them(aliased)} may be its own.`);
   if (count("unchecked")) notes.push(`${plural(count("unchecked"), "record")} left out: whether the file is back can't be checked (no permission, or a drive is offline).`);
+  if (count("shared")) notes.push(`${plural(count("shared"), "record")} left out: the host keeps ${count("shared") === 1 ? "it" : "them"} in the shared notebook.`);
   if (count("tether")) notes.push("The .bib tether is left out: its file is there, or its folder can't be checked (it may be on a drive that is not connected).");
   if (count("image-used")) notes.push(`${plural(count("image-used"), "image")} left out: a note shows ${count("image-used") === 1 ? "it" : "them"} by address.`);
   if (count("images-unscanned")) notes.push(`${plural(count("images-unscanned"), "image")} left out: the notes of every notebook could not be read, so use of ${count("images-unscanned") === 1 ? "it" : "them"} can't be ruled out.`);
@@ -371,6 +390,7 @@ async function entriesOf(notebook: string, action: CleanupAction): Promise<Clean
 export function planNotebookCleanup(name: string, options: CleanupOptions = {}): Promise<CleanupPlan> {
   return withReadOnlyStorage(async () => {
     const notebook = assertRepairable(name);
+    // TODO(B1): drainSharedRecordTransitions(notebook) here, for a shared notebook, before the plan is made.
     const { clearable, token, remaining, notes } = await collect(notebook, await assertNothingToMove(notebook), options);
     return {
       notebook,
@@ -439,14 +459,14 @@ class NoLongerStale extends Error {}
 
 /** Images that no note shows, as the notes are now: read once, as late as the removals allow. */
 type FreshImages = { unused: Set<string>; embeds: Set<string> } | null;
-type Context = { versions: Versions; images: () => Promise<FreshImages> };
+type Context = { versions: Versions; images: () => Promise<FreshImages>; /** A shared notebook's manifest as the host gave it right before the removals. */ view: ManifestView | null };
 
 async function perform(notebook: string, action: CleanupAction, context: Context): Promise<Outcome> {
   // Checked right before acting: a file put back since the check keeps its records.
-  const hold = await staleness(notebook, action);
+  const hold = await staleness(notebook, action, undefined, context.view);
   if (hold) throw new NoLongerStale(hold.message);
   const expected = context.versions.get(keyOf(action));
-  const recheck = () => staleness(notebook, action);
+  const recheck = () => staleness(notebook, action, undefined, context.view);
   const version = (target: string) => expected?.get(target);
   switch (action.type) {
     case "side-file": {
@@ -522,7 +542,7 @@ async function perform(notebook: string, action: CleanupAction, context: Context
         const current = "libraryPath" in tether ? tether.libraryPath : tether.absolutePath;
         if (current !== action.target) return false;
         seen = "same";
-        return (await staleness(notebook, action)) === null;
+        return (await staleness(notebook, action, undefined, context.view)) === null;
       });
       if (removed) return "removed";
       if (seen === "none") return "absent";
@@ -548,11 +568,18 @@ async function applyCleanup(name: string, token: string, options: CleanupOptions
   const current = await collect(notebook, await assertNothingToMove(notebook), options);
   if (current.token !== token) throw new StorageError("The notebook changed since this was prepared. Check it again.", 409);
 
+  // Right before the removals the host's manifest is read again: what is removed was decided against this view, and with none nothing is removed.
+  let view: ManifestView | null = null;
+  if (isSharedNotebookPath(notebook)) {
+    view = await readManifestView(notebook);
+    if (view.state !== "ok") throw new StorageError(`The host can't confirm which files ${notebook} has right now (${view.reason}), so nothing was removed. Try again when collaboration is connected.`, 409);
+  }
   const problems: string[] = [];
   const done = new Set<string>();
   const outcomes = { removed: 0, alreadyAbsent: 0, unreadable: 0, held: 0 };
   let fresh: Promise<FreshImages> | null = null;
   const context: Context = {
+    view,
     versions: current.versions,
     images: () => fresh ??= (async () => {
       const unused = await unreferencedMarkdownAssets(notebook);
@@ -569,7 +596,7 @@ async function applyCleanup(name: string, token: string, options: CleanupOptions
   for (const action of ordered) {
     const unit = inkUnit(action);
     try {
-      if (unit && !held.has(unit) && !isInkRecord(action)) { const hold = await staleness(notebook, action); if (hold) held.set(unit, hold.message); }
+      if (unit && !held.has(unit) && !isInkRecord(action)) { const hold = await staleness(notebook, action, undefined, view); if (hold) held.set(unit, hold.message); }
       if (unit && held.has(unit)) throw new NoLongerStale(held.get(unit)!);
       if (unit && isInkRecord(action) && incomplete.has(unit)) throw new NoLongerStale("Part of this ink could not be removed, so the record that says whose it is stays.");
       const outcome = await perform(notebook, action, context);

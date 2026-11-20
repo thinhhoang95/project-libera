@@ -8,14 +8,14 @@ import { originalToView, photoViewSize, type PhotoInkView } from "@/lib/ink/fram
 import { applyInkOps, mergeInkFiles } from "@/lib/ink/merge";
 import { inkToSvg } from "@/lib/ink/svg";
 import type { InkAuthor, InkAuthorFile, InkFrame, InkOps, InkSource, InkStroke, MergedInkStroke } from "@/lib/ink/types";
-import { isSharedNotebookPath, sharedNotebookMarker } from "@/lib/collab/shared-notebook";
+import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { INK_DIR } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
 import { getFileType } from "@/lib/storage/file-types";
 import { moveFileIfExists, pathExists, writeJsonAtomically } from "@/lib/storage/fs-utils";
 import { fileExistence } from "@/lib/storage/library-links";
 import { cachedPdfIdentity } from "@/lib/storage/pdf-identity";
-import { matchByIdentity, mayBeBack, moveToFreeSlot, ORPHAN_GRACE_MS, ORPHAN_RETENTION_MS, slotTakenBy } from "@/lib/storage/pdf-sidecars";
+import { matchByIdentity, mayBeBack, moveToFreeSlot, ORPHAN_GRACE_MS, ORPHAN_RETENTION_MS, slotTakenBy, upkeepReattachesByContent } from "@/lib/storage/pdf-sidecars";
 import { assertNotMigrating } from "@/lib/storage/migration-fence";
 import {
   ensureAdminRoot,
@@ -566,7 +566,7 @@ function fileExists(libraryPath: string, existence = fileExistence()): Promise<b
  * notebooks are skipped: the host moves their ink with their files.
  */
 export async function reconcileInkFolders(notebook: string, files: Array<{ path: string; size: number }>, { now = Date.now() }: { now?: number } = {}) {
-  if (sharedNotebookMarker(notebook)) return { reattached: 0, setAside: 0 };
+  if (!upkeepReattachesByContent(notebook)) return { reattached: 0, setAside: 0 };
   const folders = await listInkFolders(notebook);
   const orphanDirectory = orphanedSidecarsDirectoryPath(notebook, "ink");
   const storedNames = await readdir(orphanDirectory).catch(() => [] as string[]);
