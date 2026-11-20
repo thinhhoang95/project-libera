@@ -87,7 +87,7 @@ import { DEFINITIONS_FILE_TYPES } from "@/lib/definitions";
 import { notifyReferenceFilesAdded } from "@/lib/references/jobs";
 import { assertNotSharedItem, isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { assertNotMigrating, assertNothingMigratingWithin, itemLibraryPath } from "@/lib/storage/migration-fence";
-import { NO_AUTHORITY as NO_SHARED_AUTHORITY, readSharedAuthorityBytes } from "@/lib/storage/shared-source";
+import { readSharedSourceSnapshot, sharedSourceGone } from "@/lib/storage/shared-source";
 import { destinationRecords } from "@/lib/storage/destination-records";
 
 /** Reads a file for a tab. Text files come with their content, except plain
@@ -566,13 +566,13 @@ const RECORD_NAMES: Record<string, string> = {
  * Caches are made again, so they may be replaced; so may an empty review,
  * which is what opening a note makes.
  */
-export async function assertNoLeftoverRecords(notebook: string, parts: string[], fileType: string, ownSidecars = false, moving?: string[]) {
+export async function assertNoLeftoverRecords(notebook: string, parts: string[], fileType: string, ownSidecars = false, moving?: string[], again = "move") {
   const names = await leftoverRecords(notebook, parts, fileType, ownSidecars);
   // Notes in an older layout that the arriving file would be given when opened (annotations.ts inspectLegacyAnnotations).
   if (!ownSidecars && (await legacyAnnotationSidecars(notebook, parts, fileType, moving)).length && !names.includes("annotations")) names.push("annotations");
   if (!names.length) return;
   const list = names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names[0];
-  throw new StorageError(`${relativeFilePath(notebook, parts)} still has the ${list} of a file that was there before. Check the notebook to give them to a file or remove them, then move again.`, 409);
+  throw new StorageError(`${relativeFilePath(notebook, parts)} still has the ${list} of a file that was there before. Check the notebook to give them to a file or remove them, then ${again} again.`, 409);
 }
 
 /**
@@ -939,17 +939,21 @@ export async function copyFileToDirectory(
   // A shared notebook's disk copy can lag what collaborators see (a
   // follower's cloud copy, a write still waiting): copy the shared version,
   // read before anything is created so a failure leaves nothing behind.
+  // The host's version, read once: its text, or a blob's bytes. An entry the host no
+  // longer lists was deleted or moved by a collaborator: refused, never built from
+  // the bytes a lagging disk still holds. Only when there is no host to ask is the disk the copy.
   const sharedSource = isSharedNotebookPath(relativePath);
-  const sharedText = sharedSource && isTextFileType(currentFileType) ? await readSharedTextForCopy(relativePath) : null;
+  const snapshot = sharedSource ? await readSharedSourceSnapshot(relativePath, isTextFileType(currentFileType)) : null;
+  if (snapshot?.authority && snapshot.kind === "absent") throw sharedSourceGone(relativePath);
+  const sharedBody = snapshot?.authority ? (snapshot.kind === "text" ? Buffer.from(snapshot.text, "utf8") : snapshot.kind === "blob" ? snapshot.bytes : null) : null;
   const livePdf = sharedSource && currentFileType === "pdf" ? await livePdfAnnotationsForCopy(relativePath) : null;
-  // Likewise for a binary: the host's current bytes, not a lagging working file.
-  const sharedBytes = sharedSource && !isTextFileType(currentFileType) ? await readSharedAuthorityBytes(relativePath) : null;
 
   let available;
   for (;;) {
     available = await findAvailableCopyPath(destination.notebook, destination.pathParts, requestedName, currentFileType);
     try {
-      if (sharedBytes) await writeFile(available.path, sharedBytes, { flag: "wx" });
+      // The supplied bytes are published exclusively: the follower's own file is not needed.
+      if (sharedBody) await writeFile(available.path, sharedBody, { flag: "wx" });
       else await copyFile(filePathFromParts(current.notebook, current.pathParts), available.path, constants.COPYFILE_EXCL);
       break;
     } catch (error) {
@@ -958,7 +962,6 @@ export async function copyFileToDirectory(
   }
   const safeNextName = available.name;
   const nextParts = [...destination.pathParts, safeNextName];
-  if (sharedText !== null) await writeFile(available.path, sharedText, "utf8");
 
   if (currentFileType === "pdf") await migratePdfAnnotations(current.notebook, current.pathParts);
   if (currentFileType === "image") await migrateImageAnnotations(current.notebook, current.pathParts);
@@ -1238,26 +1241,6 @@ async function moveRelatedMetadata(
   // kind; ink chunks and annotations are per kind of file, so they are
   // removed when it becomes another kind (storage/sidecars.ts).
   await moveFileSidecars(currentNotebook, currentPathParts, nextNotebook, nextPathParts, currentFileType, nextFileType);
-}
-
-/**
- * The shared document's text. Null (then the disk bytes are copied) only when
- * there is no shared authority to ask (collaboration is off here, the notebook
- * is not joined). A host that cannot answer refuses the copy: the disk copy
- * may lag collaborators' work.
- */
-async function readSharedTextForCopy(sourcePath: string): Promise<string | null> {
-  // Imported here: shared-writes reaches back into storage.
-  const { SharedWriteError, readSharedText } = await import("@/lib/collab/shared-writes");
-  try {
-    return (await readSharedText(sourcePath)).text;
-  } catch (error) {
-    if (error instanceof SharedWriteError && NO_SHARED_AUTHORITY.has(error.code)) return null;
-    if (error instanceof SharedWriteError) {
-      throw new StorageError(`${sourcePath} is not yet up to date on this device, so its current shared version was not copied (${error.message}). Try again when sync has caught up.`, error.status);
-    }
-    throw error;
-  }
 }
 
 /**

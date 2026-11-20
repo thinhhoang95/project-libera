@@ -3305,7 +3305,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         const baseVersion = await textVersion(basis.base);
         const payload = await workspaceFileRequest<LiberaFilePayload>("/api/files", {
           method: "PATCH",
-          body: JSON.stringify({ path: tab.file.path, content: draft, baseVersion }),
+          body: JSON.stringify({ path: tab.file.path, content: draft, baseVersion, fileId: tab.file.fileId }),
         }, (payload) => ({ paths: [payload.file.path] }));
         const latestDraft = getTabDraft(tab);
         patch((current) => ({ ...current, file: keepFileIdentity(current.file, payload.file), saved: draft, diskConflict: undefined, status: latestDraft === draft ? "clean" : "dirty" }));
@@ -3905,6 +3905,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         }),
       }, (payload) => ({ paths: [payload.file.path] }));
       await refreshTree(payload.file.notebook);
+      // What did not copy (records, images) is reported, as after a move.
+      if ((payload as LiberaFileMovePayload).unfinished) reportMoveOutcome({ notebook: payload.file.notebook, unfinished: (payload as LiberaFileMovePayload).unfinished });
       updateExpanded((current) => {
         const next = new Set(current);
         next.add(destinationDirectory.split("/")[0] ?? destinationDirectory);

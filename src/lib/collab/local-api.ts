@@ -497,6 +497,11 @@ export interface FileOpRequest {
   stagedFile?: string;
   /** For write-blob: refuse an existing entry instead of replacing its bytes. */
   createOnly?: boolean;
+  /**
+   * For write-blob: replace the bytes of the file `expectedFileId` at `expectedBlobHash`, and nothing else. It needs
+   * both, never creates a file and never replaces another (409). Without it a write at a vacant path creates.
+   */
+  replaceOnly?: boolean;
   /** The visible identity/version reviewed by a storage mutation. */
   expectedFileId?: string;
   expectedBlobHash?: string;

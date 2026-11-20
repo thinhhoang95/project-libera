@@ -47,6 +47,7 @@ class StubHost {
         };
         if (request.headers.authorization !== `Bearer ${this.token}`) return send(404, { error: { code: "not-found", message: "No route." } });
         const url = new URL(request.url ?? "", "http://host");
+        if (/\/projects\/[^/]+\/file-entries$/.test(url.pathname)) return send(200, { entries: [] });
         if (!/\/projects\/[^/]+\/files$/.test(url.pathname)) return send(404, { error: { code: "not-found", message: "No route." } });
         const op = JSON.parse(body) as FileOpRequest;
         this.ops.push(op);

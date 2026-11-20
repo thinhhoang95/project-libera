@@ -100,7 +100,7 @@ test("R43: a shared file can be renamed by changing only its letter case", () =>
 }));
 
 test("R44: a text file held as a file saves through the host; a text document is refused", () => withShared(async ({ notebook, host }) => {
-  const saved = await saveSharedFileText("Shared/big.md", "edited large text\n");
+  const saved = await saveSharedFileText("Shared/big.md", "edited large text\n", { expectedFileId: "fil_big", expectedBlobHash: "hash_big" });
   assert.equal(saved.file.path, "Shared/big.md");
   assert.deepEqual(host.ops.map((op) => [op.op, op.path]), [["write-blob", "big.md"]]);
   assert.equal(readFileSync(path.join(notebook, "big.md"), "utf8"), "edited large text\n");

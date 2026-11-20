@@ -3621,6 +3621,11 @@ export class SharedProject {
         const problem = request.op === "delete" ? null : albumPathError(target);
         if (problem) throw new ControlError(400, "bad-request", problem);
       }
+      // A replacement names the file and the version it replaces; without them it could create or take over another file.
+      if (request.op === "write-blob" && request.replaceOnly) {
+        if (request.createOnly) throw new ControlError(400, "bad-request", "A write cannot both create a file and replace one.");
+        if (!request.expectedFileId || !request.expectedBlobHash) throw new ControlError(400, "bad-request", "Replacing a file needs the file id and the blob hash of the version being replaced.");
+      }
       const now = Date.now();
       const accountId = await this.ctx.accountId();
       this.entries = this.readEntries();
@@ -3664,6 +3669,7 @@ export class SharedProject {
             if (request.expectedFileId !== undefined && existing?.fileId !== request.expectedFileId) throw new ControlError(409, "conflict", "This file identity changed before the upload began.");
             if (request.expectedBlobHash !== undefined && existing?.blobHash !== request.expectedBlobHash) throw new ControlError(409, "conflict", "This file changed before the upload began.");
             if (existing && request.createOnly) throw new ControlError(409, "conflict", `${existing.path} already exists.`);
+            if (!existing && request.replaceOnly) throw new ControlError(409, "conflict", `${relative} was deleted or moved before it was saved. Nothing was written.`);
             if (!existing) {
               // A new file: the same as create-file, from bytes.
               this.assertFree(relative, []);
