@@ -874,7 +874,8 @@ export class SharedProject {
     }
     const api = this.ctx.host.api;
     if (!api) return null;
-    return api.downloadRecoveryBlob(this.info.projectId, hash).catch(() => null);
+    // Still a member (removed, or the takedown is not through yet): the normal route; once the project is gone, the recovery copy.
+    return api.downloadBlob(this.info.projectId, hash).catch(() => api.downloadRecoveryBlob(this.info.projectId, hash)).catch(() => null);
   }
 
   /** True once every manifest entry has been placed on disk (join waits on this). */

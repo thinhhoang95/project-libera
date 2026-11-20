@@ -213,9 +213,9 @@ interface MigrationTarget {
 function migrationTargets(runtime: CollabRuntime, projectId: string, documents: { id: string; key: string }[], fileMap: ReviewFileMap | null): MigrationTarget[] {
   const targets: MigrationTarget[] = [];
   for (const doc of documents) {
-    if (fileMap) {
-      const recorded = fileMap[doc.id];
-      const resolved = recorded && runtime.notebooks.resolveDoc?.(recorded.docId);
+    const recorded = fileMap && Object.hasOwn(fileMap, doc.id) ? fileMap[doc.id] : null;
+    if (recorded) {
+      const resolved = runtime.notebooks.resolveDoc?.(recorded.docId);
       if (resolved && resolved.projectId === projectId && resolved.fileId === recorded.fileId && resolved.kind === "markdown") targets.push({ key: doc.key, docId: resolved.docId });
       continue;
     }
