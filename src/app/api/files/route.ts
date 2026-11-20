@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/api";
 import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { copyFileIntoSharedDirectory, createSharedMarkdownFile, deleteSharedFile, moveSharedFile, saveSharedFileText } from "@/lib/collab/shared-writes";
+import { isSharedOperationUnfinished } from "@/lib/collab/shared-outcomes";
 import { StorageError } from "@/lib/storage/errors";
 import { assertSafeSegment, splitDirectoryPath, splitFilePath } from "@/lib/storage/paths";
 import { assertLocalFileIdentity, MoveCommittedError } from "@/lib/storage/files";
@@ -20,6 +21,10 @@ import {
 export const runtime = "nodejs";
 
 function handleError(error: unknown) {
+  // The host committed a shared change but a step after it did not finish: say what it did, so the caller retargets and reports what stayed behind.
+  if (isSharedOperationUnfinished(error)) {
+    return NextResponse.json({ error: error.message, committed: error.committed, unfinished: error.unfinished }, { status: error.status });
+  }
   const storageError = toStorageError(error);
   // A move that happened but whose result could not be built: say where the file is, so the caller can still retarget.
   const committed = storageError instanceof MoveCommittedError ? { moved: storageError.moved, unfinished: storageError.unfinished, ...(storageError.links ? { links: storageError.links } : {}) } : {};

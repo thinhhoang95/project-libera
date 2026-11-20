@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/api";
 import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
+import { isSharedOperationUnfinished } from "@/lib/collab/shared-outcomes";
 import { createSharedFolder, deleteSharedFolder, renameSharedFolder } from "@/lib/collab/shared-writes";
 import { StorageError } from "@/lib/storage/errors";
 import {
@@ -14,6 +15,10 @@ import {
 export const runtime = "nodejs";
 
 function handleError(error: unknown) {
+  // The host committed a shared folder change but a step after it did not finish: say what it did, so the caller treats it as done and reports what stayed behind.
+  if (isSharedOperationUnfinished(error)) {
+    return NextResponse.json({ error: error.message, committed: error.committed, unfinished: error.unfinished }, { status: error.status });
+  }
   const storageError = toStorageError(error);
   return NextResponse.json({ error: storageError.message }, { status: storageError.status });
 }

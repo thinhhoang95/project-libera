@@ -198,7 +198,9 @@ type Verdict = { kind: "own" } | { kind: "obsolete" } | { kind: "hold"; why: str
 
 /** Whether the records at `from` can be taken for this transition's file's, from what the manifest says now. */
 function judge(t: FollowTransition, manifest: Manifest | null): Verdict {
-  if (!manifest) return { kind: "hold", why: "the notebook's file list could not be read, so the owner of its records cannot be established" };
+  // The shared wrappers pass no seq: the host has just answered that it committed this change for the file they asked about, which is what they know without the list.
+  // A change from the log is never judged without the list (drain waits for it).
+  if (!manifest) return t.seq === undefined ? { kind: "own" } : { kind: "hold", why: "the notebook's file list could not be read, so the owner of its records cannot be established" };
   const occupant = manifest.byPath.get(t.from);
   if (occupant !== undefined && t.fileId === undefined) return { kind: "hold", why: "another file is at that path now and this change does not say which file it was" };
   if (occupant !== undefined && occupant !== t.fileId) return { kind: "hold", why: "another file is at that path now, so its records may be that file's" };
@@ -394,6 +396,8 @@ async function drain(notebook: string, options: FollowOptions): Promise<DrainRes
   if (transitions.length === 0) return blank(notebook);
   // Ownership is judged against the manifest as it is now; read outside the lock.
   const manifest = await readManifest(notebook, marker.projectId, config);
+  // Nothing from the log is applied without knowing who owns the paths now: it stays in the log for the next run.
+  if (!manifest) return blank(notebook, { error: "The notebook's file list could not be read, so the owner of its records cannot be established. The changes stay in the host's log." });
   const outcomes = await applyTransitions(notebook, marker.projectId, transitions, manifest);
   const done = outcomes.filter(isFinal).map((outcome) => outcome.seq).filter((seq): seq is number => seq !== undefined);
   let error: string | undefined;

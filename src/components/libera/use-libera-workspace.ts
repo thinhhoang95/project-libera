@@ -24,7 +24,7 @@ import type {
   LiberaTreeNode,
   PdfAnnotationsPayload,
 } from "@/lib/types";
-import { apiRequest, committedMove, emptyTree, encodeFilePath, type CommittedMove } from "@/components/libera/api-client";
+import { apiRequest, committedMove, emptyTree, encodeFilePath, sharedCommitted, type CommittedMove } from "@/components/libera/api-client";
 import { monitorSessionExpiration } from "./session-expiration";
 import { pendingSaves } from "@/components/libera/pending-saves";
 import { createSaveQueue, linkRewriteByPath, pathsUnderMovedFolder, planRetargets, reconcileMovedText, rewriteOpenText, saveBase } from "./tab-retarget";
@@ -4579,6 +4579,16 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       setActiveTabId((current) => (current === file.path ? "" : current));
       await refreshTree(file.notebook);
     } catch (error) {
+      // A shared file the host deleted although a step after it failed: it is gone (tab closed, saved workspaces told); the message says what stayed.
+      if (sharedCommitted(error)) {
+        await workspaceManager.runFileChange(async () => undefined, () => ({ removed: [file.path] })).catch(() => undefined);
+        forgetTabDraft(file.path);
+        setTabs((currentTabs) => currentTabs.filter((currentTab) => currentTab.file.path !== file.path));
+        setActiveTabId((current) => (current === file.path ? "" : current));
+        await refreshTree(file.notebook).catch(() => undefined);
+        setWorkspaceError(error instanceof Error ? error.message : tRef.current("deleteFileError"));
+        return;
+      }
       setWorkspaceError(isIdentityConflict(error) ? tRef.current("fileChangedUnderYouError") : error instanceof Error ? error.message : tRef.current("deleteFileError"));
       // The path now belongs to another file: show what is there instead of the stale list.
       if (isIdentityConflict(error)) await refreshTree().catch(() => undefined);
@@ -4621,6 +4631,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     const parentPath = folder.path.split("/").slice(0, -1).join("/");
     const nextPath = `${parentPath}/${name}`;
 
+    // Set when the host renamed the folder but a step after it failed: the rename stands, and this says what stayed behind.
+    let stayedBehind = "";
     try {
       const nextTree = await workspaceFileRequest<LiberaFolderMovePayload>("/api/folders", {
         method: "PATCH",
@@ -4631,6 +4643,11 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       }, (result) => {
         const rewrite = linkRewriteByPath(result.links);
         return { moved: { from: folder.path, to: nextPath }, ...(rewrite ? { rewrite } : {}) };
+      }).catch(async (error): Promise<LiberaFolderMovePayload> => {
+        if (!sharedCommitted(error)) throw error;
+        stayedBehind = error instanceof Error ? error.message : tRef.current("renameFolderError");
+        await workspaceManager.runFileChange(async () => undefined, () => ({ paths: [nextPath], moved: { from: folder.path, to: nextPath } })).catch(() => undefined);
+        return apiRequest<LiberaTree>("/api/tree?includeArchive=true");
       });
       pendingSaves.moveUnsaved(folder.path, nextPath, { prefix: true });
       await applyCompleteTree(nextTree);
@@ -4694,6 +4711,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       // Open files whose links followed the folder, inside it or not, get the same rewrite; the notice says so.
       applyLinkRewritesToTabs(nextTree.links);
       reportMoveOutcome({ notebook: folder.path.split("/")[0], links: nextTree.links, unfinished: nextTree.unfinished });
+      if (stayedBehind) setWorkspaceError(stayedBehind);
     } catch (error) {
       // Show what is on disk now, whatever the failure left.
       await refreshTree().catch(() => undefined);
@@ -4801,12 +4819,19 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   }
 
   async function deleteFolder(folder: LiberaFolderNode) {
+    // Set when the host deleted the folder but a step after it failed: it is gone, and this says what stayed behind.
+    let stayedBehind = "";
     try {
       const nextTree = await workspaceFileRequest<LiberaTree>(
         `/api/folders?path=${encodeURIComponent(folder.path)}`,
         { method: "DELETE" },
         () => ({ removed: [folder.path] }),
-      );
+      ).catch(async (error): Promise<LiberaTree> => {
+        if (!sharedCommitted(error)) throw error;
+        stayedBehind = error instanceof Error ? error.message : tRef.current("deleteFolderError");
+        await workspaceManager.runFileChange(async () => undefined, () => ({ removed: [folder.path] })).catch(() => undefined);
+        return apiRequest<LiberaTree>("/api/tree?includeArchive=true");
+      });
       await applyCompleteTree(nextTree);
       updateExpanded((current) =>
         new Set(
@@ -4825,6 +4850,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         currentTabs.filter((currentTab) => !currentTab.file.path.startsWith(`${folder.path}/`)),
       );
       setActiveTabId((current) => (current.startsWith(`${folder.path}/`) ? "" : current));
+      if (stayedBehind) setWorkspaceError(stayedBehind);
     } catch (error) {
       setWorkspaceError(error instanceof Error ? error.message : tRef.current("deleteFolderError"));
     }

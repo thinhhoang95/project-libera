@@ -22,9 +22,9 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { diffText } from "../../../electron/collab/notebooks/text-diff";
 import { hasEdits, type PhotoEdits } from "@/lib/photo-edits";
 import { StorageError } from "@/lib/storage/errors";
-import { assertMarkdownFileName, assertSupportedFileName, ensureImageName, ensureMarkdownName, getFileType, normalizeAssetFileName } from "@/lib/storage/file-types";
-import { copyTranscript, followSharedAudioChanges } from "@/lib/storage/transcripts";
-import { followSharedPdfChanges } from "@/lib/storage/pdf-sidecars";
+import { assertMarkdownFileName, assertSupportedFileName, ensureImageName, ensureMarkdownName, normalizeAssetFileName } from "@/lib/storage/file-types";
+import { copyTranscript } from "@/lib/storage/transcripts";
+import { followCommittedChange } from "@/lib/storage/shared-record-follow";
 import { copyInkThroughEdit } from "@/lib/storage/ink";
 import { assertDirectoryExists, copyFileIfExists, pathExists } from "@/lib/storage/fs-utils";
 import {
@@ -42,18 +42,15 @@ import {
   splitFilePath,
 } from "@/lib/storage/paths";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
-import { deleteReviewPath, moveReviewPath } from "@/lib/storage/markdown-reviews";
-import { detachReferenceAttachments, moveReferenceAttachments } from "@/lib/storage/references";
 import { getFileNode, getTree } from "@/lib/storage/tree";
-import { assertCopyKeepsType, assertNoLeftoverFolderRecords, assertNoLeftoverRecords, findAvailableCopyPath, movePathDerivedRecords, readLiberaFile } from "@/lib/storage/files";
-import { removeFileSidecars, removeFolderSidecars, SIDECAR_KINDS } from "@/lib/storage/sidecars";
+import { assertCopyKeepsType, assertNoLeftoverFolderRecords, assertNoLeftoverRecords, findAvailableCopyPath, readLiberaFile } from "@/lib/storage/files";
 import { readSharedAuthorityBytes } from "@/lib/storage/shared-source";
-import { removeFileMetadataPath, removeFileMetadataPathPrefix, renameFileMetadataPathPrefix, removeNotebookPanelExpandedPathPrefix, renameNotebookPanelExpandedPathPrefix } from "@/lib/storage/workspace-metadata";
 import { getMarkdownImageAssetBySource, markdownImageSources } from "@/lib/storage/markdown-assets";
 import { isTextFileType, type LiberaFileNode, type LiberaFilePayload, type LiberaTree, type MarkdownImageAssetPayload } from "@/lib/types";
 import { CollabHostError, resolveSharedPdf, livePdfSnapshot, readProjectBlob, listProjectEntries, applyEdits, collabHostConfig, createSuggestions, createThreadAtRange, createThreadMessage, enqueueCommand, fileOp, getDocText, listAnchoredThreads, listProjects, resolveSharedPath, withdrawSuggestions, type HostClientConfig } from "./host-client";
 import type { AnchoredThreadsResponse, CreateThreadAtRangeResponse, DocText, FileOpResult, ResolvedDoc, TextEdit, WithdrawSuggestionsResponse } from "./local-api";
 import type { AiActorHint, Provenance } from "./protocol/actor";
+import { SharedOperationUnfinishedError, type SharedCommittedChange } from "./shared-outcomes";
 import { canWriteSubdoc } from "./protocol/roles";
 import { SharedDocumentError, isSharedNotebookPath, sharedManifestPath, sharedNotebookMarker } from "./shared-notebook";
 
@@ -699,68 +696,57 @@ export async function moveSharedFile(relativePath: string, destinationDirectory:
   // A slot free in the manifest can still hold records of an earlier file on this computer: refused before the host moves anything, as a local move is.
   if (sourcePath !== nextPath && !own) await assertNoLeftoverRecords(destination.notebook, nextParts, assertSupportedFileName(safeName));
   const config = hostConfig(sourcePath, options);
-  await host(sourcePath, () => fileOp(source.projectId, { op: "rename", path: source.path, to: nextParts.join("/"), ...(options.expectedFileId ? { expectedFileId: options.expectedFileId } : {}) }, config));
-  if (getFileType(current.name) === "audio" && sourcePath !== nextPath) {
-    // The host moved (or dropped) the companion transcript in the same manifest change.
-    await followSharedAudioChanges([{ from: sourcePath, to: nextPath }], []);
-  }
-  // A PDF's local side-cars (annotations, outline, definitions, text cache) follow it now, before the host's event does.
-  if (getFileType(current.name) === "pdf" && sourcePath !== nextPath) await followSharedPdfChanges([{ from: sourcePath, to: nextPath }], []);
-  // The host moves the file's ink, transcript and Python code with it in the same change (and refuses a rename that would lose one).
-  // The records kept on this computer follow here, as for a local file.
-  // The host has moved the file and cannot be asked to undo it, so every step runs and what stayed behind is reported.
-  const stayed = await moveSharedLocalRecords(sourcePath, nextPath);
-  await movePathDerivedRecords(sourcePath, nextPath).catch((error) => {
-    console.error(`[shared-writes] Could not move the review, attachment or tag records of ${sourcePath}:`, error);
-    stayed.push(`review comments, reference attachments or tags of ${sourcePath}`);
-  });
-  notifySearchChanges([sourcePath, nextPath]);
-  if (stayed.length) {
-    throw new StorageError(`The file was moved, but these records could not be moved with it and stay at the old path: ${stayed.join("; ")}. Run Check Notebook to settle them.`, 500);
+  // The manifest's file ID, before the host moves it: it ties this computer's records to the file, not to a path another file may take.
+  const fileId = options.expectedFileId ?? await manifestFileIdAt(current.notebook, sourcePath, options);
+  const result = await host(sourcePath, () => fileOp(source.projectId, { op: "rename", path: source.path, to: nextParts.join("/"), ...(options.expectedFileId ? { expectedFileId: options.expectedFileId } : {}) }, config));
+  // The host has moved the file and cannot be asked to undo it: from here every step runs, and what stayed behind is reported.
+  const committed = committedChanges([{ from: sourcePath, to: nextPath, ...(fileId ? { fileId } : {}) }], result);
+  // (The links that pointed at the file follow here, right after the host commits.)
+  // The records kept on this computer follow through the host's log of manifest moves (src/lib/storage/shared-record-follow.ts): a response lost after this point, or an exit, is applied by the next drain.
+  const followed = sourcePath === nextPath ? { unfinished: [] as string[] } : await followCommittedChange(current.notebook, committed, { config });
+  if (followed.unfinished.length) {
+    throw new SharedOperationUnfinishedError(`The file was moved, but these records could not be moved with it and stay at the old path: ${followed.unfinished.join("; ")}. Run Check Notebook to settle them.`, committed, followed.unfinished);
   }
   return savedFile(nextPath, moving.size, () => readSharedText(nextPath, options).then((result) => result.text, () => undefined));
 }
 
-// Records of a file that SIDECAR_KINDS lists and that something else already moves in a shared
-// notebook: the host (ink and transcripts are manifest entries), the PDF reconciliation
-// (marks, outline, text cache, definitions), or nothing (a waveform cache is made again).
-const SIDECARS_MOVED_ELSEWHERE = new Set(["ink", "transcript", "audio-peaks", "pdf-annotations", "pdf-outline", "pdf-text"]);
+/** The manifest file ID at a Libera path, or undefined when the list cannot be read or has nothing there. */
+async function manifestFileIdAt(notebook: string, liberaPath: string, options: SharedWriteOptions): Promise<string | undefined> {
+  try {
+    return (await listSharedEntries(notebook, options)).find((entry) => entry.path === liberaPath)?.fileId;
+  } catch {
+    return undefined;
+  }
+}
+
+type PlannedChange = SharedCommittedChange & { kind?: "file" | "folder" };
 
 /**
- * The records of a renamed shared file that live only on this computer (image
- * annotations, definitions of a note or LaTeX file, and any kind added to
- * SIDECAR_KINDS later), moved with it as a local rename does. Never replaces a
- * record already at the destination; one that cannot move stays where it is.
- * Returns what stayed, for a caller that must tell the user (a folder rename).
+ * The mapping an operation committed, for SharedOperationUnfinishedError and the
+ * records' follow-up. One place: the host's result says exactly what it moved
+ * (`moves`, companions included); `planned` (the list read before) stands in when it does not.
  */
-async function moveSharedLocalRecords(from: string, to: string): Promise<string[]> {
-  const stayed: string[] = [];
-  if (from === to) return stayed;
-  const source = splitFilePath(from);
-  const target = splitFilePath(to);
-  const fromType = getFileType(source.name);
-  const toType = getFileType(target.name);
-  if (!fromType || !toType) return stayed;
-  for (const kind of SIDECAR_KINDS) {
-    if (SIDECARS_MOVED_ELSEWHERE.has(kind.id) || (kind.id === "definitions" && fromType === "pdf")) continue;
-    if (!kind.appliesTo(fromType) || !kind.appliesTo(toType)) continue;
-    const old = kind.filePath(source.notebook, source.pathParts);
-    const next = kind.filePath(target.notebook, target.pathParts);
-    if (old === next || !(await pathExists(old))) continue;
-    try {
-      if (kind.layout === "folder") continue;
-      // Created exclusively, like the Python sidecar's move: a record saved there meanwhile is never replaced.
-      await copyFileIfExists(old, next, { exclusive: true });
-      await rm(old, { force: true });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") stayed.push(`${kind.id} of ${from} (${to} already has one)`);
-      else {
-        console.error(`[shared-writes] Could not move the ${kind.id} record of ${from} to ${to}:`, error);
-        stayed.push(`${kind.id} of ${from}`);
-      }
-    }
+function committedChanges(planned: PlannedChange[], result: FileOpResult): PlannedChange[] {
+  if (!result.moves?.length) return planned;
+  const kinds = new Map(planned.map((change) => [change.from, change.kind]));
+  const committed: PlannedChange[] = result.moves.map((move) => ({ from: move.from, to: move.to, fileId: move.fileId, kind: kinds.get(move.from) ?? "file" }));
+  // A folder the manifest holds only as the directory of its files has no entry of its own, so no move: its panel state and tags still follow.
+  for (const change of planned) if (change.kind === "folder" && !change.fileId && !committed.some((move) => move.from === change.from)) committed.push(change);
+  return committed;
+}
+
+/** The folder itself and everything under it in the manifest list, mapped to the renamed folder (`nextPath`) or to nothing (a delete). */
+function plannedFolderChanges(entries: import("./local-api").FileListEntry[], folderPath: string, nextPath: string | null): PlannedChange[] {
+  const planned: PlannedChange[] = [];
+  let hasFolder = false;
+  for (const entry of entries) {
+    if (entry.path !== folderPath && !entry.path.startsWith(`${folderPath}/`)) continue;
+    if (entry.path === folderPath) hasFolder = true;
+    planned.push({ from: entry.path, to: nextPath === null ? null : nextPath + entry.path.slice(folderPath.length), fileId: entry.fileId, kind: entry.kind === "folder" ? "folder" : "file" });
   }
-  return stayed;
+  // A folder the manifest holds only as the directory of its files has no entry of its own; its panel state and tags still follow.
+  if (!hasFolder) planned.push({ from: folderPath, to: nextPath, kind: "folder" });
+  return planned;
 }
 
 /** Delete via the manifest; the host removes the working copy and syncs the deletion. */
@@ -771,30 +757,14 @@ export async function deleteSharedFile(relativePath: string, options: SharedIden
   await getSharedFileNode(current.notebook, current.pathParts, options);
   const target = manifestTarget(liberaPath);
   const config = hostConfig(liberaPath, options);
-  await host(liberaPath, () => fileOp(target.projectId, { op: "delete", path: target.path, ...(options.expectedFileId ? { expectedFileId: options.expectedFileId } : {}) }, config));
-  if (getFileType(current.name) === "audio") {
-    // The host deleted the companion transcript in the same manifest change.
-    await followSharedAudioChanges([], [liberaPath]);
-  }
-  // This user deleted it, so their own notes on it go too, as in a local notebook.
-  if (getFileType(current.name) === "pdf") await followSharedPdfChanges([], [liberaPath]);
-  // The host deletes the file's ink with it, in the same change.
-  // The records kept on this computer go too, as in a local delete; the host cannot undo its deletion, so each step runs and failures are reported.
-  const left: string[] = [];
-  const cleanup = async (what: string, work: () => Promise<unknown>) => {
-    try { await work(); } catch (error) {
-      console.error(`[shared-writes] Could not remove the ${what} of ${liberaPath}:`, error);
-      left.push(what);
-    }
-  };
-  const fileType = getFileType(current.name);
-  if (fileType) await cleanup("local records", () => removeFileSidecars(current.notebook, current.pathParts, fileType));
-  await cleanup("review comments", () => deleteReviewPath(liberaPath));
-  await cleanup("reference attachments", () => detachReferenceAttachments(liberaPath));
-  await cleanup("stars and tags", () => removeFileMetadataPath(liberaPath));
-  notifySearchChanges([liberaPath]);
-  if (left.length) {
-    throw new StorageError(`The file was deleted, but its ${left.join(", ")} could not be removed. Run Check Notebook to settle them.`, 500);
+  const fileId = options.expectedFileId ?? await manifestFileIdAt(current.notebook, liberaPath, options);
+  const result = await host(liberaPath, () => fileOp(target.projectId, { op: "delete", path: target.path, ...(options.expectedFileId ? { expectedFileId: options.expectedFileId } : {}) }, config));
+  // The host has deleted it and cannot be asked to undo it. This user deleted it, so the records kept on this computer go too, as in a local notebook:
+  // through the host's log of manifest changes, so an exit before this finishes is applied by the next drain. Every step runs; what stayed behind is reported.
+  const committed = committedChanges([{ from: liberaPath, to: null, ...(fileId ? { fileId } : {}) }], result);
+  const followed = await followCommittedChange(current.notebook, committed, { config });
+  if (followed.unfinished.length) {
+    throw new SharedOperationUnfinishedError(`The file was deleted, but its ${followed.unfinished.join(", ")} could not be removed. Run Check Notebook to settle them.`, committed, followed.unfinished);
   }
   // If it is slower than this, the host says when the file has left the disk.
   await diskCaughtUp(liberaPath, false);
@@ -823,23 +793,18 @@ export async function renameSharedFolder(relativePath: string, name: string, opt
   // A name free in the manifest can still hold records of earlier files on this computer: refused before the host renames, as a local rename is.
   if (sourcePath !== nextPath) await assertNoLeftoverFolderRecords(current.notebook, parts);
   // The files under the folder, as the manifest has them before the rename: their records move with them below.
-  const reviewed = sourcePath === nextPath ? [] : (await listSharedEntries(current.notebook, options)).filter((entry) => entry.path.startsWith(`${sourcePath}/`));
-  const files = reviewed.filter((entry) => entry.kind !== "folder");
+  const listed = sourcePath === nextPath ? [] : await listSharedEntries(current.notebook, options);
+  const reviewed = listed.filter((entry) => entry.path.startsWith(`${sourcePath}/`));
   const config = hostConfig(sourcePath, options);
   // The host renames the folder only if it still holds exactly the entries listed here.
-  await host(sourcePath, () => fileOp(source.projectId, { op: "rename", path: source.path, to: parts.join("/"), ...(sourcePath === nextPath ? {} : { expectedDescendantIds: reviewed.map((entry) => entry.fileId) }) }, config));
-  // The manifest has renamed; the records kept on this computer follow, as for a local folder rename.
-  // Every step runs, and what could not move is reported (the rename itself cannot be taken back).
-  const stayed: string[] = [];
-  for (const file of files) stayed.push(...await moveSharedLocalRecords(file.path, nextPath + file.path.slice(sourcePath.length)));
-  // Reviews and reference attachments follow by folder; the notebook's tethered .bib follows through the same "moved" event.
-  await moveReviewPath(sourcePath, nextPath).catch((error) => { console.error(`[shared-writes] Could not move the reviews of ${sourcePath}:`, error); stayed.push(`review comments under ${sourcePath}`); });
-  await moveReferenceAttachments(sourcePath, nextPath);
-  await renameFileMetadataPathPrefix(sourcePath, nextPath);
-  await renameNotebookPanelExpandedPathPrefix(sourcePath, nextPath);
-  notifySearchChanges();
-  if (stayed.length) {
-    throw new StorageError(`The folder was renamed, but these records could not be moved with it and stay at the old path: ${stayed.join("; ")}. Run Check Notebook to settle them.`, 500);
+  const result = await host(sourcePath, () => fileOp(source.projectId, { op: "rename", path: source.path, to: parts.join("/"), ...(sourcePath === nextPath ? {} : { expectedDescendantIds: reviewed.map((entry) => entry.fileId) }) }, config));
+  // The manifest has renamed; the host cannot be asked to undo it. The records kept on this computer follow, as for a local folder rename:
+  // through the host's log, with every step run and what could not move reported.
+  const committed = committedChanges(sourcePath === nextPath ? [] : plannedFolderChanges(listed, sourcePath, nextPath), result);
+  // (The links that pointed into the folder follow here, right after the host commits.)
+  const followed = committed.length ? await followCommittedChange(current.notebook, committed, { config }) : { unfinished: [] as string[] };
+  if (followed.unfinished.length) {
+    throw new SharedOperationUnfinishedError(`The folder was renamed, but these records could not be moved with it and stay at the old path: ${followed.unfinished.join("; ")}. Run Check Notebook to settle them.`, committed, followed.unfinished);
   }
   return getTree();
 }
@@ -853,24 +818,15 @@ export async function deleteSharedFolder(relativePath: string, options: SharedWr
   await assertSharedDirectoryExists(itemPath(current.notebook, current.pathParts), liberaPath, "Folder was not found.", options);
   const config = hostConfig(liberaPath, options);
   // The host deletes the folder only if it still holds exactly the entries listed here.
-  const reviewed = (await listSharedEntries(current.notebook, options)).filter((entry) => entry.path.startsWith(`${liberaPath}/`));
-  await host(liberaPath, () => fileOp(target.projectId, { op: "delete", path: target.path, expectedDescendantIds: reviewed.map((entry) => entry.fileId) }, config));
-  // The records kept on this computer go too, as in a local folder delete; each step runs and failures are reported (the host's deletion cannot be undone).
-  const left: string[] = [];
-  const cleanup = async (what: string, work: () => Promise<unknown>) => {
-    try { await work(); } catch (error) {
-      console.error(`[shared-writes] Could not remove the ${what} under ${liberaPath}:`, error);
-      left.push(what);
-    }
-  };
-  await cleanup("local records", () => removeFolderSidecars(current.notebook, current.pathParts));
-  await cleanup("review comments", () => deleteReviewPath(liberaPath));
-  await cleanup("reference attachments", () => detachReferenceAttachments(liberaPath));
-  await cleanup("stars and tags", () => removeFileMetadataPathPrefix(liberaPath));
-  await cleanup("panel state", () => removeNotebookPanelExpandedPathPrefix(liberaPath));
-  notifySearchChanges();
-  if (left.length) {
-    throw new StorageError(`The folder was deleted, but its ${left.join(", ")} could not be removed. Run Check Notebook to settle them.`, 500);
+  const listed = await listSharedEntries(current.notebook, options);
+  const reviewed = listed.filter((entry) => entry.path.startsWith(`${liberaPath}/`));
+  const result = await host(liberaPath, () => fileOp(target.projectId, { op: "delete", path: target.path, expectedDescendantIds: reviewed.map((entry) => entry.fileId) }, config));
+  // The host has deleted them and cannot be asked to undo it. The records kept on this computer go too, as in a local folder delete:
+  // through the host's log; every step runs and what stayed behind is reported.
+  const committed = committedChanges(plannedFolderChanges(listed, liberaPath, null), result);
+  const followed = await followCommittedChange(current.notebook, committed, { config });
+  if (followed.unfinished.length) {
+    throw new SharedOperationUnfinishedError(`The folder was deleted, but its ${followed.unfinished.join(", ")} could not be removed. Run Check Notebook to settle them.`, committed, followed.unfinished);
   }
   return getTree();
 }

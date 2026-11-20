@@ -7759,7 +7759,8 @@
       "metadata": "dấu sao và thẻ",
       "references": "tài liệu tham khảo được trích dẫn",
       "history": "lịch sử hoàn tác",
-      "links": "liên kết"
+      "links": "liên kết",
+      "records": "dữ liệu lưu trên máy này"
     },
     "noNoteQuoteNotice": "Không có ghi chú nào đang mở: đoạn trích và trích dẫn đã được sao chép vào bảng nhớ tạm.",
     "noSnipTextError": "Không tìm thấy văn bản trong vùng chụp.",
