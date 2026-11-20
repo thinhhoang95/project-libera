@@ -1,9 +1,10 @@
 import { StorageError } from "@/lib/storage/errors";
-import { assertLocalFileIdentity, assertNoLeftoverRecords, deleteFile, moveFileToDirectory, MoveCommittedError } from "@/lib/storage/files";
+import { assertLocalFileIdentity, assertNoLeftoverRecords, deleteFile, moveFileToDirectory, MoveCommittedError, readLiberaFile } from "@/lib/storage/files";
+import { followMovedLinks } from "@/lib/storage/move-links";
 import { assertDirectoryExists, pathExists } from "@/lib/storage/fs-utils";
 import { assertSupportedFileName } from "@/lib/storage/file-types";
 import { filePathFromParts, itemPath, splitDirectoryPath, splitFilePath } from "@/lib/storage/paths";
-import type { LiberaFileMovePayload } from "@/lib/types";
+import type { LiberaFileMovePayload, LiberaLinkRewrites, LiberaMoveStep } from "@/lib/types";
 
 /**
  * Several files moved or deleted in one request (the notebook rail's multiple
@@ -35,6 +36,14 @@ export type BatchMoveResult = {
   notMoved: string[];
   /** Already in the destination folder: nothing to do (as the single move does). */
   unchanged: string[];
+  /**
+   * What the one links step of the batch did, for every note it rewrote (moved
+   * or not, by its path now). Each moved file's payload carries only its own
+   * rewrite, for its tab; the app applies the rest once.
+   */
+  links?: LiberaLinkRewrites;
+  /** The links step, when it failed: the files moved, and Check Notebook lists the links that did not follow. */
+  unfinished?: LiberaMoveStep[];
 };
 
 export type BatchDeleteResult = { deleted: string[]; failed: { path: string; error: string }[] };
@@ -149,7 +158,10 @@ export async function moveFilesToDirectory(items: BatchItem[], destinationDirect
   const problems = await (hooks.preflight ?? preflightLocalMove)(items, destinationDirectory);
   if (problems.length) throw refusal(problems);
 
-  const move = hooks.move ?? ((item, directory) => moveFileToDirectory(item.path, directory, undefined, { expectedFileId: item.fileId }));
+  // Locally, links follow once for the whole batch, after the files moved: links between files moving together keep
+  // their form, and no file of the batch is rewritten (and so changed from what was selected) before its own move.
+  const local = !hooks.move;
+  const move = hooks.move ?? ((item, directory) => moveFileToDirectory(item.path, directory, undefined, { expectedFileId: item.fileId, deferLinks: true }));
   const result: BatchMoveResult = { moved: [], failed: null, notMoved: [], unchanged: [] };
   const pending = items.filter((item) => {
     if (parentOf(item.path) !== destinationDirectory) return true;
@@ -169,7 +181,27 @@ export async function moveFilesToDirectory(items: BatchItem[], destinationDirect
       break;
     }
   }
+  if (local) await followBatchLinks(result);
   return result;
+}
+
+/**
+ * The links step of a local batch, once, for every file that moved (also when
+ * a later file stopped the batch: those that moved still need their links).
+ * Each moved note's payload gets its own rewrite and its text as it is now, as
+ * a single move's would.
+ */
+async function followBatchLinks(result: BatchMoveResult) {
+  if (!result.moved.length) return;
+  const { links, unfinished } = await followMovedLinks(result.moved.map(({ from, to }) => ({ from, to })));
+  for (const entry of result.moved) {
+    const own = links.rewritten.find((note) => note.path === entry.to);
+    if (!own || !entry.payload) continue;
+    const file = await readLiberaFile(entry.to).catch(() => null);
+    entry.payload = { ...entry.payload, ...(file ?? {}), links: { rewritten: [own], skipped: [], unchecked: [] } };
+  }
+  if (links.rewritten.length || links.skipped.length || links.unchecked.length) result.links = links;
+  if (unfinished) result.unfinished = [unfinished];
 }
 
 /**

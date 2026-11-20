@@ -192,3 +192,29 @@ test("the batch route moves and deletes, refuses with the problems, and the tree
   assert.deepEqual(body.failed.map((entry) => entry.path), ["Nb/dest/a.md"]);
   await sound("Nb");
 }));
+
+test("files of a batch that link to each other all move, their links follow, and the notebook stays sound", () => withTemporaryLibrary(["Nb"], async () => {
+  await writeLibraryFile("Nb/drafts/a.md", "# A\n\nSee [b](b.md).\n");
+  await writeLibraryFile("Nb/drafts/b.md", "# B\n\nSee [a](a.md).\n");
+  await createFolder("Nb", "notes");
+  // The identities the rail had when the files were selected: moving a.md rewrites b.md's link to it before b.md moves.
+  const items = [await item("Nb/drafts/a.md"), await item("Nb/drafts/b.md")];
+  const result = await moveFilesToDirectory(items, "Nb/notes");
+  assert.equal(result.failed, null, "the second file is not refused for the batch's own rewrite of it");
+  assert.deepEqual(result.moved.map((entry) => entry.to), ["Nb/notes/a.md", "Nb/notes/b.md"]);
+  assert.equal(await readFile(disk("Nb/notes/a.md"), "utf8"), "# A\n\nSee [b](b.md).\n");
+  assert.equal(await readFile(disk("Nb/notes/b.md"), "utf8"), "# B\n\nSee [a](a.md).\n");
+  await sound("Nb");
+}));
+
+test("a note that stays and links to files of a batch is rewritten once, and the batch reports it", () => withTemporaryLibrary(["Nb"], async () => {
+  await writeLibraryFile("Nb/drafts/a.md", "# A\n");
+  await writeLibraryFile("Nb/drafts/b.md", "# B\n\nSee [a](a.md).\n");
+  await writeLibraryFile("Nb/index.md", "[a](drafts/a.md) and [b](drafts/b.md)\n");
+  await createFolder("Nb", "notes");
+  const result = await moveFilesToDirectory([await item("Nb/drafts/a.md"), await item("Nb/drafts/b.md")], "Nb/notes");
+  assert.equal(result.failed, null);
+  assert.equal(await readFile(disk("Nb/index.md"), "utf8"), "[a](notes/a.md) and [b](notes/b.md)\n");
+  assert.deepEqual(result.links?.rewritten.map((note) => note.path).sort(), ["Nb/index.md"], "b.md's link to a.md kept its form, so only the staying note was rewritten");
+  await sound("Nb");
+}));

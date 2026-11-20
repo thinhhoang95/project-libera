@@ -219,7 +219,11 @@ export async function updateMarkdownFile(relativePath: string, content: string, 
  * (localFileIdentity of its tree node). A move, archive or delete of a path
  * that holds another file by then is refused (409) instead of acted on.
  */
-export type LocalFileActionOptions = { expectedFileId?: string };
+export type LocalFileActionOptions = {
+  expectedFileId?: string;
+  /** The caller runs the links step itself, once for all its moves (a batch: batch-files.ts), so links between files moving together keep their form. */
+  deferLinks?: boolean;
+};
 
 export async function moveFile(relativePath: string, nextNotebook: string, nextName: string, options: LocalFileActionOptions = {}): Promise<LiberaFileMovePayload> {
   await ensureAdminRoot();
@@ -315,13 +319,14 @@ async function performFileMove(move: FileMove, options: LocalFileActionOptions =
   try { payload = await withPathLocks([move.currentPath, move.nextPath], () => performLockedFileMove(move, options)); }
   catch (error) {
     // The file moved but its result could not be read: links still follow, and the error says what they did.
-    if (error instanceof MoveCommittedError) {
+    if (error instanceof MoveCommittedError && !options.deferLinks) {
       const { links, unfinished } = await followMovedLinks(moves);
       error.links = links;
       if (unfinished) error.unfinished.push(unfinished);
     }
     throw error;
   }
+  if (options.deferLinks) return payload;
   const { links, unfinished } = await followMovedLinks(moves);
   const own = links.rewritten.find((note) => note.path === move.nextRelativePath)?.rewrite;
   // The moved note's own text changed: the payload carries what is on disk now (the same rewrite of what it read, if it can't be read again).

@@ -4214,8 +4214,20 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
           items: moving.map((file) => ({ path: file.path, fileId: file.fileId })),
           destinationDirectory: destinationPath,
         }),
-      }, (result) => ({ paths: result.moved.map((item) => item.to), moved: result.moved.map(({ from, to }) => ({ from, to })) }));
+      }, (result) => {
+        // Saved workspaces get the batch's link rewrites too, for the notes it rewrote, moved or not.
+        const others = linkRewriteByPath(result.links);
+        return {
+          paths: result.moved.map((item) => item.to),
+          moved: result.moved.map(({ from, to }) => ({ from, to })),
+          ...(others ? { rewrite: (path: string, text: string) => others(path, text) ?? text } : {}),
+        };
+      });
+      // Each moved file's payload carries its own rewrite, for its tab; the batch's one links step rewrote the rest,
+      // which open notes get once here (the moved files' tabs already have theirs).
       for (const item of result.moved) if (item.payload) followFileMove(item.from, item.payload);
+      applyLinkRewritesToTabs(result.links, result.moved.map((item) => item.to));
+      if (result.links || result.unfinished) reportMoveOutcome({ notebook: files[0].notebook, links: result.links, unfinished: result.unfinished });
       if (result.failed) {
         setWorkspaceError(tRef.current("batchMovePartialError", {
           moved: result.moved.length, total: moving.length, name: result.failed.path.split("/").at(-1) ?? result.failed.path, message: result.failed.error,
