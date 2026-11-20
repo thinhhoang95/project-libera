@@ -65,6 +65,14 @@ function getDialogContent(dialog: WorkspaceConfirmDialogState, t: ReturnType<typ
   }
 }
 
+/** Open files with unsaved edits that a delete would also discard; named so it is not a surprise. */
+function unsavedNamesOf(dialog: WorkspaceConfirmDialogState): string[] {
+  return dialog.mode === "delete-file" || dialog.mode === "delete-folder" || dialog.mode === "delete-notebook"
+    ? dialog.unsavedNames : [];
+}
+
+const MAX_NAMES_SHOWN = 5;
+
 export function WorkspaceConfirmDialog({
   dialog,
   submitting,
@@ -77,6 +85,9 @@ export function WorkspaceConfirmDialog({
   }
 
   const content = getDialogContent(dialog, t);
+  const unsavedNames = unsavedNamesOf(dialog);
+  const shownNames = unsavedNames.slice(0, MAX_NAMES_SHOWN).join(", ");
+  const hiddenCount = unsavedNames.length - MAX_NAMES_SHOWN;
 
   return (
     <ModalDialog
@@ -112,6 +123,11 @@ export function WorkspaceConfirmDialog({
         <AlertTriangle aria-hidden className="mt-0.5 h-4 w-4 shrink-0" />
         <p>{t("cannotBeUndone")}</p>
       </div>
+      {unsavedNames.length ? (
+        <p className="mt-3 text-sm text-destructive" role="alert">
+          {t("deleteUnsavedWarning", { names: hiddenCount > 0 ? `${shownNames} (+${hiddenCount})` : shownNames })}
+        </p>
+      ) : null}
     </ModalDialog>
   );
 }

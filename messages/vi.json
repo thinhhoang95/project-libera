@@ -7851,6 +7851,7 @@
     "deleteNotebookConfirm": "Xóa sổ tay",
     "deleteNotebookDescription": "Xóa {notebook} và mọi tệp bên trong?",
     "deleteNotebookTitle": "Xóa sổ tay",
+    "deleteUnsavedWarning": "Các thay đổi chưa lưu trong những tệp này sẽ bị mất: {names}.",
     "moveFileConfirm": "Chuyển mà không lưu",
     "moveFileDescription": "{name} có chỉnh sửa chưa lưu.",
     "moveFileTitle": "Chuyển tệp chưa lưu",

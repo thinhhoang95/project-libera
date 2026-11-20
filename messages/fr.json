@@ -7851,6 +7851,7 @@
     "deleteNotebookConfirm": "Supprimer le carnet",
     "deleteNotebookDescription": "Supprimer {notebook} et tous les fichiers qu’il contient ?",
     "deleteNotebookTitle": "Supprimer le carnet",
+    "deleteUnsavedWarning": "Les modifications non enregistrées de ces fichiers seront perdues : {names}.",
     "moveFileConfirm": "Déplacer sans enregistrer",
     "moveFileDescription": "{name} comporte des modifications non enregistrées.",
     "moveFileTitle": "Déplacer le fichier non enregistré",

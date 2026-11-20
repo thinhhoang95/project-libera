@@ -7851,6 +7851,7 @@
     "deleteNotebookConfirm": "删除笔记本",
     "deleteNotebookDescription": "要删除 {notebook} 及其中的所有文件吗？",
     "deleteNotebookTitle": "删除笔记本",
+    "deleteUnsavedWarning": "这些文件中未保存的修改将会丢失：{names}。",
     "moveFileConfirm": "不保存并移动",
     "moveFileDescription": "{name} 包含未保存的编辑内容。",
     "moveFileTitle": "移动未保存的文件",

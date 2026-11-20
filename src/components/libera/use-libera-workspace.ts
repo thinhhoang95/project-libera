@@ -85,6 +85,9 @@ import {
 import type { MigrationRequest, MigrationResult } from "@/lib/storage/migration";
 import type { MigrationPreset } from "./notebook-migration-dialog";
 import { REPAIR_MOVED_EVENT } from "./notebook-integrity-dialog";
+import { splitDropDestination } from "./drop-target";
+import { missingTabIds, unsavedNamesUnder } from "./tab-presence";
+import { movesFromRepairMessage, REPAIR_CHANNEL_NAME } from "./repair-channel";
 import type { ReferenceMoveResult } from "@/lib/references/moves";
 import { remapDocumentHeadingNumbering } from "./heading-numbering-state";
 import { agentReviewStore } from "@/lib/agent-review/store";
@@ -685,8 +688,29 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   // Files added in Finder or another app raise no event here (only shared
   // notebooks are watched), so read the library again when the window returns.
   const latestFocusRefresh = useRef(refreshTree);
+  /**
+   * After a refresh from disk, a tab whose file is no longer in the tree (moved or deleted
+   * by a sync client or Finder) says so on the tab, as a failed save does. Its text stays in
+   * the editor and a save is refused, not recreated at the old path (updateMarkdownFile, 409).
+   * The note clears again if the file comes back.
+   */
+  function markMissingTabs(shown: LiberaTree) {
+    const message = tRef.current("fileGoneOnDiskError");
+    setTabs((current) => {
+      const missing = missingTabIds(current, shown);
+      let changed = false;
+      const next = current.map((tab) => {
+        if (missing.has(tab.id) && !tab.error && tab.status !== "saving") { changed = true; return { ...tab, error: message }; }
+        if (!missing.has(tab.id) && tab.error === message && tab.status !== "error") { changed = true; return { ...tab, error: undefined }; }
+        return tab;
+      });
+      return changed ? next : current;
+    });
+  }
+  const latestMarkMissing = useRef(markMissingTabs);
   useLayoutEffect(() => {
     latestFocusRefresh.current = refreshTree;
+    latestMarkMissing.current = markMissingTabs;
   });
   useEffect(() => {
     if (!authenticated) return;
@@ -699,6 +723,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       lastStartedAt = Date.now();
       // A failed background check is not worth an error banner; the next one retries.
       void latestFocusRefresh.current(undefined, { onlyIfChanged: true, maintain: true })
+        .then((shown) => latestMarkMissing.current(shown))
         .catch(() => undefined)
         .finally(() => { running = false; });
     };
@@ -3510,7 +3535,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   }
 
   async function deleteNotebookFromPrompt(notebook: string) {
-    setWorkspaceConfirmDialog({ mode: "delete-notebook", notebook });
+    setWorkspaceConfirmDialog({ mode: "delete-notebook", notebook, unsavedNames: unsavedNamesUnder(tabs, notebook, tabUnsaved) });
   }
 
   async function deleteNotebook(notebook: string) {
@@ -3948,7 +3973,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     destinationPath: string,
     options?: { skipDirtyCheck?: boolean },
   ) {
-    const normalizedDestination = destinationPath.trim();
+    // Used as given: tree paths are exact (" Drafts" is not "Drafts"), and the typed
+    // Move dialog trims its own input before calling.
+    const normalizedDestination = destinationPath;
     const openTab = tabs.find((tab) => tab.file.path === file.path);
 
     if (!normalizedDestination || normalizedDestination === parentPathForFile(file)) {
@@ -3958,9 +3985,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     // To another notebook, a file moves as a migration of one file: reviewed, crash-safe, and
     // followed by everything it has (storage/migration.ts). The dialog saves unsaved tabs itself,
     // so this comes before the unsaved-draft question. Within its notebook it moves directly.
-    const [destinationNotebook, ...folder] = normalizedDestination.split("/").map((part) => part.trim()).filter(Boolean);
+    const { notebook: destinationNotebook, folder } = splitDropDestination(normalizedDestination);
     if (destinationNotebook && destinationNotebook !== file.notebook) {
-      openMigrationDialog(file.notebook, { paths: [file.path], destination: destinationNotebook, folder: folder.join("/"), flat: true });
+      openMigrationDialog(file.notebook, { paths: [file.path], destination: destinationNotebook, folder, flat: true });
       return;
     }
 
@@ -4219,7 +4246,16 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       if (Array.isArray(moves)) void latestRepairApply.current(moves).catch((error: Error) => setWorkspaceError(error.message));
     };
     window.addEventListener(REPAIR_MOVED_EVENT, onRepaired);
-    return () => window.removeEventListener(REPAIR_MOVED_EVENT, onRepaired);
+    // Another window ran Try to fix: its tabs and drafts follow too (the window event is local).
+    const channel = typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel(REPAIR_CHANNEL_NAME);
+    if (channel) channel.onmessage = (event: MessageEvent) => {
+      const moves = movesFromRepairMessage(event.data);
+      if (moves) void latestRepairApply.current(moves).catch((error: Error) => setWorkspaceError(error.message));
+    };
+    return () => {
+      window.removeEventListener(REPAIR_MOVED_EVENT, onRepaired);
+      channel?.close();
+    };
   }, [authenticated]);
 
   // Another window ran a migration: this window's tabs and state follow it.
@@ -4273,7 +4309,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   }
 
   async function deleteFileNodeFromPrompt(file: LiberaFileNode) {
-    setWorkspaceConfirmDialog({ mode: "delete-file", file });
+    setWorkspaceConfirmDialog({ mode: "delete-file", file, unsavedNames: unsavedNamesUnder(tabs, file.path, tabUnsaved) });
   }
 
   async function deleteFileNode(file: LiberaFileNode) {
@@ -4492,7 +4528,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   }
 
   async function deleteFolderFromPrompt(folder: LiberaFolderNode) {
-    setWorkspaceConfirmDialog({ mode: "delete-folder", folder });
+    setWorkspaceConfirmDialog({ mode: "delete-folder", folder, unsavedNames: unsavedNamesUnder(tabs, folder.path, tabUnsaved) });
   }
 
   async function deleteFolder(folder: LiberaFolderNode) {
