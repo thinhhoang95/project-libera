@@ -1,6 +1,7 @@
 import { migrateImageAnnotationDirectory, migrateImageAnnotations, migratePdfAnnotationDirectory, migratePdfAnnotations, updatePdfCommentThreads, writePdfAnnotations } from "./annotations";
 import { moveReviewPath, moveReviewPaths, deleteReviewPath, copyReviewPath } from "./markdown-reviews";
-import { hasReviewEntry, listReviewEntryPaths, transformReviewBaselines, withMovedReview, withMovedReviewsUnder } from "@/lib/agent/review-store";
+import { discardReviewsAt, discardReviewsUnder, hasReviewEntry, listReviewEntryPaths, transformReviewBaselines, withMovedReview, withMovedReviewsUnder } from "@/lib/agent/review-store";
+import { reviewIndexBlocker } from "./destination-records";
 import { rewriteMarkdownImageSources } from "@/lib/markdown-image-sources";
 import { rewriteCitationKeys } from "@/lib/references/citation-syntax";
 import { isEmptyReview, type ReviewDocument } from "@/lib/markdown-review";
@@ -661,6 +662,8 @@ export async function archiveFolder(relativePath: string) {
   // The archive picks its own name: one that holds no folder, nor records (Python code of the notes included) of files that were there before.
   const incoming = (name: string) => notes.map((note) => `${relativeFilePath(current.notebook, [ARCHIVE_DIR, name])}${note.slice(currentRelativePath.length)}`);
   let available = await findAvailableDirectoryPath(archiveDirectoryPath, currentName);
+  const indexBlocker = await reviewIndexBlocker();
+  if (indexBlocker) throw new StorageError(indexBlocker, 409);
   for (let index = 1; (await leftoverFolderRecords(current.notebook, [ARCHIVE_DIR, available.name], false, incoming(available.name))).length; index += 1) {
     available = await findAvailableDirectoryPath(archiveDirectoryPath, `${currentName}-${index}`);
   }
@@ -698,6 +701,7 @@ export async function deleteFolder(relativePath: string) {
   for (const document of markdown) await deletePythonSidecar(document.documentPath);
   const imagesCleaned = await cleanupMarkdownImageAssets(current.notebook, markdown);
   await deleteReviewPath(relativeFilePath(current.notebook, current.pathParts));
+  await discardReviewsUnder(relativeFilePath(current.notebook, current.pathParts));
   await detachReferenceAttachments(relativeFilePath(current.notebook, current.pathParts));
   await removeFileMetadataPathPrefix(relativeFilePath(current.notebook, current.pathParts));
   await removeNotebookPanelExpandedPathPrefix(
@@ -771,6 +775,8 @@ export async function archiveFile(relativePath: string) {
   const extension = path.extname(current.name);
   const stem = path.basename(current.name, extension);
   let safeNextName = current.name;
+  const indexBlocker = await reviewIndexBlocker();
+  if (indexBlocker) throw new StorageError(indexBlocker, 409);
   for (let index = 1; await pathExists(path.join(archiveDirectoryPath, safeNextName)) || (await leftoverRecords(current.notebook, [ARCHIVE_DIR, safeNextName], currentFileType)).length; index += 1) {
     safeNextName = `${stem}-${index}${extension}`;
   }
@@ -897,6 +903,7 @@ export async function deleteFile(relativePath: string) {
     await cleanupMarkdownImageAssets(notebook, [{ documentPath: relativePath, content: markdown }]);
   }
   await deleteReviewPath(relativeFilePath(notebook, pathParts));
+  await discardReviewsAt(relativeFilePath(notebook, pathParts));
   await detachReferenceAttachments(relativeFilePath(notebook, pathParts));
   await removeFileMetadataPath(relativeFilePath(notebook, pathParts));
   notifySearchChanges([relativeFilePath(notebook, pathParts)]);

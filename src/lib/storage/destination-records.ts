@@ -20,6 +20,17 @@ const RECORD_NAMES: Record<string, string> = {
   definitions: "definitions", ink: "ink", python: "Python code",
 };
 
+/**
+ * Why no name can be shown free of review comments, or null. A review index
+ * that can't be read says nothing about any one path, so every name looks
+ * occupied; asking for the next free name would never end. Name allocation
+ * reports this first and stops (Archive File, Archive Folder, migration).
+ */
+export async function reviewIndexBlocker(): Promise<string | null> {
+  const { damaged } = await inspectReviewKeys(getStateRoot());
+  return damaged === undefined ? null : `The review comments index can't be read (${damaged}), so no free name can be found. Check the notebook, then try again.`;
+}
+
 export async function destinationRecords() {
   const caches = new Set(SIDECAR_KINDS.filter((kind) => kind.cache).map((kind) => kind.id));
   const root = getStateRoot();
@@ -38,6 +49,8 @@ export async function destinationRecords() {
   }
 
   return {
+    /** Set when the review index is unreadable: `at` then answers "review comments" for every path, which is "can't tell", not "occupied". */
+    blocker: reviewKeys.damaged === undefined ? null : await reviewIndexBlocker(),
     /** The names of the records still at `parts` of `notebook`; empty when the path is free of them. */
     async at(notebook: string, parts: string[], fileType: string | null): Promise<string[]> {
       const relative = relativeFilePath(notebook, parts);
