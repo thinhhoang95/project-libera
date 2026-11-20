@@ -894,6 +894,9 @@ export function LiberaApp({
           onEditNotebook={workspace.openEditNotebookDialog}
           onEditNotebookGroup={workspace.openEditNotebookGroupDialog}
           onMoveFile={workspace.moveFileToFolder}
+          onMoveFiles={workspace.moveFilesToFolder}
+          onMoveFilesPrompt={workspace.moveFilesFromPrompt}
+          onDeleteFiles={workspace.deleteFileNodesFromPrompt}
           onOpenFile={workspace.openFile}
           onLogout={workspace.handleLogout}
           onRenameFolder={workspace.renameFolderFromPrompt}
