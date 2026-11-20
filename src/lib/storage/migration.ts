@@ -47,7 +47,9 @@ import { fileExistence, libraryNotebookNames, linkCandidates, readNotebookLinkIn
 import { extractNotebookLinkDestinations } from "@/lib/storage/notebook-links";
 import { isVisibleTreeEntry, listVisibleNotebookFiles } from "@/lib/storage/tree";
 import { renameFileMetadataPathPrefix, renameFileMetadataPaths, renameNotebookPanelExpandedPathPrefix } from "@/lib/storage/workspace-metadata";
-import type { LiberaNotebookMetadata } from "@/lib/types";
+import type { LiberaLinkRewrites, LiberaNotebookMetadata } from "@/lib/types";
+import { applyMovedLinks, followLinkRewrites, planMovedLinks, type AppliedLinkRewrite, type PathMove, type PlannedLinkRewrite } from "@/lib/storage/move-links";
+import { rewriteMovedPaths } from "@/lib/move-rewrites";
 
 // Notebook migration: move a selection of files and folders from one local
 // notebook to another (or to a new one), with everything Libera keeps for
@@ -75,6 +77,7 @@ import type { LiberaNotebookMetadata } from "@/lib/types";
 //             against the identity recorded in the plan.
 //   finalizing  One pass each, the journal recording each step as it ends:
 //             folders, stars/tags/reviews, images, reference attachments,
+//             paths in notes (move-links.ts, with the committed mapping),
 //             cited references, agent review and undo history, reference
 //             entries, the search index, and a check for leftovers.
 // The finished journal keeps the result until the client acknowledges it,
@@ -189,7 +192,7 @@ type JournalItem = MigrationItem & {
   images?: { created: string[]; imageSources: Record<string, string>; before: string; after: string };
 };
 
-type FinalizeStep = "folders" | "records" | "assets" | "attachments" | "tether" | "references" | "history" | "entries" | "notify";
+type FinalizeStep = "folders" | "records" | "assets" | "attachments" | "tether" | "links" | "references" | "history" | "entries" | "notify";
 
 type Journal = {
   version: 2;
@@ -227,6 +230,19 @@ type Journal = {
    */
   citationRewrites?: PlannedCitationRewrite[];
   citationRewritesApplied?: boolean;
+  /**
+   * The paths rewritten in notes and LaTeX sources so they follow what moved
+   * (storage/move-links.ts), planned with the committed mapping and saved
+   * before the first file is rewritten: each file's rewrite and its text
+   * hashes before and after. A resume applies these same rewrites; a file at
+   * its rewritten text is this migration's own (and is not rewritten again).
+   */
+  linkRewrites?: PlannedLinkRewrite[];
+  linkSkipped?: LiberaLinkRewrites["skipped"];
+  linkUnchecked?: string[];
+  /** The rewrites written (by path), and whether what keeps their text followed (reviews, history, indexes). */
+  linksApplied?: string[];
+  linkRecordsFollowed?: boolean;
   referenceEntries?: MigrationResult["referenceEntries"];
   /** Records that could not be updated. The files moved; these need attention. */
   bookkeeping: string[];
@@ -273,6 +289,8 @@ export type MigrationResult = {
   check: "clean" | "incomplete" | "unverified";
   /** A workspace group chosen for the new notebook, for the app to record. */
   workspaceGroup?: { notebook: string; groupId: string | null };
+  /** Paths in notes rewritten to follow the files that moved (moved notes by their new path), and those that could not be. */
+  links?: LiberaLinkRewrites;
   error?: string;
 };
 
@@ -844,7 +862,7 @@ async function planWarnings(plan: PlanCore, keptFree: ReadonlySet<string> = new 
     warnings.push({ kind: "cross-device", message: "The notebooks are on different drives, so files are copied and then removed from the source. Their creation dates are not kept.", paths: [] });
   }
 
-  // Markdown links are not rewritten when files move (docs/features/related-notebooks.md).
+  // Links and chart data that a move changes are rewritten in the links finalize step (docs/features/move-link-refactor.md); the review lists the notes concerned.
   try {
     const disk = fileExistence();
     const check = disk.check;
@@ -912,9 +930,9 @@ async function planWarnings(plan: PlanCore, keptFree: ReadonlySet<string> = new 
         if (arrived !== expected || !(allArriving.has(arrived) || (!allMoves.has(arrived) && before(arrived)))) outbound.add(note.from);
       }
     }
-    if (showing.size) warnings.push({ kind: "inbound-images", message: `${showing.size} ${showing.size === 1 ? "note that stays shows" : "notes that stay show"} images you are moving. Those images will no longer show there.`, paths: [...showing].sort() });
-    if (inbound.size) warnings.push({ kind: "inbound-links", message: `${inbound.size} ${inbound.size === 1 ? "note links" : "notes link"} to files you are moving. Those links will stop working.`, paths: [...inbound].sort() });
-    if (outbound.size) warnings.push({ kind: "outbound-links", message: `${outbound.size} moving ${outbound.size === 1 ? "note has links" : "notes have links"} that will no longer find their file from the new place.`, paths: [...outbound].sort() });
+    if (showing.size) warnings.push({ kind: "inbound-images", message: `${showing.size} ${showing.size === 1 ? "note that stays shows" : "notes that stay show"} images you are moving. Their image addresses are updated to follow them.`, paths: [...showing].sort() });
+    if (inbound.size) warnings.push({ kind: "inbound-links", message: `${inbound.size} ${inbound.size === 1 ? "note links" : "notes link"} to files you are moving. Those links are updated to follow them.`, paths: [...inbound].sort() });
+    if (outbound.size) warnings.push({ kind: "outbound-links", message: `${outbound.size} moving ${outbound.size === 1 ? "note has links" : "notes have links"} that would no longer find their file from the new place. They are updated to keep finding it.`, paths: [...outbound].sort() });
   } catch (error) {
     console.error("[migration] Could not check links:", error);
   }
@@ -1148,11 +1166,11 @@ async function directoryDigest(directory: string) {
 
 /** The destination holds this migration's file: checked by identity or recorded content, never assumed from a name or a size. */
 async function isOurs(journal: Journal, index: number, item: JournalItem, destination: Stats, staged: Stats | null) {
-  // A note whose citations were rewritten after it was published is a new file (an atomic write), at a text the journal recorded.
-  const rewrite = journal.citationRewrites?.find((planned) => planned.path === item.to);
-  if (rewrite && destination.isFile()) {
+  // A note whose links or citations were rewritten after it was published is a new file (an atomic write), at a text the journal recorded.
+  const rewritten = [journal.linkRewrites?.find((planned) => planned.path === item.to)?.after, journal.citationRewrites?.find((planned) => planned.path === item.to)?.after].filter(Boolean);
+  if (rewritten.length && destination.isFile()) {
     const text = await readFile(located(item, item.to), "utf8").catch(() => null);
-    if (text !== null && hashText(text) === rewrite.after) return true;
+    if (text !== null && rewritten.includes(hashText(text))) return true;
   }
   if (item.method === "link" || item.method === "rename") {
     if (destination.dev === item.identity.dev && destination.ino === item.identity.ino) return true;
@@ -1389,6 +1407,8 @@ async function step(journal: Journal, name: FinalizeStep, run: () => Promise<voi
     injectFault?.(`finalizing:${name}`);
     await run();
   } catch (error) {
+    // A simulated crash (tests) stops the run where it is, as a real one would: it is not the step's failure.
+    if ((error as { crash?: boolean }).crash) throw error;
     console.error(`[migration] Finalize step ${name} failed:`, error);
     const count = (journal.stepFailures?.[name]?.count ?? 0) + 1;
     const text = `${name}: ${errorText(error)}`;
@@ -1477,6 +1497,44 @@ async function finalize(journal: Journal, states: ItemState[]) {
     }
   });
 
+  await run("links", async () => {
+    // Paths in notes follow what moved, with the committed mapping: only items now at their new path (a partial migration rewrites for what moved).
+    // After images (staged with the notes), before citation keys (whose plan reads the text this leaves): the order the app applies too.
+    if (journal.linkRewrites === undefined) {
+      const moved: PathMove[] = journal.items.flatMap((item, index) => states[index] === "finished" ? [{ from: item.from, to: item.to, ...(item.identity.directory ? { folder: true } : {}) }] : []);
+      // An item at both places (its source edited after it was published) is the person's to sort out: neither copy is rewritten.
+      const unsettled = new Set(journal.items.flatMap((item, index) => states[index] === "published" ? [item.from, item.to] : []));
+      const plan = moved.length ? await planMovedLinks(moved, { ownMigration: true, leave: unsettled }) : { notes: [], skipped: [], unchecked: [] };
+      // Saved before the first file is rewritten: a resume applies these, never a plan made from texts already rewritten.
+      journal.linkRewrites = plan.notes;
+      journal.linkSkipped = plan.skipped;
+      journal.linkUnchecked = plan.unchecked;
+      await saveJournal(journal);
+      injectFault?.("links:planned");
+    }
+    let applied: AppliedLinkRewrite[] | null = null;
+    if (!journal.linksApplied) {
+      const outcome = await applyMovedLinks(journal.linkRewrites ?? []);
+      applied = outcome.applied;
+      journal.linksApplied = applied.map((rewritten) => rewritten.path);
+      if (outcome.failed.length) {
+        journal.linkSkipped = [...journal.linkSkipped ?? [], ...outcome.failed];
+        note(journal, `Links in ${[...new Set(outcome.failed.map((skip) => skip.path))].join(", ")} could not be updated. Check Notebook lists them.`);
+      }
+      await saveJournal(journal);
+    }
+    if (!journal.linkRecordsFollowed) {
+      // What keeps the rewritten texts follows once: after an interruption, from the journal's hashes.
+      const done = new Set(journal.linksApplied);
+      const notes = applied ?? (journal.linkRewrites ?? []).filter((planned) => done.has(planned.path));
+      // A moved note's undo history follows in the history step, with its other rewrites; the others' here.
+      const movedTo = new Set(files.map((item) => item.to));
+      for (const failure of await followLinkRewrites(notes, { history: (filePath) => !movedTo.has(filePath) })) note(journal, `Links: ${failure}`);
+      journal.linkRecordsFollowed = true;
+      await saveJournal(journal);
+    }
+  });
+
   await run("references", async () => {
     // References cited by notes follow them. LaTeX sources are never
     // rewritten by reference features, so they are left out, as they are
@@ -1509,19 +1567,25 @@ async function finalize(journal: Journal, states: ItemState[]) {
   await run("history", async () => {
     // Pending agent reviews and undo history see the files as the migration left them.
     const keyMaps = new Map((journal.references?.drafts ?? []).map((draft) => [draft.path, new Map(Object.entries(draft.map))]));
+    // Written link rewrites of moved notes: their undo history gets them here, between images and citation keys (the order the file got them).
+    const written = new Set(journal.linksApplied ?? []);
+    const linkMaps = new Map((journal.linkRewrites ?? []).filter((planned) => written.has(planned.path)).map((planned) => [planned.path, planned.rewrite]));
     const baselines = new Map<string, (text: string) => string>();
     const undo = new Map<string, MovedRunFile>();
     for (const item of files) {
       const images = imageTransform(item);
       const keys = keyMaps.get(item.to);
-      const transform = keys ? (text: string) => rewriteCitationKeys(images(text), keys).text : images;
+      const paths = linkMaps.get(item.to);
+      const withPaths = paths ? (text: string) => rewriteMovedPaths(images(text), item.to, paths) : images;
+      const transform = keys ? (text: string) => rewriteCitationKeys(withPaths(text), keys).text : withPaths;
       if (keys) baselines.set(item.to, (text) => rewriteCitationKeys(text, keys).text);
       let hashes: MovedRunFile["hashes"];
-      if (item.images && (keys || item.images.before !== item.images.after)) {
+      if ((item.images && (keys || paths || item.images.before !== item.images.after)) || (!item.images && paths)) {
         const now = await readFile(absolute(item.to), "utf8").catch(() => null);
-        if (now !== null) hashes = { before: item.images.before, after: hashText(now) };
+        const before = item.images?.before ?? journal.linkRewrites?.find((planned) => planned.path === item.to)?.before;
+        if (now !== null && before) hashes = { before, after: hashText(now) };
       }
-      undo.set(item.from, { to: item.to, ...(item.images || keys ? { transform } : {}), ...(hashes ? { hashes } : {}) });
+      undo.set(item.from, { to: item.to, ...(item.images || keys || paths ? { transform } : {}), ...(hashes ? { hashes } : {}) });
     }
     await transformReviewBaselines(baselines);
     await recordMovedRunFiles(undo);
@@ -1596,6 +1660,7 @@ async function resultOf(journal: Journal, states: ItemState[]): Promise<Migratio
   let leftovers: string[] = [];
   const missing: string[] = [];
   let unverified = false;
+  const linked = (to: string) => journal.linkRewrites?.find((planned) => planned.path === to);
   if (journal.state === "done") {
     const places: Parameters<typeof checkNothingLeftAt>[0] = [];
     for (const [index, item] of journal.items.entries()) {
@@ -1618,11 +1683,13 @@ async function resultOf(journal: Journal, states: ItemState[]): Promise<Migratio
         const stats = await lstatOrNull(located(item, item.to));
         if (!stats) missing.push(`${item.to} (not found)`);
         else if (stats.isDirectory() !== item.identity.directory) missing.push(`${item.to} (is not the ${item.identity.directory ? "folder" : "file"} that moved)`);
-        else if (stats.isFile() && item.images) {
-          // A note rewritten by the migration: at the text its image rewrite or its citation rewrite left, as the resume reads it.
+        else if (stats.isFile() && (item.images || linked(item.to))) {
+          // A file rewritten by the migration: at the text its image, link or citation rewrite left, as the resume reads it.
           const text = await readFile(located(item, item.to), "utf8").catch(() => null);
           const rewrite = journal.citationRewrites?.find((planned) => planned.path === item.to);
-          if (text === null || ![item.images.after, rewrite?.after].includes(hashText(text))) missing.push(`${item.to} (is not the note that moved)`);
+          // A file planned for links only (a LaTeX source) is the file that moved at the text the plan read, or at the one it wrote.
+          const accepted = [item.images?.after, linked(item.to)?.before, linked(item.to)?.after, rewrite?.after].filter(Boolean);
+          if (text === null || !accepted.includes(hashText(text))) missing.push(`${item.to} (is not the note that moved)`);
         } else if (stats.isFile() && stats.size !== item.identity.size) missing.push(`${item.to} (its size is ${stats.size} bytes, not ${item.identity.size})`);
       } catch (error) {
         unverified = true;
@@ -1651,6 +1718,11 @@ async function resultOf(journal: Journal, states: ItemState[]): Promise<Migratio
     check,
     ...(journal.createdNotebook && journal.create && journal.create.workspaceGroupId !== undefined
       ? { workspaceGroup: { notebook: journal.destination.notebook, groupId: journal.create.workspaceGroupId } } : {}),
+    ...(journal.linkRewrites ? { links: {
+      rewritten: journal.linkRewrites.filter((planned) => journal.linksApplied?.includes(planned.path)).map((planned) => ({ path: planned.path, rewrite: planned.rewrite })),
+      skipped: journal.linkSkipped ?? [],
+      unchecked: journal.linkUnchecked ?? [],
+    } } : {}),
     ...(journal.error ? { error: journal.error } : {}),
   };
 }

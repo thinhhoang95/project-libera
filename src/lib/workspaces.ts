@@ -7,8 +7,9 @@ export type WorkspaceScope = { mode: "all" | "include" | "exclude"; paths: strin
 /**
  * `moved` takes several moves at once (a notebook migration): applied as one
  * mapping, where a file's own move wins over its folder's. `rewrite` changes
- * the text of moved files' tabs, saved and unsaved, in every saved workspace
- * (the migration rewrote their image paths and citation keys on disk).
+ * the text of tabs, saved and unsaved, in every saved workspace, by the
+ * file's path after the move: moved files (a migration's image paths and
+ * citation keys) and files that stayed (links that followed the move).
  */
 export type WorkspaceFileChange = {
   paths?: string[];
@@ -311,7 +312,13 @@ export function remapWorkspacePathsMany(library: WorkspaceLibrary, moves: { from
     tabs: value.tabs.map((tab) => {
       if (tab.gallery || tab.page) return tab; // Gallery photos and app pages live outside notebooks.
       const path = remap(tab.file.path);
-      if (path === tab.file.path) return tab;
+      if (path === tab.file.path) {
+        // A file that stayed may have had its text rewritten too (links that followed a move).
+        if (!rewrite) return tab;
+        const saved = rewrite(path, tab.saved);
+        const draft = rewrite(path, tab.draft);
+        return saved === tab.saved && draft === tab.draft ? tab : { ...tab, saved, draft };
+      }
       const text = rewrite ? { saved: rewrite(path, tab.saved), draft: rewrite(path, tab.draft) } : {};
       return { ...tab, ...text, id: remap(tab.id), file: { ...tab.file, path, name: path.split("/").at(-1)!, notebook: path.split("/")[0] }, rawUrl: `/api/files/raw/${path.split("/").map(encodeURIComponent).join("/")}` };
     }),

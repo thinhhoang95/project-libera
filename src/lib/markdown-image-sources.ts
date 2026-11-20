@@ -12,7 +12,8 @@ type Node = {
 type ImageSource = { source: string; start: number; end: number };
 const parser = unified().use(remarkParse);
 
-function decodeAttribute(value: string) {
+/** An HTML attribute's value as a browser reads it (character references decoded). */
+export function decodeAttribute(value: string) {
   return value.replace(/&(#x[\da-f]+|#\d+|[a-z][\da-z]+);/gi, (original, entity: string) => {
     if (!entity.startsWith("#")) return decodeNamedCharacterReference(entity) || original;
     const code = entity[1].toLowerCase() === "x" ? parseInt(entity.slice(2), 16) : Number(entity.slice(1));
@@ -21,7 +22,7 @@ function decodeAttribute(value: string) {
 }
 
 /** Locate the destination without changing alt text, titles or surrounding Markdown. */
-function destinationRange(text: string, definition: boolean) {
+export function destinationRange(text: string, definition: boolean) {
   let index = definition ? 1 : 2;
   let brackets = 1;
   for (; index < text.length; index++) {
@@ -29,7 +30,11 @@ function destinationRange(text: string, definition: boolean) {
     else if (text[index] === "[") brackets++;
     else if (text[index] === "]" && --brackets === 0) break;
   }
-  index += 2; // `]:` for a definition, `](` for an inline image.
+  return destinationFrom(text, index + 2); // `]:` for a definition, `](` for an inline image.
+}
+
+/** The destination starting at `index` (just after `](` or `]:`): inside angle brackets, or up to whitespace or an unbalanced parenthesis. */
+export function destinationFrom(text: string, index: number) {
   while (/\s/.test(text[index] ?? "") && index < text.length) index++;
   const angle = text[index] === "<";
   const start = angle ? ++index : index;
@@ -86,6 +91,23 @@ function imageOccurrences(markdown: string): ImageSource[] {
     }
   });
   return occurrences;
+}
+
+/**
+ * The library path a `/api/files/raw/...` address names, or null for any
+ * other address. Throws on a malformed one. Shared by the image checks
+ * (storage/markdown-assets.ts) and the link rewrite of moves (move-rewrites.ts).
+ */
+export function rawFileSourcePath(source: string) {
+  if (!source.startsWith("/api/files/raw/")) {
+    return null;
+  }
+
+  return new URL(source, "http://libera.local").pathname
+    .slice("/api/files/raw/".length)
+    .split("/")
+    .map(decodeURIComponent)
+    .join("/");
 }
 
 /** Includes reference images and HTML images, and excludes code examples. */

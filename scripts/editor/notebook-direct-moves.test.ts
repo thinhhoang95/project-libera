@@ -139,7 +139,7 @@ test("a case-only rename of a file or folder is a rename, with its records follo
   });
 });
 
-test("a move that makes a relative link open another file reports the link", () => withTemporaryLibrary(["Nb"], async () => {
+test("a move rewrites a moved note's relative links to keep opening the same files (docs/features/move-link-refactor.md)", () => withTemporaryLibrary(["Nb"], async () => {
   await writeLibraryFile("Nb/index.md", "[Chapter](chapter.md) and [Gone](only-here.md) and [Same](same.md)\n");
   await writeLibraryFile("Nb/chapter.md", "# Outer chapter\n");
   await writeLibraryFile("Nb/only-here.md", "# Only here\n");
@@ -148,13 +148,12 @@ test("a move that makes a relative link open another file reports the link", () 
   await writeLibraryFile("Nb/sub/same.md", "# Same\n");
 
   const moved = await moveFileToDirectory("Nb/index.md", "Nb/sub");
-  const changed = [...moved.changedLinks ?? []].sort((a, b) => a.href.localeCompare(b.href));
-  assert.equal(changed.find((link) => link.href === "chapter.md")?.was, "Nb/chapter.md");
-  assert.equal(changed.find((link) => link.href === "chapter.md")?.now, "Nb/sub/chapter.md");
-  assert.equal(changed.find((link) => link.href === "only-here.md")?.now, null);
+  // Same-named files beside the new place are not picked up: each link keeps its file.
+  assert.equal(moved.content, "[Chapter](../chapter.md) and [Gone](../only-here.md) and [Same](../same.md)\n");
+  assert.deepEqual(moved.links?.rewritten.map((note) => note.path), ["Nb/sub/index.md"]);
 
-  // A move that changes nothing about its links reports nothing.
+  // A move that changes nothing about its links rewrites nothing.
   await writeLibraryFile("Nb/plain.md", "[Chapter](chapter.md)\n");
   const renamed = await moveFile("Nb/plain.md", "Nb", "renamed.md");
-  assert.equal(renamed.changedLinks, undefined);
+  assert.equal(renamed.links, undefined);
 }));

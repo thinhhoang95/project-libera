@@ -5,6 +5,9 @@
  * use-libera-workspace.ts applies the results.
  */
 
+import { rewriteMovedPaths } from "@/lib/move-rewrites";
+import type { LiberaLinkRewrites } from "@/lib/types";
+
 /** What a tab's text becomes at its file's new path. `conflict` is the disk text when it differs from the tab's baseline. */
 export type MovedText = { saved: string; draft: string; conflict: string | null };
 
@@ -35,6 +38,34 @@ export function reconcileMovedText(input: {
   if (clean) return { saved: fetched, draft: fetched, conflict: null };
   if (fetched === saved || fetched === draft) return { saved: fetched, draft, conflict: null };
   return { saved, draft, conflict: fetched };
+}
+
+/**
+ * The links a move rewrote in each file (storage/move-links.ts), as one
+ * function of a file's path and text: the same pure rewrite the server wrote
+ * (move-rewrites.ts), for texts it did not see. Undefined when nothing was rewritten.
+ */
+export function linkRewriteByPath(links: LiberaLinkRewrites | undefined) {
+  const byPath = new Map((links?.rewritten ?? []).map((item) => [item.path, item.rewrite]));
+  if (!byPath.size) return undefined;
+  return (path: string, text: string) => {
+    const rewrite = byPath.get(path);
+    return rewrite ? rewriteMovedPaths(text, path, rewrite) : text;
+  };
+}
+
+/**
+ * An open file whose links a move rewrote on disk, where it is: its save
+ * baseline and its draft get the same rewrite, so unsaved edits stay and the
+ * next save's baseline is the text now on disk (no conflict). A conflict
+ * text (another version the disk held) gets it too: the server rewrote that one.
+ */
+export function rewriteOpenText(text: { saved: string; draft: string; conflict?: string | null }, rewrite: (text: string) => string): { saved: string; draft: string; conflict?: string | null } {
+  return {
+    saved: rewrite(text.saved),
+    draft: rewrite(text.draft),
+    conflict: typeof text.conflict === "string" ? rewrite(text.conflict) : text.conflict,
+  };
 }
 
 /** Text that is not on disk: a draft that differs, or a save that failed or is still running. */

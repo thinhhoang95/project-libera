@@ -8,8 +8,9 @@ import { isEmptyReview, type ReviewDocument } from "@/lib/markdown-review";
 import { inspectReviewDocuments, inspectReviewKeys } from "./review-files";
 import { readWorkspaceMetadata } from "./workspace-metadata";
 import { detachReferenceAttachments, inspectReferenceLibrary, moveReferenceAttachments } from "./references";
-import { fileExistence, libraryNotebookNames, linkCandidates, resolveLinkWith } from "./library-links";
-import { extractNotebookLinkDestinations } from "./notebook-links";
+import { libraryNotebookNames } from "./library-links";
+import { followMovedLinks } from "./move-links";
+import { rewriteMovedPaths } from "@/lib/move-rewrites";
 import { copyReferencesOnMove, type ReferenceMoveResult } from "@/lib/references/moves";
 import { copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
@@ -76,7 +77,7 @@ import {
   renameFileMetadataPath,
   renameFileMetadataPathPrefix,
 } from "@/lib/storage/workspace-metadata";
-import { isTextFileType, type LiberaFileMovePayload, type LiberaMovedLink, type LiberaMoveStep, type LiberaFilePayload, type LiberaFileType } from "@/lib/types";
+import { isTextFileType, type LiberaFileMovePayload, type LiberaFolderMovePayload, type LiberaLinkRewrites, type LiberaMoveStep, type LiberaFilePayload, type LiberaFileType } from "@/lib/types";
 import { normalizePdfCommentThreads } from "@/lib/pdf-comments";
 import { copyInkFolder, copyInkThroughEdit, supportsInk } from "@/lib/storage/ink";
 import { existingSidecars, legacyAnnotationSidecars, lostSidecarRecords, moveFileSidecars, moveFolderSidecars, removeFileSidecars, removeFolderSidecars, SIDECAR_KINDS } from "@/lib/storage/sidecars";
@@ -305,19 +306,42 @@ export async function assertLocalFileIdentity(relativePath: string, expectedFile
  * first, so a refusal leaves everything as it was; then the document and its
  * sidecars move together, all or nothing (moveDocumentWithSidecars). Under the
  * lock of both names, so a save of either (updateMarkdownFile) or another
- * move to the name can't run in between.
+ * move to the name can't run in between. Then, with the locks released (the
+ * rewrite takes each note's own), paths in notes follow (move-links.ts).
  */
-function performFileMove(move: FileMove, options: LocalFileActionOptions & { links?: boolean } = {}): Promise<LiberaFileMovePayload> {
-  return withPathLocks([move.currentPath, move.nextPath], () => performLockedFileMove(move, options));
+async function performFileMove(move: FileMove, options: LocalFileActionOptions = {}): Promise<LiberaFileMovePayload> {
+  const moves = [{ from: move.currentRelativePath, to: move.nextRelativePath }];
+  let payload: LiberaFileMovePayload;
+  try { payload = await withPathLocks([move.currentPath, move.nextPath], () => performLockedFileMove(move, options)); }
+  catch (error) {
+    // The file moved but its result could not be read: links still follow, and the error says what they did.
+    if (error instanceof MoveCommittedError) {
+      const { links, unfinished } = await followMovedLinks(moves);
+      error.links = links;
+      if (unfinished) error.unfinished.push(unfinished);
+    }
+    throw error;
+  }
+  const { links, unfinished } = await followMovedLinks(moves);
+  const own = links.rewritten.find((note) => note.path === move.nextRelativePath)?.rewrite;
+  // The moved note's own text changed: the payload carries what is on disk now (the same rewrite of what it read, if it can't be read again).
+  const file = own ? await readLiberaFile(move.nextRelativePath).catch(() => null) : null;
+  const content = own && !file && payload.content !== undefined ? rewriteMovedPaths(payload.content, move.nextRelativePath, own) : undefined;
+  const steps = [...payload.unfinished ?? [], ...(unfinished ? [unfinished] : [])];
+  return {
+    ...payload,
+    ...(file ?? (content !== undefined ? { content, version: textVersion(content) } : {})),
+    ...(links.rewritten.length || links.skipped.length || links.unchecked.length ? { links } : {}),
+    ...(steps.length ? { moved: { from: move.currentRelativePath, to: move.nextRelativePath }, unfinished: steps } : {}),
+  };
 }
 
-async function performLockedFileMove(move: FileMove, { expectedFileId, links = true }: LocalFileActionOptions & { links?: boolean }): Promise<LiberaFileMovePayload> {
+async function performLockedFileMove(move: FileMove, { expectedFileId }: LocalFileActionOptions): Promise<LiberaFileMovePayload> {
   const { notebook, pathParts, nextNotebook, nextParts, currentRelativePath, nextRelativePath, currentFileType, nextFileType } = move;
   const snapshot = await assertSourceIsStill(move.currentPath, currentRelativePath, expectedFileId);
   await assertNoLeftoverRecords(nextNotebook, nextParts, nextFileType, move.caseOnly, notebook === nextNotebook ? pathParts : undefined);
   await assertTypeChangeLosesNothing(notebook, pathParts, currentRelativePath, currentFileType, nextFileType);
   await assertSidecarsCanMove(nextNotebook, nextParts, currentFileType, nextFileType);
-  const changedLinks = links && currentFileType === "markdown" && nextFileType === "markdown" ? await linksChangedByMove(currentRelativePath, nextRelativePath) : [];
 
   if (currentFileType === "pdf") await migratePdfAnnotations(notebook, pathParts);
   if (currentFileType === "image") await migrateImageAnnotations(notebook, pathParts);
@@ -349,13 +373,13 @@ async function performLockedFileMove(move: FileMove, { expectedFileId, links = t
   return withReferences({
     ...file,
     ...(images ? { imageSources: images.imageSources } : {}),
-    ...(changedLinks.length ? { changedLinks } : {}),
     ...(unfinished.length ? { moved: { from: currentRelativePath, to: nextRelativePath }, unfinished } : {}),
   }, references);
 }
 
-/** The move happened but the result could not be built: the error carries what the caller needs to retarget (the route sends it). */
+/** The move happened but the result could not be built: the error carries what the caller needs to retarget (the route sends it), and what links did. */
 export class MoveCommittedError extends StorageError {
+  links?: LiberaLinkRewrites;
   constructor(message: string, readonly moved: { from: string; to: string }, readonly unfinished: LiberaMoveStep[]) {
     super(message, 500);
   }
@@ -441,36 +465,6 @@ async function assertTypeChangeLosesNothing(notebook: string, parts: string[], r
   const list = [...names];
   const text = list.length > 1 ? `${list.slice(0, -1).join(", ")} and ${list.at(-1)}` : list[0];
   throw new StorageError(`${relative} has ${text} that a ${toType} file cannot keep. Remove them or keep the file type, then rename again.`, 409);
-}
-
-/**
- * Links in a moving Markdown note that open another file, or none, from its
- * new place. Links are not rewritten on a move (docs/features/related-notebooks.md),
- * so the person is told. Read only; the migration preview asks the same question.
- */
-async function linksChangedByMove(from: string, to: string): Promise<LiberaMovedLink[]> {
-  try {
-    const source = splitFilePath(from);
-    const content = await readFile(filePathFromParts(source.notebook, source.pathParts), "utf8");
-    const disk = fileExistence();
-    const before = disk.exists;
-    const after = (candidate: string) => candidate === to || (candidate !== from && before(candidate));
-    const changed: LiberaMovedLink[] = [];
-    const seen = new Set<string>();
-    for (const href of extractNotebookLinkDestinations(content)) {
-      if (seen.has(href)) continue;
-      seen.add(href);
-      await disk.check([...linkCandidates(href, from), ...linkCandidates(href, to)]);
-      const target = resolveLinkWith(href, from, before);
-      if (!target || target === from) continue;
-      const now = resolveLinkWith(href, to, after);
-      if (now !== target) changed.push({ href, was: target, now });
-    }
-    return changed;
-  } catch (error) {
-    console.error("[files] Could not check links of a moved note:", error);
-    return [];
-  }
 }
 
 async function prepareMarkdownImageMove(from: string, to: string, currentType: string, nextType: string) {
@@ -677,7 +671,20 @@ export async function createFolder(parentPath: string, name: string) {
   return getTree();
 }
 
-export async function renameFolder(relativePath: string, nextName: string) {
+/**
+ * A folder moved (renamed or archived) and its records with it: paths in
+ * notes follow it (move-links.ts), and the tree comes back with what they did.
+ */
+async function folderMovePayload(from: string, to: string): Promise<LiberaFolderMovePayload> {
+  const { links, unfinished } = await followMovedLinks([{ from, to, folder: true }]);
+  return {
+    ...await getTree(),
+    ...(links.rewritten.length || links.skipped.length || links.unchecked.length ? { links } : {}),
+    ...(unfinished ? { unfinished: [unfinished] } : {}),
+  };
+}
+
+export async function renameFolder(relativePath: string, nextName: string): Promise<LiberaFolderMovePayload> {
   await ensureAdminRoot();
   const current = splitDirectoryPath(relativePath);
 
@@ -720,7 +727,7 @@ export async function renameFolder(relativePath: string, nextName: string) {
   await moveFolderWithRecords(current.notebook, current.pathParts, nextParts, currentPath, nextPath, notes);
   notifySearchChanges();
 
-  return getTree();
+  return folderMovePayload(from, to);
 }
 
 async function findAvailableDirectoryPath(directory: string, directoryName: string) {
@@ -783,7 +790,7 @@ export async function archiveFolder(relativePath: string) {
   await moveFolderWithRecords(current.notebook, current.pathParts, nextParts, currentPath, available.path, notes);
   notifySearchChanges();
 
-  return { ...await getTree(), moved: { from: currentRelativePath, to: nextRelativePath } };
+  return { ...await folderMovePayload(currentRelativePath, nextRelativePath), moved: { from: currentRelativePath, to: nextRelativePath } };
 }
 
 export async function deleteFolder(relativePath: string) {
@@ -896,13 +903,13 @@ export async function archiveFile(relativePath: string, options: LocalFileAction
   const nextFileType = assertSupportedFileName(safeNextName);
   const nextParts = [ARCHIVE_DIR, safeNextName];
 
-  // Links are not reported: the archive is not a move the person chose a place for.
+  // Archive is a move: links to the file, and the file's own, follow it like any other.
   return performFileMove({
     notebook: current.notebook, pathParts: current.pathParts, nextNotebook: current.notebook, nextParts,
     currentPath: filePathFromParts(current.notebook, current.pathParts), nextPath: path.join(archiveDirectoryPath, safeNextName),
     currentRelativePath: relativeFilePath(current.notebook, current.pathParts), nextRelativePath: relativeFilePath(current.notebook, nextParts),
     currentFileType, nextFileType, caseOnly: false,
-  }, { ...options, links: false });
+  }, options);
 }
 
 export async function copyFileToDirectory(
