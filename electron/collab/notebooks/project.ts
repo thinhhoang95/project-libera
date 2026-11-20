@@ -101,7 +101,7 @@ interface ScanScratch {
   ownRespells: Set<string>;
   renameDeferrals: Map<string, number>;
   /** The latest renames the scanner paired, for a folder whose files pair across scans (S43). */
-  recentMoves: Array<{ from: string; to: string }>;
+  recentMoves: Array<{ from: string; to: string; at?: number }>;
 }
 const scanScratches = new WeakMap<object, ScanScratch>();
 function scanScratch(owner: object): ScanScratch {
@@ -115,6 +115,9 @@ function scanScratch(owner: object): ScanScratch {
 
 /** Entries remembered as spelled by a remote normalization-only rename. */
 const MAX_REMOTE_RESPELLS = 200;
+
+/** How long a paired rename is remembered for recognizing a moved folder. */
+const RECENT_MOVE_MS = 5 * 60_000;
 
 /** Renames remembered across scans to recognize a moved folder. */
 const MAX_RECENT_MOVES = 500;
@@ -2624,6 +2627,7 @@ export class SharedProject {
         if (directoryKeys.has(recordKey)) {
           this.missingSince.delete(fileId);
           this.renameDeferrals.delete(fileId);
+          this.renameDeferrals.delete(`unsettled:${fileId}`);
           if (directories.has(record.path)) this.respellSeen.delete(fileId);
           else noteRespelling(fileId, record, directoryByKey.get(recordKey));
         } else missing.push(fileId);
@@ -2637,6 +2641,7 @@ export class SharedProject {
       }
       this.missingSince.delete(fileId);
       this.renameDeferrals.delete(fileId);
+      this.renameDeferrals.delete(`unsettled:${fileId}`);
       if (exact) this.respellSeen.delete(fileId);
       else noteRespelling(fileId, record, fileVariants.get(recordKey) === 1 ? [seen] : undefined);
       // Finder is replacing this file: its bytes are not the new version yet.
@@ -2962,7 +2967,7 @@ export class SharedProject {
       paired.push({ fileId, from, to: match.entry.relative });
       // Files of one moved folder can pair in different scans: later scans still know where earlier ones went.
       const recent = scanScratch(this).recentMoves;
-      recent.push({ from, to: match.entry.relative });
+      recent.push({ from, to: match.entry.relative, at: Date.now() });
       if (recent.length > MAX_RECENT_MOVES) recent.shift();
       touched.add(from).add(match.entry.relative);
       operations.push((map, doc) => {
@@ -3077,7 +3082,21 @@ export class SharedProject {
     // folder entry moves too and keeps its ID, instead of a second folder
     // identity appearing next to a restored copy of the old one. Works from
     // this pass's pairs; no second walk.
-    for (const fileId of [...missing]) {
+    // A folder entry whose directory is back on disk but empty (this host's own materialization can re-create it between the outside move and the scan) is a candidate too, when every file it held left by a paired move.
+    const emptied: string[] = [];
+    const recentMoves = scanScratch(this).recentMoves.filter((move) => move.at === undefined || now - move.at < RECENT_MOVE_MS);
+    if (recentMoves.length > 0 || paired.length > 0) {
+      const names = [...files.keys(), ...directories.keys()].map(manifestPathKey);
+      for (const [folderId, folderRecord] of Object.entries(this.state.layout)) {
+        if (folderRecord.kind !== "folder" || missing.includes(folderId) || !directoryKeys.has(manifestPathKey(folderRecord.path))) continue;
+        const prefix = `${manifestPathKey(folderRecord.path)}/`;
+        if (![...recentMoves, ...paired].some((move) => manifestPathKey(move.from).startsWith(prefix))) continue;
+        if (names.some((name) => name.startsWith(prefix))) continue;
+        if (Object.values(this.state.layout).some((other) => other.kind !== "folder" && manifestPathKey(other.path).startsWith(prefix) && !paired.some((move) => move.from === other.path))) continue;
+        emptied.push(folderId);
+      }
+    }
+    for (const fileId of [...missing, ...emptied]) {
       const record = this.state.layout[fileId];
       if (record.kind !== "folder" || !this.canEdit) continue;
       const from = record.path;
@@ -3086,7 +3105,7 @@ export class SharedProject {
       const inside = Object.entries(this.state.layout).filter(([otherId, other]) => otherId !== fileId && other.kind !== "folder" && below(other.path));
       const pairedNow = paired.filter((move) => below(move.from));
       // Every file still below the folder paired in this pass; files that moved in earlier scans are remembered.
-      const moves = [...scanScratch(this).recentMoves.filter((move) => below(move.from) && !(pairedNow as Array<{ from: string; to: string }>).includes(move)), ...pairedNow];
+      const moves = [...recentMoves.filter((move) => below(move.from) && !(pairedNow as Array<{ from: string; to: string }>).includes(move)), ...pairedNow];
       if (moves.length === 0 || !inside.every(([, other]) => pairedNow.some((move) => move.from === other.path))) continue;
       let destination: string | null = null;
       for (const move of moves) {
@@ -3099,26 +3118,33 @@ export class SharedProject {
         }
         destination = where;
       }
-      if (!destination || !directories.has(destination) || Object.values(this.state.layout).some((other) => other.kind === "folder" && manifestPathKey(other.path) === manifestPathKey(destination as string))) continue;
+      if (!destination || !directories.has(destination)) continue;
       const target = destination;
-      const moved: Array<{ id: string; record: LayoutRecord; to: string }> = [{ id: fileId, record, to: target }];
+      // The destination may already have its own folder entry (made by an earlier scan, before this one could pair): the old entry's absence is explained by the paired moves, so it is removed instead of restored, and the destination's entry stays.
+      const hasFolderAt = (relative: string) => Object.values(this.state.layout).some((other) => other.kind === "folder" && manifestPathKey(other.path) === manifestPathKey(relative));
+      const moved: Array<{ id: string; record: LayoutRecord; to: string; merge: boolean }> = [{ id: fileId, record, to: target, merge: hasFolderAt(target) }];
       for (const [otherId, other] of Object.entries(this.state.layout)) {
         if (otherId === fileId || other.kind !== "folder" || !below(other.path) || !missing.includes(otherId)) continue;
         const to = [target, ...other.path.split("/").slice(depth)].join("/");
-        if (directories.has(to)) moved.push({ id: otherId, record: other, to });
+        if (directories.has(to)) moved.push({ id: otherId, record: other, to, merge: hasFolderAt(to) });
       }
       for (const item of moved) {
-        missing.splice(missing.indexOf(item.id), 1);
+        if (missing.includes(item.id)) missing.splice(missing.indexOf(item.id), 1);
         this.missingSince.delete(item.id);
         known.add(manifestPathKey(item.to));
         touched.add(item.record.path).add(item.to);
       }
       operations.push((map, doc) => {
         const current = readManifest(doc).get(fileId);
-        if (!current || current.kind !== "folder" || current.path !== from || !this.pathFree(doc, target, fileId, true)) return;
+        if (!current || current.kind !== "folder" || current.path !== from || (!moved[0].merge && !this.pathFree(doc, target, fileId, true))) return;
         for (const item of moved) {
           const entry = readManifest(doc).get(item.id);
           if (!entry || entry.kind !== "folder") continue;
+          if (item.merge) {
+            map.delete(item.id);
+            delete this.state.layout[item.id];
+            continue;
+          }
           map.set(item.id, entryRecord({ ...entry, path: item.to, updatedAt: now }));
           item.record.path = item.to;
         }
@@ -3135,12 +3161,14 @@ export class SharedProject {
       const record = this.state.layout[fileId];
       const waiting = record.kind === "folder" ? unsettledDirectories.size > 0 : record.kind === "doc" && Boolean(record.hash) && arriving.has(docKindForPath(record.path));
       if (held.has(fileId) || !this.canEdit || !waiting) continue;
-      const count = (this.renameDeferrals.get(fileId) ?? 0) + 1;
-      if (count > MAX_RENAME_DEFERRALS) {
-        this.renameDeferrals.delete(fileId);
+      // Held while the new files settle, for a bounded time (not a number of scans: a busy folder is scanned many times in one quiet period).
+      const holdKey = `unsettled:${fileId}`;
+      const since = this.renameDeferrals.get(holdKey) ?? now;
+      if (now - since > this.ctx.timings.importQuietMs * 3 + 5000) {
+        this.renameDeferrals.delete(holdKey);
         continue;
       }
-      this.renameDeferrals.set(fileId, count);
+      this.renameDeferrals.set(holdKey, since);
       held.add(fileId);
     }
 
