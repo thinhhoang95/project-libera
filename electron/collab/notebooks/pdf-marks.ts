@@ -546,7 +546,7 @@ export class PdfMarksRuntime {
    * sidecar with no recorded bytes is imported only when it is not older than the
    * PDF file (a PDF saved after it was written cannot have been annotated by it).
    */
-  private async sidecarBelongsToPdf(doc: PdfDoc, sidecar: Sidecar, sidecarFile: string, relative: string): Promise<boolean | null> {
+  private async sidecarBelongsToPdf(doc: PdfDoc, sidecar: Sidecar, sidecarFile: string, relative = doc.path): Promise<boolean | null> {
     if ((sidecar as { sharedCopy?: unknown }).sharedCopy === doc.docId) return true;
     const pdf = path.join(this.ctx.root, ...relative.split("/"));
     const stored = (sidecar.source as { contentHash?: unknown } | undefined)?.contentHash;
