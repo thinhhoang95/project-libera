@@ -4592,6 +4592,7 @@
         "notesLeftOut": "{count, plural, one {# note was} other {# notes were}} left out (the limit of {megabytes} MB read).",
         "latexPartlyRead": "Large LaTeX projects are only partly read.",
         "latexUnchecked": "{count, plural, one {# LaTeX reference} other {# LaTeX references}} could not be checked.",
+        "filesUnchecked": "{count, plural, one {# file} other {# files}} could not be checked (no permission, or a drive that is not connected), so what depends on {count, plural, one {it} other {them}} is not judged.",
         "kind": {
           "pdf-annotations": "PDF annotations",
           "pdf-outline": "PDF outline",

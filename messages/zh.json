@@ -4592,6 +4592,7 @@
         "notesLeftOut": "{count, plural, one {# 条笔记被跳过} other {# 条笔记被跳过}}（已读取的上限为 {megabytes} MB）。",
         "latexPartlyRead": "大型 LaTeX 项目只被部分读取。",
         "latexUnchecked": "{count, plural, one {# 个 LaTeX 引用} other {# 个 LaTeX 引用}}无法检查。",
+        "filesUnchecked": "{count, plural, one {# 个文件} other {# 个文件}}无法检查（没有权限，或驱动器未连接），因此依赖{count, plural, one {它} other {它们}}的内容未作判断。",
         "kind": {
           "pdf-annotations": "PDF 批注",
           "pdf-outline": "PDF 大纲",

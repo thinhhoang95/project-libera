@@ -320,6 +320,8 @@ async function collect(notebook: string, repair: RepairPlan, options: CleanupOpt
   const them = (n: number) => (n === 1 ? "it" : "they");
   if (count("ambiguous")) notes.push(`${plural(count("ambiguous"), "record")} left out: more than one file has the name of the file ${count("ambiguous") === 1 ? "it was" : "they were"} kept for, so ${them(count("ambiguous"))} may belong to one of them.`);
   if (heldPartial) notes.push(`${plural(heldPartial, "finding")} left out: a check that ran only in part can't tell what is stale.`);
+  // A check the budget kept from starting has no findings to hold back; the plan still says it is not the whole picture.
+  else if (partial.size) notes.push(`${plural(partial.size, "check")} ran only in part, so what ${partial.size === 1 ? "it" : "they"} could not look at is not offered.`);
   const aliased = count("alias") + count("back");
   if (aliased) notes.push(`${plural(aliased, "record")} left out: a file is there under another spelling of the name (letter case or accents) or has come back, so ${them(aliased)} may be its own.`);
   if (count("unchecked")) notes.push(`${plural(count("unchecked"), "record")} left out: whether the file is back can't be checked (no permission, or a drive is offline).`);

@@ -91,11 +91,13 @@ export function isVisibleTreeEntry(name: string, linked = false) {
  * A notebook's visible files (library paths), without the tree's upkeep: no
  * index, prune or reconcile, so a check can read a notebook without changing
  * it. The archive is left out unless `includeArchive`. `onHidden` sees each
- * entry the tree hides. `unreadable` lists the folders that could not be
+ * entry the tree hides. `onEntry` sees every entry before it is looked at and
+ * says whether to go on (a budget, a cancel): stopping makes the listing
+ * `truncated`. `unreadable` lists the folders that could not be
  * listed (a folder that raced away is not one), so "exactly one file has this
  * name" can be told from "one that could be seen".
  */
-export async function listVisibleNotebookFiles(notebook: string, { limit = 20_000, onHidden, includeArchive = false }: { limit?: number; onHidden?: (libraryPath: string, name: string) => void; includeArchive?: boolean } = {}) {
+export async function listVisibleNotebookFiles(notebook: string, { limit = 20_000, onHidden, onEntry, includeArchive = false }: { limit?: number; onHidden?: (libraryPath: string, name: string) => void; onEntry?: () => boolean; includeArchive?: boolean } = {}) {
   const linked = getLinkedFolders().some((folder) => folder.name === notebook);
   const root = notebookPath(notebook);
   const files: string[] = [];
@@ -109,6 +111,7 @@ export async function listVisibleNotebookFiles(notebook: string, { limit = 20_00
       return;
     }
     for (const entry of entries) {
+      if (onEntry && !onEntry()) { truncated = true; return; }
       if (!parts.length && entry.name === ARCHIVE_DIR && !includeArchive) continue;
       if (!isVisibleTreeEntry(entry.name, linked)) { onHidden?.([notebook, ...parts, entry.name].join("/"), entry.name); continue; }
       if (files.length >= limit) { truncated = true; return; }

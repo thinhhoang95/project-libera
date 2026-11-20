@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, rmSync, writeFileSync } from "node:fs";
+import fs, { existsSync, rmSync, writeFileSync } from "node:fs";
 import fsp, { mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { Readable } from "node:stream";
 import test, { mock } from "node:test";
 import { withReviewWrite } from "../../src/lib/agent/review-store";
-import { verifyNotebook, type IntegrityFinding, type IntegrityProgress } from "../../src/lib/storage/integrity";
+import { pythonSidecarPath } from "../../src/lib/python/sidecar";
+import { checkNothingLeftAt, verifyNotebook, type IntegrityFinding, type IntegrityProgress } from "../../src/lib/storage/integrity";
 import { listInterruptedMigrations, planMigration, resumeMigration, runMigration, setMigrationFaultForTests, type MigrationRequest } from "../../src/lib/storage/migration";
-import { definitionsPath, filePathFromParts, getAdminRoot, notebookPath, pdfAnnotationsPath } from "../../src/lib/storage/paths";
+import { definitionsPath, filePathFromParts, getAdminRoot, notebookPath, pdfAnnotationsPath, referenceLibraryPath } from "../../src/lib/storage/paths";
 import { setFileTagsForPath, setStarredFilePath } from "../../src/lib/storage/workspace-metadata";
-import { seeded, withTemporaryLibrary, writeAt, writeLibraryFile } from "./notebook-test-helpers";
+import { seeded, withTemporaryLibrary, writeAt, writeLibraryFile, writeReferenceLibrary } from "./notebook-test-helpers";
 
 // The notebook check's blind spots: the migration's final check, an external
 // case-only rename, records of notebooks that vanished, and "complete" that
@@ -219,4 +221,110 @@ test("the byte budget applies while the notes are read, and progress comes befor
     assert.equal(report.completeness, "partial");
     assert.ok(report.checks.some((check) => check.notes?.some((note) => note.code === "notesLeftOut")));
   } finally { mock.restoreAll(); }
+}));
+
+// ---- F47: one archive scope for every check ----------------------------------
+
+test("a file moved into the archive is found as Try to fix finds it: side files, Python code, LaTeX sources", async () => {
+  const outcomes: string[][] = [];
+  for (const folder of ["moved", "_archive"]) {
+    await withTemporaryLibrary(["Nb"], async () => {
+      // A PDF whose side file recorded its bytes, moved in Finder.
+      const pdf = "%PDF-the-moved-one";
+      await writeLibraryFile(`Nb/${folder}/p.pdf`, pdf);
+      await writeAt(pdfAnnotationsPath("Nb", ["p.pdf"]), JSON.stringify({ annotations: [], comments: [], source: { size: pdf.length, contentHash: sha256(pdf) } }));
+      // Python code of a note whose folder moved; a note of its name, without code, is where it went.
+      await writeAt(path.join(getAdminRoot(), ...pythonSidecarPath("Nb/old/a.md").split("/")), "print('hi')\n");
+      await writeLibraryFile(`Nb/${folder}/a.md`, "# A\n");
+      // A LaTeX project that includes a file it does not have.
+      await writeLibraryFile(`Nb/${folder}/main.tex`, "\\documentclass{article}\n\\input{chapter-missing}\n");
+      const report = await verifyNotebook("Nb");
+      outcomes.push([...codes(report.findings, "sidecars"), ...codes(report.findings, "assets"), ...codes(report.findings, "latex")].map(String).sort());
+      const python = report.findings.find((finding) => finding.check === "assets");
+      assert.equal(python?.clear, undefined, `${folder}: Python code with an owner is never offered for removal`);
+    });
+  }
+  assert.deepEqual(outcomes[1], outcomes[0], "inside the archive, the same findings as outside it");
+  assert.ok(outcomes[1].includes("orphanSideFileMoved") && outcomes[1].includes("pythonCodeOfMovedFolder") && outcomes[1].includes("latexMissing"), outcomes[1].join(","));
+});
+
+// ---- F49: what could not be looked at is not passed --------------------------
+
+/** Makes listing a folder of this name fail with a permission error, as a drive or a mode would. */
+function denyFolder(name: string) {
+  const original = fsp.readdir;
+  mock.method(fsp, "readdir", ((target: string, ...rest: unknown[]) => path.basename(String(target)) === name
+    ? Promise.reject(Object.assign(new Error("EACCES"), { code: "EACCES" }))
+    : (original as (...args: unknown[]) => unknown)(target, ...rest)) as typeof fsp.readdir);
+}
+
+test("a star, an attachment or a tether whose file can't be checked makes its check partial, never a finding", () => withTemporaryLibrary(["Nb"], async () => {
+  await writeLibraryFile("Nb/locked/a.md", "# A\n");
+  await writeLibraryFile("Nb/locked/p.pdf", "%PDF-1");
+  await setStarredFilePath("Nb/locked/a.md", true);
+  await writeReferenceLibrary("Nb", [{ key: "a2026", attachments: ["Nb/locked/p.pdf"] }]);
+  denyFolder("locked");
+  try {
+    const report = await verifyNotebook("Nb");
+    for (const id of ["records", "references"]) {
+      const check = report.checks.find((entry) => entry.id === id);
+      assert.equal(check?.status, "incomplete", id);
+      assert.ok(check?.notes?.some((note) => note.code === "filesUnchecked"), `${id} says what it could not check`);
+      assert.deepEqual(codes(report.findings, id), [], `${id}: nothing reported missing`);
+    }
+    assert.equal(report.completeness, "partial");
+  } finally { mock.restoreAll(); }
+}));
+
+test("another library that can't be read makes the references check partial", () => withTemporaryLibrary(["Nb", "Other"], async () => {
+  await writeAt(referenceLibraryPath("Other"), "{ not json");
+  const report = await verifyNotebook("Nb");
+  const check = report.checks.find((entry) => entry.id === "references");
+  assert.equal(check?.status, "incomplete");
+  assert.ok(check?.notes?.some((note) => note.code === "filesUnchecked"));
+}));
+
+test("a PDF that can't be read for the same-size comparison is not compared, and the sidecars check says so", () => withTemporaryLibrary(["Nb"], async () => {
+  const content = "%PDF-original";
+  await writeLibraryFile("Nb/p.pdf", content);
+  await writeAt(pdfAnnotationsPath("Nb", ["p.pdf"]), JSON.stringify({ annotations: [], comments: [], source: { size: content.length, contentHash: sha256(content) } }));
+  const original = fs.createReadStream;
+  mock.method(fs, "createReadStream", ((target: fs.PathLike, ...rest: unknown[]) => String(target).endsWith("p.pdf")
+    ? new Readable({ read() { this.destroy(Object.assign(new Error("EACCES"), { code: "EACCES" })); } })
+    : (original as (...args: unknown[]) => unknown)(target, ...rest)) as typeof fs.createReadStream);
+  try {
+    const report = await verifyNotebook("Nb");
+    const sidecars = report.checks.find((check) => check.id === "sidecars");
+    assert.equal(sidecars?.status, "incomplete");
+    assert.ok(sidecars?.notes?.some((note) => note.code === "sideFileContentUnverified"));
+    assert.deepEqual(codes(report.findings, "sidecars"), []);
+  } finally { mock.restoreAll(); }
+}));
+
+// ---- F58: the final check of a migration -------------------------------------
+
+test("a side-file slot that can't be probed leaves the final check unverified, not clean", () => withTemporaryLibrary(["Nb"], async () => {
+  const item = { label: "Nb/p.pdf", absolutePath: filePathFromParts("Nb", ["p.pdf"]), libraryPath: "Nb/p.pdf", fileType: "pdf" };
+  assert.deepEqual(await checkNothingLeftAt([item]), { leftovers: [], unverified: false });
+  const denied = pdfAnnotationsPath("Nb", ["p.pdf"]);
+  const original = fsp.lstat;
+  mock.method(fsp, "lstat", ((target: string, ...rest: unknown[]) => target === denied
+    ? Promise.reject(Object.assign(new Error("EACCES"), { code: "EACCES" }))
+    : (original as (...args: unknown[]) => unknown)(target, ...rest)) as typeof fsp.lstat);
+  try {
+    const result = await checkNothingLeftAt([item]);
+    assert.equal(result.unverified, true);
+    assert.ok(result.leftovers.some((line) => line.includes("pdf-annotations") && line.includes("could not be checked")), result.leftovers.join("; "));
+  } finally { mock.restoreAll(); }
+}));
+
+test("records that still name the old path keep the final check from being clean", () => withTemporaryLibrary(["Nb"], async () => {
+  await writeLibraryFile("Nb/old.md", "# Old\n");
+  await setStarredFilePath("Nb/old.md", true);
+  await setFileTagsForPath("Nb/old.md", ["draft"]);
+  await writeReferenceLibrary("Nb", [{ key: "a2026", attachments: ["Nb/old.md"] }]);
+  rmSync(filePathFromParts("Nb", ["old.md"]));
+  const result = await checkNothingLeftAt([{ label: "Nb/old.md", absolutePath: filePathFromParts("Nb", ["old.md"]), libraryPath: "Nb/old.md", fileType: "markdown" }]);
+  assert.equal(result.unverified, false);
+  for (const record of ["star", "tags", "reference attachment"]) assert.ok(result.leftovers.some((line) => line.includes(`(${record})`)), `${record}: ${result.leftovers.join("; ")}`);
 }));

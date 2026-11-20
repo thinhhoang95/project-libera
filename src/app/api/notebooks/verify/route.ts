@@ -28,6 +28,8 @@ export async function GET(request: NextRequest) {
   const stop = new AbortController();
   const abort = () => stop.abort();
   request.signal.addEventListener("abort", abort, { once: true });
+  // A request already gone has no event left to wait for.
+  if (request.signal.aborted) abort();
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const send = (line: IntegrityStreamLine) => {
