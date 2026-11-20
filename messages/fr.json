@@ -7555,6 +7555,7 @@
     "macroDefinitions": "Macros : {count, plural, one {# définition} other {# définitions}}",
     "macroErrorLine": "Ligne {line} : {message}",
     "macroProblems": "· {count, plural, one {# problème} other {# problèmes}}",
+    "macroTableWidths": "· {count, plural, one {# définition de largeurs de tableau} other {# définitions de largeurs de tableau}}",
     "showMacroDefinitions": "Afficher les définitions de macros"
   },
   "tiptapMarkdownEditor": {

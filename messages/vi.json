@@ -7555,6 +7555,7 @@
     "macroDefinitions": "Macro: {count, plural, one {# định nghĩa} other {# định nghĩa}}",
     "macroErrorLine": "Dòng {line}: {message}",
     "macroProblems": "· {count, plural, one {# vấn đề} other {# vấn đề}}",
+    "macroTableWidths": "· {count, plural, one {# định nghĩa độ rộng bảng} other {# định nghĩa độ rộng bảng}}",
     "showMacroDefinitions": "Hiện định nghĩa macro"
   },
   "tiptapMarkdownEditor": {

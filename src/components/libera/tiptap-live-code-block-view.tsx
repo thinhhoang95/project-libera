@@ -5,7 +5,7 @@ import { useTranslations } from "next-intl";
 import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { MACRO_BLOCK_LANGUAGE, isMacroBlockLanguage, parseMacroDefinitions } from "@/lib/markdown-macros";
-import { hasTableWidthsLine } from "@/lib/table-widths";
+import { hasTableWidthsLine, readMacroBlockTableWidths } from "@/lib/table-widths";
 import { NotebookLiveBlock, isLiveCodeBlock } from "./slide-live-blocks";
 
 // The Visual editor's code blocks. A ```chart, ```mermaid or ```html live block keeps
@@ -26,7 +26,7 @@ function codeBlockInfo(value: unknown) {
 
 /**
  * A ```libera-macro block (docs/features/markdown-macros.md): a header that
- * counts its definitions and folds the block away. It starts folded when it
+ * counts its definitions and table width definitions and folds the block away. It starts folded when it
  * has definitions or table column widths, open when it is new.
  */
 function MacroBlockView({ node }: ReactNodeViewProps) {
@@ -35,7 +35,9 @@ function MacroBlockView({ node }: ReactNodeViewProps) {
   const code = node.textContent;
   const definitions = useMemo(() => parseMacroDefinitions(code), [code]);
   const count = definitions.macros.size;
-  // The table column widths line (table-widths.ts) is content too: a block written for it starts folded.
+  // Tables the `% !table-widths` line (table-widths.ts) gives widths to.
+  const tableWidths = useMemo(() => (readMacroBlockTableWidths(code) ?? []).filter((table) => table.length).length, [code]);
+  // The table column widths line is content too: a block written for it starts folded.
   const [open, setOpen] = useState(() => count === 0 && !hasTableWidthsLine(code));
   const Chevron = open ? ChevronDown : ChevronRight;
   return (
@@ -44,6 +46,7 @@ function MacroBlockView({ node }: ReactNodeViewProps) {
         title={open ? t("foldMacroDefinitions") : t("showMacroDefinitions")}>
         <Chevron className="size-3.5" aria-hidden />
         <span>{t("macroDefinitions", { count })}</span>
+        <span>{t("macroTableWidths", { count: tableWidths })}</span>
         {definitions.errors.length ? <span className="libera-macro-block-problems">{t("macroProblems", { count: definitions.errors.length })}</span> : null}
       </button>
       <pre hidden={!open}>

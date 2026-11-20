@@ -7555,6 +7555,7 @@
     "macroDefinitions": "宏：{count, plural, one {# 个定义} other {# 个定义}}",
     "macroErrorLine": "第 {line} 行：{message}",
     "macroProblems": "· {count, plural, one {# 个问题} other {# 个问题}}",
+    "macroTableWidths": "· {count, plural, one {# 个表格宽度定义} other {# 个表格宽度定义}}",
     "showMacroDefinitions": "显示宏定义"
   },
   "tiptapMarkdownEditor": {
