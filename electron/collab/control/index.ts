@@ -2,6 +2,8 @@
 // HTTP server and routes. Used by the utilityProcess entry and by tests,
 // which run it under plain Node against the real collab server.
 
+import path from "node:path";
+
 import { registerAccountRoutes } from "./routes-account";
 import { registerDiagnosticsRoutes } from "./routes-diagnostics";
 import { registerDocRoutes, type DocRouteOptions } from "./routes-docs";
@@ -34,7 +36,7 @@ export async function startControlApp(options: ControlAppOptions): Promise<Contr
   registerProjectRoutes(server.routes, runtime);
   registerDocRoutes(server.routes, runtime, options.docs);
   registerDiagnosticsRoutes(server.routes, runtime);
-  registerThreadRoutes(server.routes, runtime, { libraryRoot: options.libraryRoot });
+  registerThreadRoutes(server.routes, runtime, { libraryRoot: options.libraryRoot, lifecycleDir: path.join(options.collabDir, "notebook-lifecycle") });
   registerRevisionRoutes(server.routes, runtime);
   registerSuggestionRoutes(server.routes, runtime);
   registerReviewRoutes(server.routes, runtime);

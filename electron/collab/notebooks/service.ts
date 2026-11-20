@@ -10,6 +10,8 @@ import { promises as fs, type Dirent } from "node:fs";
 import path from "node:path";
 import { readNotebookBinding, readNotebookLifecycle, recordNotebookBinding, recordNotebookLifecycle, sameNotebookIdentity } from "../../../src/lib/collab/local-notebook-state";
 import { reserveLifecycle, ReservationConflictError, type Reservation } from "../../../src/lib/collab/lifecycle-reservation";
+import { readReviewDocuments } from "../../../src/lib/storage/review-files";
+import { recordReviewFileIds, type ReviewFileMap } from "../control/review-migration";
 
 import type {
   AlbumOriginalResponse,
@@ -2016,6 +2018,9 @@ export class NotebookServiceImpl implements NotebookService {
           }
         }
         await writeState(root, state, guard);
+        // Which shared file each local review comment thread belongs to, fixed now: the optional transfer of those
+        // comments finds the document by this, not by a path that may be renamed or reused by then.
+        if (!album) await this.recordLocalReviewFiles(projectId, notebook, files).catch((error) => this.logger.warn(`Shared notebook ${notebook}: the local review map could not be saved; comments will move by path.`, error));
         // Our reservation must still stand: a lapsed lease means a local operation may have taken the notebook over.
         try { reservation.revalidate(); }
         catch { throw new ControlError(409, "notebook-busy", "The notebook was changed by another operation while it was being shared. The checkpoint was preserved; try again."); }
@@ -2089,6 +2094,17 @@ export class NotebookServiceImpl implements NotebookService {
       if (!album && checkpointed && !finished) await savePlan().catch(() => undefined);
       throw toControlError(error);
     }
+  }
+
+  /** Records, per local Markdown review of this notebook, the file it is about (by file ID and document ID). */
+  private async recordLocalReviewFiles(projectId: string, notebook: string, files: PlannedFile[]): Promise<void> {
+    const byKey = new Map(files.filter((file) => file.kind === "doc" && file.docKind === "markdown" && file.docId).map((file) => [`${notebook}/${file.path}`, file]));
+    const entries: ReviewFileMap = {};
+    for (const review of await readReviewDocuments(this.deps.libraryRoot, (key) => byKey.has(key))) {
+      const file = byKey.get(review.key);
+      if (file) entries[review.id] = { fileId: file.fileId, docId: file.docId as string };
+    }
+    recordReviewFileIds(this.lifecycleDirectory, projectId, entries);
   }
 
   // ------------------------------------------------------------ join
