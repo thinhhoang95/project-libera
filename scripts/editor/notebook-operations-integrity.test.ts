@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { readFile, stat } from "node:fs/promises";
+import fsp, { readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import test from "node:test";
+import test, { mock } from "node:test";
 import { listPendingReviews, withReviewWrite } from "../../src/lib/agent/review-store";
 import { listRunFiles, RunSnapshots } from "../../src/lib/agent/snapshots";
 import { pythonSidecarPath } from "../../src/lib/python/sidecar";
@@ -18,7 +18,7 @@ import {
   renameFolder,
 } from "../../src/lib/storage/files";
 import { addReviewThreads, findReview } from "../../src/lib/storage/markdown-reviews";
-import { filePathFromParts, getAdminRoot } from "../../src/lib/storage/paths";
+import { definitionsPath, filePathFromParts, getAdminRoot, imageAnnotationsPath, pdfAnnotationsPath } from "../../src/lib/storage/paths";
 import { setFileTagsForPath, setStarredFilePath } from "../../src/lib/storage/workspace-metadata";
 import { assertNotebookSound, seedNotebook, splitLibraryPath, withTemporaryLibrary, writeAt, writeLibraryFile, writeReferenceLibrary } from "./notebook-test-helpers";
 
@@ -195,4 +195,111 @@ test("every file operation leaves its notebooks sound, and carries every record 
   await sound("Other", [CHART_LEFT_BEHIND]);
   // The tether stayed with its file all the way.
   assert.deepEqual(await tether("Nb", "Nb/_archive/refs.bib"), { libraryPath: "Nb/_archive/refs.bib" });
+}));
+
+// Folder operations (findings 13 to 16): a folder that can't be scanned or moved cleanly changes nothing, or says what it could not put back.
+
+const sidecarKinds = (notebook: string, folder: string) => ({
+  pdf: pdfAnnotationsPath(notebook, [folder, "a.pdf"]),
+  image: imageAnnotationsPath(notebook, [folder, "p.png"]),
+  definitions: definitionsPath(notebook, [folder, "d.md"]),
+});
+
+test("a folder rollback puts back only the records that moved, never ones that arrived at the destination (13)", () => withTemporaryLibrary(["Nb"], async () => {
+  await writeLibraryFile("Nb/old/n.md", "# N\n");
+  const old = sidecarKinds("Nb", "old");
+  const arrived = sidecarKinds("Nb", "new");
+  await writeAt(old.pdf, "{}");
+  await writeAt(old.definitions, "{}");
+  // After the checks, a record of another kind and one of a later kind arrive at the destination: the first is not
+  // in the way of anything, the second makes the definitions step fail.
+  const original = fsp.rename;
+  mock.method(fsp, "rename", async (from: string, to: string) => {
+    await original(from, to);
+    if (String(from).endsWith(`${path.sep}old`) && String(to).endsWith(`${path.sep}new`)) {
+      await writeAt(arrived.image, "{\"theirs\":true}");
+      await writeAt(arrived.definitions, "{\"theirs\":true}");
+    }
+  });
+  try { await assert.rejects(() => renameFolder("Nb/old", "new")); } finally { mock.restoreAll(); }
+  assert.ok(await exists(disk("Nb/old/n.md")), "the folder is back");
+  assert.ok(await exists(old.pdf) && await exists(old.definitions), "the records that were moved are back");
+  assert.ok(await exists(arrived.image), "the record that arrived stays at the destination");
+  assert.ok(!(await exists(sidecarKinds("Nb", "old").image)), "and was not taken to the source");
+  assert.equal(await readFile(arrived.definitions, "utf8"), "{\"theirs\":true}");
+}));
+
+test("a folder rollback that cannot finish says what is stuck (13)", () => withTemporaryLibrary(["Nb"], async () => {
+  await writeLibraryFile("Nb/old/n.md", "# N\n");
+  await writeAt(pythonCode("Nb/old/n.md"), PYTHON);
+  const original = fsp.rename;
+  mock.method(fsp, "rename", async (from: string, to: string) => {
+    if (String(from).endsWith(`${path.sep}new`) && String(to).endsWith(`${path.sep}old`)) throw Object.assign(new Error("EPERM: cannot rename back"), { code: "EPERM" });
+    await original(from, to);
+    // Code for the note's new path arrives after the checks, so moving the note's code is refused.
+    if (String(from).endsWith(`${path.sep}old`) && String(to).endsWith(`${path.sep}new`)) await writeAt(pythonCode("Nb/new/n.md"), "theirs\n");
+  });
+  try {
+    await assert.rejects(() => renameFolder("Nb/old", "new"), (error) => (error as { status?: number }).status === 500 && /already has Python code/.test((error as Error).message) && /EPERM/.test((error as Error).message));
+  } finally { mock.restoreAll(); }
+  assert.equal(await readFile(pythonCode("Nb/old/n.md"), "utf8"), PYTHON, "the code stayed with its note");
+  assert.equal(await readFile(pythonCode("Nb/new/n.md"), "utf8"), "theirs\n");
+}));
+
+test("a folder moved onto a name that still has Python code for its notes is refused, with and without code of its own (14)", () => withTemporaryLibrary(["Nb"], async () => {
+  await writeLibraryFile("Nb/Drafts/a.md", "# A\n");
+  await writeLibraryFile("Nb/Plain/a.md", "# A\n");
+  await writeAt(pythonCode("Nb/Drafts/a.md"), PYTHON);
+  await writeAt(pythonCode("Nb/Project/a.md"), "stale\n");
+  await writeAt(pythonCode("Nb/Other/a.md"), "stale 2\n");
+  const refused = (error: unknown) => (error as { status?: number }).status === 409 && /Python code/.test((error as Error).message);
+  await assert.rejects(() => renameFolder("Nb/Drafts", "Project"), refused);
+  await assert.rejects(() => renameFolder("Nb/Plain", "Other"), refused);
+  assert.ok(await exists(disk("Nb/Drafts/a.md")) && await exists(disk("Nb/Plain/a.md")), "nothing moved");
+  assert.equal(await readFile(pythonCode("Nb/Drafts/a.md"), "utf8"), PYTHON);
+  assert.equal(await readFile(pythonCode("Nb/Project/a.md"), "utf8"), "stale\n");
+  assert.equal(await readFile(pythonCode("Nb/Other/a.md"), "utf8"), "stale 2\n");
+  // The archive takes another name instead, and the stale code stays where it was.
+  await writeAt(pythonCode("Nb/_archive/Drafts/a.md"), "stale 3\n");
+  const archived = await archiveFolder("Nb/Drafts");
+  assert.equal(archived.moved.to, "Nb/_archive/Drafts-1");
+  assert.equal(await readFile(pythonCode("Nb/_archive/Drafts/a.md"), "utf8"), "stale 3\n");
+  assert.ok((await readFile(pythonCode("Nb/_archive/Drafts-1/a.md"), "utf8")).startsWith(PYTHON), "the code moved with the note");
+}));
+
+/** Makes listing the folder `name` fail, as an unreadable child folder does. */
+function failListing(name: string) {
+  const original = fsp.readdir;
+  mock.method(fsp, "readdir", (target: string, ...rest: unknown[]) => String(target).endsWith(`${path.sep}${name}`)
+    ? Promise.reject(Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" }))
+    : (original as (...args: unknown[]) => Promise<unknown>)(target, ...rest));
+}
+
+test("a folder with a child that can't be listed is not renamed or archived, so no code is stranded (15)", () => withTemporaryLibrary(["Nb"], async () => {
+  await writeLibraryFile("Nb/Drafts/sub/b.md", "# B\n");
+  await writeAt(pythonCode("Nb/Drafts/sub/b.md"), PYTHON);
+  failListing("sub");
+  try {
+    await assert.rejects(() => renameFolder("Nb/Drafts", "Final"), (error) => (error as { status?: number }).status === 409);
+    await assert.rejects(() => archiveFolder("Nb/Drafts"), (error) => (error as { status?: number }).status === 409);
+  } finally { mock.restoreAll(); }
+  assert.ok(await exists(disk("Nb/Drafts/sub/b.md")), "the folder is where it was");
+  assert.ok(await exists(pythonCode("Nb/Drafts/sub/b.md")));
+  assert.ok(!(await exists(disk("Nb/Final"))) && !(await exists(disk("Nb/_archive/Drafts"))));
+}));
+
+test("deleting a folder whose notes can't all be read deletes nothing, and a full read cleans up its code and images (16)", () => withTemporaryLibrary(["Nb"], async () => {
+  await writeLibraryFile("Nb/Gone/a.md", "# A\n");
+  await writeLibraryFile("Nb/Gone/sub/b.md", "# B\n");
+  await writeAt(pythonCode("Nb/Gone/sub/b.md"), PYTHON);
+  const original = fsp.readFile;
+  mock.method(fsp, "readFile", (target: unknown, ...rest: unknown[]) => String(target).endsWith(`${path.sep}b.md`)
+    ? Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }))
+    : (original as (...args: unknown[]) => Promise<unknown>)(target, ...rest));
+  try { await assert.rejects(() => deleteFolder("Nb/Gone"), (error) => (error as { status?: number }).status === 409); } finally { mock.restoreAll(); }
+  assert.ok(await exists(disk("Nb/Gone/sub/b.md")), "the folder is still there");
+  assert.ok(await exists(pythonCode("Nb/Gone/sub/b.md")), "with its code");
+  await deleteFolder("Nb/Gone");
+  assert.ok(!(await exists(disk("Nb/Gone"))));
+  assert.ok(!(await exists(pythonCode("Nb/Gone/sub/b.md"))), "its code went with it");
 }));

@@ -236,9 +236,10 @@ export async function rawEmbedsInOtherNotebooks(notebook: string) {
 export async function cleanupMarkdownImageAssets(notebook: string, previous: MarkdownDocument[], overrides: MarkdownDocument[] = []) {
   // The local archive remains writable inside a shared notebook, but its
   // shared assets belong to the host and cannot be collected by local deletes.
-  if (isSharedNotebookPath(`${notebook}/${MARKDOWN_ASSETS_DIR}`)) return;
+  if (isSharedNotebookPath(`${notebook}/${MARKDOWN_ASSETS_DIR}`)) return true;
   const { documents, complete } = await readMarkdownAssetDocuments(notebook);
-  if (!complete) return;
+  // False when a notebook could not be read in full: nothing was pruned, so a caller can say so.
+  if (!complete) return false;
   const references = new Set<string>();
   // A save can be superseded while this scan runs. Keep both the text on disk
   // and the caller's references; an older request must not prune a newer save.
@@ -287,7 +288,7 @@ export async function cleanupMarkdownImageAssets(notebook: string, previous: Mar
   let embeddedElsewhere = new Set<string>();
   if (pruned.length) {
     const elsewhere = await rawEmbedsInOtherNotebooks(notebook);
-    if (!elsewhere) return;
+    if (!elsewhere) return false;
     embeddedElsewhere = elsewhere;
   }
   for (const candidate of pruned) {
@@ -297,6 +298,7 @@ export async function cleanupMarkdownImageAssets(notebook: string, previous: Mar
     directories.add(path.dirname(asset.targetPath));
   }
   for (const directory of directories) await removeEmptyAssetParents(notebook, directory);
+  return true;
 }
 
 // A note's Python sidecar sits in its assets folder (lib/python/sidecar.ts),
@@ -393,14 +395,23 @@ export async function deletePythonSidecar(documentPath: string) {
   await removeEmptyAssetParents(sidecar.notebook, path.dirname(sidecar.absolutePath));
 }
 
-/** Library paths of the Markdown notes in a folder and its subfolders. */
+/**
+ * Library paths of the Markdown notes in a folder and its subfolders. A folder
+ * that can't be listed, or more entries than the scan cap, refuses (409): the
+ * notes it missed would keep their Python code and images behind a move or delete.
+ */
 export async function markdownPathsInFolder(notebook: string, folderParts: string[]) {
   const paths: string[] = [];
+  let remaining = 20_000;
   async function visit(parts: string[]) {
     let entries;
     try { entries = await readdir(path.join(notebookPath(notebook), ...parts), { withFileTypes: true }); }
-    catch { return; }
+    catch (error) {
+      if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) return;
+      throw new StorageError(`${relativeFilePath(notebook, parts)} could not be read in full, so the notes inside it and their code were not found. Nothing was changed.`, 409);
+    }
     for (const entry of entries) {
+      if (--remaining < 0) throw new StorageError(`${relativeFilePath(notebook, folderParts)} has too many items to find every note in it. Nothing was changed.`, 409);
       if (entry.name.startsWith(".") || entry.name === MARKDOWN_ASSETS_DIR) continue;
       if (entry.isDirectory()) await visit([...parts, entry.name]);
       else if (entry.isFile() && MARKDOWN_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) paths.push(relativeFilePath(notebook, [...parts, entry.name]));
@@ -408,6 +419,27 @@ export async function markdownPathsInFolder(notebook: string, folderParts: strin
   }
   await visit(folderParts);
   return paths;
+}
+
+/** The notes of a folder with their text, for a delete's asset cleanup; refuses like markdownPathsInFolder, and when a note can't be read. */
+export async function markdownDocumentsInFolder(notebook: string, folderParts: string[]): Promise<MarkdownDocument[]> {
+  const documents: MarkdownDocument[] = [];
+  for (const documentPath of await markdownPathsInFolder(notebook, folderParts)) {
+    const { notebook: owner, pathParts } = splitFilePath(documentPath);
+    try { documents.push({ documentPath, content: await readFile(filePathFromParts(owner, pathParts), "utf8") }); }
+    catch { throw new StorageError(`${documentPath} could not be read, so its code and images can't be cleaned up. Nothing was deleted.`, 409); }
+  }
+  return documents;
+}
+
+/** The notes among `documentPaths` that already have Python code at their path (either layout): code of files that were there before. */
+export async function pythonCodeAt(documentPaths: string[]) {
+  const found: string[] = [];
+  for (const documentPath of documentPaths) {
+    const legacy = splitFilePath(legacyPythonSidecarPath(documentPath));
+    if (await pathExists(pythonSidecarFile(documentPath).absolutePath) || await pathExists(filePathFromParts(legacy.notebook, legacy.pathParts))) found.push(documentPath);
+  }
+  return found;
 }
 
 async function writeAvailableAsset(directory: string, name: string, body: Buffer, verify?: () => Promise<void>) {
