@@ -4464,6 +4464,8 @@
         "citationIndexOutOfDate": "Chỉ mục trích dẫn đã cũ đối với {count, plural, one {# tệp} other {# tệp}}; nó sẽ được cập nhật lần liệt kê trích dẫn tiếp theo.",
         "entryLimitReached": "đã đạt giới hạn {count} mục",
         "globalSearchStale": "Tìm kiếm chung vẫn liệt kê {count, plural, one {# tệp} other {# tệp}} không còn trong sổ tay; nó sẽ cập nhật lần chạy tiếp theo.",
+        "globalSearchChanged": "Tìm kiếm chung đang giữ nội dung của một tệp cũ cho {count, plural, one {# đường dẫn} other {# đường dẫn}}; nó sẽ cập nhật lần chạy tiếp theo.",
+        "globalSearchMissing": "Tìm kiếm chung chưa có mục nào cho {count, plural, one {# tệp} other {# tệp}}; nó sẽ cập nhật lần chạy tiếp theo.",
         "globalSearchSkipped": "Tìm kiếm toàn cục chưa được so sánh với sổ tay: không thể đọc chỉ mục của nó mà không mở để ghi.",
         "imageAddressUnreadable": "Không thể đọc địa chỉ hình ảnh \"{source}\".",
         "imageLeftBehind": "Có một hình ảnh không được ghi chú nào hiển thị, nhưng một ghi chú hiển thị một hình ảnh bị thiếu cùng tên: có lẽ là hình này, bị bỏ lại khi ghi chú được di chuyển.",

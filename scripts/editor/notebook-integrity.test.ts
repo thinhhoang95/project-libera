@@ -12,6 +12,7 @@ import { createMarkdownFileLinkDestination } from "../../src/lib/markdown-file-l
 import { searchIndexFile } from "../../src/lib/search/settings";
 import { inkFolderPath } from "../../src/lib/storage/ink";
 import { reviewsDirectory } from "../../src/lib/storage/review-files";
+import { readFileSignature } from "../../src/lib/storage/file-signature";
 import { listSidecars } from "../../src/lib/storage/sidecars";
 import { verifyNotebook, type IntegrityReport } from "../../src/lib/storage/integrity";
 import { writeMarkdownImageAsset } from "../../src/lib/storage/markdown-assets";
@@ -288,8 +289,10 @@ test("derived indexes are compared with what they index", () => withLibrary(asyn
   const database = searchIndexFile();
   await mkdir(path.dirname(database), { recursive: true });
   const db = new DatabaseSync(database);
-  db.exec("CREATE TABLE files (path TEXT, source TEXT, notebook TEXT)");
-  db.prepare("INSERT INTO files VALUES (?, 'library', 'Nb'), (?, 'library', 'Nb')").run("Nb/a.md", "Nb/gone.md");
+  db.exec("CREATE TABLE files (path TEXT, source TEXT, notebook TEXT, signature TEXT, status TEXT)");
+  const signatureOf = (relative: string) => readFileSignature(filePathFromParts("Nb", relative.split("/").slice(1)));
+  db.prepare("INSERT INTO files VALUES (?, 'library', 'Nb', ?, 'ok'), (?, 'library', 'Nb', ?, 'ok'), (?, 'library', 'Nb', 'x', 'ok')")
+    .run("Nb/a.md", await signatureOf("Nb/a.md"), "Nb/b.md", await signatureOf("Nb/b.md"), "Nb/gone.md");
   db.close();
   const before = await readdir(path.dirname(database));
 

@@ -1,5 +1,5 @@
 import { existsSync, statSync } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import type { SearchGalleryPhoto, SearchIndexStatus } from "@/lib/global-search";
 import {
@@ -97,6 +97,26 @@ function toNewChunks(chunks: SourceChunk[]): NewChunk[] {
 /** A file with nothing to read still gets one passage, so its name can be found. */
 function nameOnlyChunk(name: string): NewChunk[] {
   return [{ title: "", text: name, context: "" }];
+}
+
+/**
+ * Whether a file's name, spelled exactly like this, is in its folder. A
+ * case-only rename leaves the old spelling openable on a case-insensitive
+ * volume, so opening it proves nothing. A folder that can't be listed is not
+ * proof of absence. Listings are kept for one scan.
+ */
+function exactNameLookup() {
+  const folders = new Map<string, Promise<Set<string> | null>>();
+  return async (absolutePath: string) => {
+    const folder = path.dirname(absolutePath);
+    let names = folders.get(folder);
+    if (!names) {
+      names = readdir(folder).then((entries) => new Set(entries.map((name) => name.normalize("NFC")))).catch(() => null);
+      folders.set(folder, names);
+    }
+    const listed = await names;
+    return !listed || listed.has(path.basename(absolutePath).normalize("NFC"));
+  };
 }
 
 /**
@@ -703,6 +723,7 @@ export class SearchIndexer {
       for (const file of known.values()) if (file.source === "library" && file.path.startsWith(folder)) affected.add(file.path);
     }
     const removed = new Set<string>();
+    const exactNames = exactNameLookup();
 
     for (const filePath of affected) {
       if (!this.canIndex(db, preferences)) return;
@@ -710,6 +731,11 @@ export class SearchIndexer {
       try {
         const { notebook, pathParts } = splitFilePath(filePath);
         if (!isVisibleTreeFile(notebook, pathParts)) {
+          removed.add(filePath);
+          continue;
+        }
+        // On a case-insensitive volume the old spelling of a renamed file still opens: only the directory knows it is gone.
+        if (!await exactNames(libraryAbsolutePath(filePath))) {
           removed.add(filePath);
           continue;
         }

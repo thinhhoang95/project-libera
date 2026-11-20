@@ -13,6 +13,7 @@ import { emptyInkAuthorFile } from "../../src/lib/ink/codec";
 import { inkFolderPath, reconcileInkFolders } from "../../src/lib/storage/ink";
 import { reconcilePdfSidecars } from "../../src/lib/storage/pdf-sidecars";
 import { definitionsDirectoryPath, definitionsPath, filePathFromParts, getAdminRoot, notebookPath, orphanedSidecarsDirectoryPath, pdfAnnotationsPath, transcriptPath } from "../../src/lib/storage/paths";
+import { refreshNotebookCitations } from "../../src/lib/storage/reference-citations";
 import { readReferenceLibrary } from "../../src/lib/storage/references";
 import { readWorkspaceMetadata, setFileTagsForPath, setStarredFilePath } from "../../src/lib/storage/workspace-metadata";
 import { assertNotebookSound, SEEDED_INK, seeded, seedNotebook, withTemporaryLibrary, writeAt, writeLibraryFile, writeReferenceLibrary } from "./notebook-test-helpers";
@@ -518,4 +519,18 @@ test("code whose owning note was not in the listing is not offered for removal, 
     assert.equal(assets?.status, "incomplete");
     assert.ok(assets?.notes?.some((note) => note.code === "foldersUnreadable"));
   } finally { mock.restoreAll(); }
+}));
+
+test("Acknowledge clears a citation index entry of an archived note that left the archive, with the archive hidden", () => withTemporaryLibrary(["Nb"], async () => {
+  await writeLibraryFile("Nb/_archive/old.md", "See [@smith2020].\n");
+  await writeLibraryFile("Nb/a.md", "No citation.\n");
+  await refreshNotebookCitations("Nb", { includeArchive: true });
+  await gone("Nb/_archive/old.md");
+  const stale = () => verifyNotebook("Nb").then((report) => report.findings.filter((finding) => finding.check === "indexes").map((finding) => finding.message));
+  assert.deepEqual(await stale(), ["The citation index is out of date for 1 file; it is brought up to date the next time citations are listed."]);
+
+  const plan = await planNotebookCleanup("Nb");
+  const result = await applyNotebookCleanup("Nb", plan.token);
+  assert.deepEqual(result.problems, []);
+  assert.deepEqual(await stale(), [], "the finding it said it cleared is cleared");
 }));

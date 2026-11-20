@@ -12,8 +12,10 @@ import { readTetherTarget } from "@/lib/references/bib-tether";
 import { ARCHIVE_DIR, MARKDOWN_ASSETS_DIR, MARKDOWN_EXTENSIONS, ORPHANED_SIDECARS_DIR } from "@/lib/storage/constants";
 import { planBibMirror } from "@/lib/references/bib-mirror";
 import type { ReferenceLibrary } from "@/lib/references/types";
-import { readIndexedLibraryPaths } from "@/lib/search/database";
-import { searchIndexFile } from "@/lib/search/settings";
+import { readIndexedLibraryRows } from "@/lib/search/database";
+import { latexBuildProductFilter } from "@/lib/search/latex-products";
+import { getSearchPreferences, searchIndexFile } from "@/lib/search/settings";
+import { readFileSignature } from "@/lib/storage/file-signature";
 import { citationIndexPath, readCitationIndex } from "@/lib/storage/reference-citations";
 import { fileExistence, libraryNotebookNames, linkCandidates, resolveLinkTargetWith } from "@/lib/storage/library-links";
 import { decodeMarkdownHeadingHash, findMarkdownHeadingAnchorIndex, markdownHeadingAnchors, type MarkdownHeadingAnchor } from "@/lib/markdown-heading-anchors";
@@ -1187,21 +1189,48 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     }
     // Global Search, read without opening the index for writing; skipped when that can't be done.
     const searchFile = searchIndexFile();
-    const indexed = readIndexedLibraryPaths(searchFile, notebook);
+    const indexed = readIndexedLibraryRows(searchFile, notebook);
     const skipped: Said[] = [];
     // An index not built yet has nothing to compare; one that is there but can't be read safely is a check that did not run: the report is partial.
     if (!indexed && await probe(searchFile) !== "absent") skipped.push(said("globalSearchSkipped", "Global Search was not compared with the notebook: its index could not be read without opening it for writing."));
     if (indexed) {
       const listed = new Set(visible.files);
-      let gone = 0;
-      for (const file of indexed) {
-        if (listed.has(file) || !under(file, notebook)) continue;
+      // A row spelled differently from a listed file (a case-only rename the volume still opens under both names) is obsolete, though its path "exists".
+      const spelling = (file: string) => file.normalize("NFC").toLowerCase();
+      const listedSpellings = new Set(visible.files.map(spelling));
+      const rows = new Map(indexed.map((row) => [row.path, row]));
+      let gone = 0, changed = 0, missing = 0;
+      for (const { path: file, signature, status } of indexed) {
+        if (!under(file, notebook)) continue;
+        if (listed.has(file)) {
+          // A row at a path that now holds another file (moved away and replaced) carries the old file's signature. A PDF's or recording's signature has extra parts after "|".
+          if (status !== "ok" || !budget.allows()) continue;
+          budget.probe();
+          try { if (await readFileSignature(filePathFromParts(notebook, file.split("/").slice(1))) !== signature.split("|")[0]) changed += 1; } catch { /* Not judged. */ }
+          continue;
+        }
         if (!budget.allows()) break;
+        if (listedSpellings.has(spelling(file))) { gone += 1; continue; }
         budget.probe();
         await disk.check([file]);
         if (!disk.exists(file) && !disk.unknown(file)) gone += 1;
       }
+      // Files Search would index but has no row for (a move's destination). Not before the index holds this notebook at all, and not from a walk cut short.
+      if (indexed.length && !visible.truncated) {
+        const indexImages = getSearchPreferences().indexImages;
+        const isBuildProduct = latexBuildProductFilter();
+        const root = notebookPath(notebook);
+        for (const file of visible.files) {
+          if (rows.has(file) || (!indexImages && getFileType(file) === "image")) continue;
+          if (!budget.allows()) break;
+          budget.probe();
+          try { if (await isBuildProduct(filePathFromParts(notebook, file.split("/").slice(1)), root)) continue; } catch { continue; }
+          missing += 1;
+        }
+      }
       if (gone) add({ severity: "info", path: notebook, message: `Global Search still lists ${plural(gone, "file")} no longer in the notebook; it catches up the next time it runs.`, ...say("globalSearchStale", { count: gone }) });
+      if (changed) add({ severity: "info", path: notebook, message: `Global Search holds the text of an earlier file for ${plural(changed, "path")}; it catches up the next time it runs.`, ...say("globalSearchChanged", { count: changed }) });
+      if (missing) add({ severity: "info", path: notebook, message: `Global Search has no entry yet for ${plural(missing, "file")}; it catches up the next time it runs.`, ...say("globalSearchMissing", { count: missing }) });
     }
     if (skipped.length) return skipped;
   });

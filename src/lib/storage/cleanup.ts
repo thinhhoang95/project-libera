@@ -529,7 +529,8 @@ async function perform(notebook: string, action: CleanupAction, context: Context
       throw new NoLongerStale(seen === "other" ? "The library was tethered to another .bib file since the check; the tether is kept." : `${action.target} is there again, or can't be checked; the tether is kept.`);
     }
     case "bib-mirror": await regenerateBibMirror(notebook, await readReferenceLibrary(notebook)); return "removed";
-    case "citations": await refreshNotebookCitations(notebook); return "removed";
+    // With the archive in the walk: a hidden archive keeps its old entries, and the finding is about them too.
+    case "citations": await refreshNotebookCitations(notebook, { includeArchive: true }); return "removed";
   }
 }
 
