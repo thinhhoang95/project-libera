@@ -31,6 +31,7 @@ import { existingSidecars, listSidecars, findOrphanedSidecars, SIDECAR_KINDS, ty
 import { matchByIdentity, readOrphans } from "@/lib/storage/pdf-sidecars";
 import { getFileType } from "@/lib/storage/file-types";
 import { pythonSidecarDocumentPath, pythonSidecarPath } from "@/lib/python/sidecar";
+import { foldedFileName } from "@/lib/storage/file-names";
 import { listVisibleNotebookFiles } from "@/lib/storage/tree";
 import { inspectWorkspaceMetadata } from "@/lib/storage/workspace-metadata";
 import { StorageError } from "@/lib/storage/errors";
@@ -836,7 +837,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     if (unused.some((asset) => !asset.toLowerCase().endsWith(".py"))) {
       for (const note of readable) {
         for (const target of markdownImageTargets(note.documentPath, note.content)) {
-          if (target.absolutePath && await probeFileOnce(target.absolutePath) !== "present") embedded.add(path.basename(target.absolutePath).toLowerCase());
+          if (target.absolutePath && await probeFileOnce(target.absolutePath) !== "present") embedded.add(foldedFileName(path.basename(target.absolutePath)));
         }
       }
     }
@@ -854,13 +855,13 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
         if (!budget.allows()) { ownersCut = true; break; }
         const own = pythonSidecarPath(file);
         const state = await probeOnce(path.join(notebookPath(notebook), ...own.split("/").slice(1)));
-        if (state === "absent") codeNames.set(own.slice(own.lastIndexOf("/") + 1).toLowerCase(), file);
+        if (state === "absent") codeNames.set(foldedFileName(own.slice(own.lastIndexOf("/") + 1)), file);
         else if (state === "unknown") { ownersCut = true; unknownOwners += 1; }
       }
     }
     for (const asset of unused) {
       const python = asset.toLowerCase().endsWith(".py");
-      const name = asset.slice(asset.lastIndexOf("/") + 1).toLowerCase();
+      const name = foldedFileName(asset.slice(asset.lastIndexOf("/") + 1));
       const wanted = !python && embedded.has(name);
       const owner = python ? codeNames.get(name) : undefined;
       add(python

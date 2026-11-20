@@ -367,8 +367,8 @@ function RepairPlanView({ plan }: { plan: RepairPlan }) {
   function unmatchedReason(item: RepairUnmatched) {
     if (item.reason === "none") return t("unmatchedNone");
     if (item.reason === "shared-name") return t("unmatchedSharedName");
-    if (item.reason === "different") return t("unmatchedDifferent", { candidates: item.candidates.join(", "), count: item.candidates.length });
-    if (item.reason === "elsewhere") return t("unmatchedElsewhere", { candidates: item.candidates.join(", "), count: item.candidates.length });
+    if (item.reason === "unread") return t("unmatchedUnread", { candidates: item.candidates.join(", ") });
+    if (item.reason === "conflict") return t("unmatchedConflict", { candidates: item.candidates.join(", ") });
     if (item.reason === "own") return t("unmatchedOwn", { candidates: item.candidates.join(", "), count: item.candidates.length });
     return t("unmatchedSeveral", { candidates: item.candidates.join(", ") });
   }
