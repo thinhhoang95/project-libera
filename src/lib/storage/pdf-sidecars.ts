@@ -6,6 +6,7 @@ import { recordPdfAnnotationsSource } from "@/lib/storage/annotations";
 import { sharedNotebookMarker } from "@/lib/collab/shared-notebook";
 import { getFileType } from "@/lib/storage/file-types";
 import { pathExists, writeJsonAtomically } from "@/lib/storage/fs-utils";
+import { fileExistence } from "@/lib/storage/library-links";
 import { DestinationTakenError, movePathExclusive, writeFileExclusive } from "../../../electron/collab/notebooks/fs-ops";
 import { cachedPdfIdentity, parsePdfIdentity, type PdfIdentity } from "@/lib/storage/pdf-identity";
 import {
@@ -273,14 +274,9 @@ async function changedSinceNotes(notebook: string, pathParts: string[]) {
   } catch { return true; }
 }
 
-async function pdfExists(libraryPath: string): Promise<boolean | null> {
-  try {
-    const { notebook, pathParts } = splitFilePath(libraryPath);
-    return (await stat(filePathFromParts(notebook, pathParts))).isFile();
-  } catch (error) {
-    // Unreadable (offline drive, permissions): not known to be gone.
-    return (error as NodeJS.ErrnoException).code === "ENOENT" ? false : null;
-  }
+/** Whether the PDF is there by the exact names its folders list (as the tree and the notebook check see it, not as `stat` aliases a case-only or Unicode-normalization rename); null when unreadable (offline drive, permissions): not known to be gone. */
+function pdfExists(libraryPath: string, existence = fileExistence()): Promise<boolean | null> {
+  return existence.isFile(libraryPath);
 }
 
 /** The side-cars set aside in `.libera/orphaned-sidecars/` for PDFs that went missing; reads only (the notebook check lists them too). */
@@ -308,13 +304,12 @@ export async function readOrphans(notebook: string) {
 export async function reconcilePdfSidecars(notebook: string, pdfFiles: Array<{ path: string; size: number }>, { now = Date.now() }: { now?: number } = {}) {
   const missing: Found[] = [];
   const lacksIdentity: string[] = [];
+  const existence = fileExistence();
   for (const store of KINDS) {
     for (const found of await listSidecars(notebook, store)) {
-      const exists = await pdfExists(found.libraryPath);
+      const exists = await pdfExists(found.libraryPath, existence);
       if (exists === false) missing.push(found);
-      else {
-        if (exists && store.kind === "annotations" && !backfilled.has(notebook)) lacksIdentity.push(found.libraryPath);
-      }
+      else if (exists && store.kind === "annotations" && !backfilled.has(notebook)) lacksIdentity.push(found.libraryPath);
     }
   }
   // Annotations saved before they recorded their PDF's identity get it once, in the background.
@@ -380,11 +375,11 @@ export async function reconcilePdfSidecars(notebook: string, pdfFiles: Array<{ p
     if (shared) {
       // Only back under its old path, and only as the same bytes.
       const original = splitFilePath(record.originalPath);
-      const current = record.source && await pdfExists(record.originalPath) ? await cachedPdfIdentity(filePathFromParts(original.notebook, original.pathParts)).catch(() => null) : null;
+      const current = record.source && await pdfExists(record.originalPath, existence) ? await cachedPdfIdentity(filePathFromParts(original.notebook, original.pathParts)).catch(() => null) : null;
       if (current && record.source && current.contentHash === record.source.contentHash && !(await slotTaken(store, record.originalPath))) target = record.originalPath;
     } else if (record.source) target = await match(store, record.source);
     // Without a recorded identity, only the PDF coming back under its old path is its own.
-    else if (await pdfExists(record.originalPath) && !(await slotTaken(store, record.originalPath))) target = record.originalPath;
+    else if (await pdfExists(record.originalPath, existence) && !(await slotTaken(store, record.originalPath))) target = record.originalPath;
     if (target) {
       const { notebook: owner, pathParts } = splitFilePath(target);
       const destination = store.path(owner, pathParts);

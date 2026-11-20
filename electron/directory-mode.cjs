@@ -130,6 +130,7 @@ function normalizeDirectoryModeState(value) {
     if (folders.some((folder) => folder.path === folderPath || folder.name.toLowerCase() === item.name.toLowerCase())) continue;
     folders.push({ name: item.name, path: folderPath,
       ...(VALID_FOLDER_ID.test(item.id) ? { id: item.id } : {}),
+      ...(item.unmarked === true ? { unmarked: true } : {}),
       ...(Object.keys(locations).length ? { locations } : {}),
       ...(Object.keys(locations).length && !locations[directoryMachineKey()] ? { unresolved: true } : {}),
     });
@@ -194,14 +195,24 @@ function readDirectoryModeState(adminRoot, { readOnly = false } = {}) {
   if (value?.version === DIRECTORY_MODE_STATE_VERSION) {
     const state = normalizeDirectoryModeState(value);
     let changed = false;
+    const mismatched = new Set();
     const folders = state.folders.map((folder) => {
       try {
         if (!fs.statSync(folder.path, { throwIfNoEntry: false })?.isDirectory()) return folder;
+        const marker = readFolderId(folder.path);
         // A path from another computer may name an unrelated local directory.
         // Auto-connect only if its synced marker proves the folder's identity.
-        if (folder.unresolved && (!folder.id || readFolderId(folder.path) !== folder.id)) return folder;
+        if (folder.unresolved && (!folder.id || marker !== folder.id)) return folder;
+        // The same proof for a location known on this computer: a directory
+        // that replaced the linked one must not inherit its id (and with it
+        // the old state and records), nor be stamped with it. Only a location
+        // the user connected by hand (`unmarked`) may lack the marker.
+        if (!folder.unresolved && folder.id && marker !== folder.id && !(marker === null && folder.unmarked)) {
+          mismatched.add(folder.name);
+          return { ...folder, unresolved: true };
+        }
         if (readOnly) {
-          const id = readFolderId(folder.path) || folder.id;
+          const id = marker || folder.id;
           const connected = { ...folder, ...(id ? { id } : {}) };
           delete connected.unresolved;
           return connected;
@@ -215,9 +226,13 @@ function readDirectoryModeState(adminRoot, { readOnly = false } = {}) {
       } catch { return folder; }
     });
     if (changed && !readOnly) {
-      try { return writeDirectoryModeState(adminRoot, { ...state, folders }); } catch { return { ...state, folders }; }
+      try {
+        const written = writeDirectoryModeState(adminRoot, { ...state, folders });
+        // `unresolved` is never stored for these: it says only what this reading found.
+        return { ...written, folders: written.folders.map((folder) => mismatched.has(folder.name) ? { ...folder, unresolved: true } : folder) };
+      } catch { return { ...state, folders }; }
     }
-    return readOnly ? { ...state, folders } : state;
+    return { ...state, folders };
   }
 
   const migrated = migrateDirectoryModeState(adminRoot, value);
@@ -266,6 +281,7 @@ module.exports = {
   directoryModeStatePath,
   directoryMachineKey,
   ensureDirectoryIdentity,
+  readFolderId,
   legacyDirectoryStateRoot,
   directoryStateRoot,
   findLinkedFolder,

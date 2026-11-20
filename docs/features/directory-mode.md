@@ -40,6 +40,12 @@ The open folder and the recent list are kept in `users/admin/.libera/directory-m
 
 Notebook management (create, rename, delete, groups, download) is turned off while a folder is open.
 
+## A folder renamed or moved outside Libera
+
+A linked folder keeps a small marker (`.libera-folder.json`) with its id; the id names its state folder and lets Libera find the folder again at a new place. A known location is trusted only while its marker still matches (`readDirectoryModeState`, as for a location synced from another computer): a different directory that now stands at the old path, with no marker or another one, is not connected, shows as missing, is never stamped with the old id, and is refused by **Open Folder** ("a different folder is now where this link pointed"). The renamed folder still reconnects by its marker when opened.
+
+When a moved folder has no usable marker (a read-only folder, or one whose marker was removed), opening it would create a second link and leave the first one's stars, tags, comments and sessions behind. `relinkDirectory` (`POST /api/directory` with `action: "relink"`, `name`, `path`) points the existing link at the new place instead, keeping its name and id; it stamps the marker with that id, or, where the folder cannot take one, remembers the place as connected by hand (`unmarked` in `directory-mode.json`). A folder that holds another link's marker is refused. There is no button for it yet: the app has no dialog to pick which link a folder belongs to.
+
 ## Checks
 
-`node --require ./scripts/editor/setup.cjs --import tsx --test scripts/editor/directory-mode.test.ts`
+`node --require ./scripts/editor/setup.cjs --import tsx --test scripts/editor/directory-mode.test.ts scripts/editor/notebook-linked-move-integrity.test.ts`

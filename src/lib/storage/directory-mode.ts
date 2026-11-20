@@ -7,6 +7,7 @@ import {
   libraryNotebookNames,
   normalizeDirectoryPath,
   readDirectoryModeState,
+  readFolderId,
   uniqueFolderName,
   withRecentDirectory,
   writeDirectoryModeState,
@@ -129,14 +130,28 @@ export async function mergeLegacyFolderState(folder: LinkedFolder) {
   }
 }
 
+/** Whether a directory's marker still says it is the folder a link holds (a link never stamped, or connected by hand without a marker, accepts an unmarked one). */
+function markerFits(folder: { id?: string; unmarked?: boolean }, marker: string | null) {
+  return !folder.id || marker === folder.id || (marker === null && folder.unmarked === true);
+}
+
 /** Link a folder into the library, or return the existing link for it. */
 export async function openDirectory(input: unknown) {
   const directoryPath = await assertLinkableDirectory(input);
   await ensureAdminRoot();
   const adminRoot = getAdminRoot();
   const state = readDirectoryModeState(adminRoot);
+  const marker: string | null = readFolderId(directoryPath);
+  const byId = marker ? state.folders.find((folder) => folder.id === marker) : undefined;
+  const byPath = state.folders.find((folder) => folder.path === directoryPath);
+  // Another directory now stands where a link pointed (the linked one was
+  // renamed outside Libera): it is not that folder, and taking it for it would
+  // hand it the old folder's notes state. Relinking says it is the same.
+  if (!byId && byPath && !markerFits(byPath, marker)) {
+    throw new StorageError("A different folder is now where this link pointed. Relink the folder from its new location, or remove the link first.", 409);
+  }
   const id = ensureDirectoryIdentity(adminRoot, directoryPath);
-  const existing = state.folders.find((folder) => folder.path === directoryPath || (id && folder.id === id));
+  const existing = byId ?? byPath;
   const name = existing?.name ?? uniqueFolderName(
     baseFolderName(directoryPath),
     [...libraryNotebookNames(adminRoot), ...state.folders.map((folder) => folder.name)],
@@ -160,6 +175,45 @@ export async function openDirectory(input: unknown) {
   const changed = !existing || existing.path !== directoryPath;
   if (changed) notifySearchChanges();
   return { ...getDirectoryModeSummary(), name, changed };
+}
+
+/**
+ * Point an existing link at the folder's new place when nothing else can say it
+ * is the same folder: a read-only folder moved without a readable marker would
+ * otherwise be linked anew, under a new name, leaving its stars, tags,
+ * comments and sessions with the old one. The link keeps its name and id; a
+ * folder that carries another folder's marker is refused, and a place that
+ * cannot take the marker is remembered as connected by hand.
+ */
+export async function relinkDirectory(name: unknown, input: unknown) {
+  const safeName = assertSafeSegment(typeof name === "string" ? name : "", "Folder name");
+  const directoryPath = await assertLinkableDirectory(input);
+  const adminRoot = getAdminRoot();
+  const state = readDirectoryModeState(adminRoot);
+  const folder = state.folders.find((item) => item.name === safeName);
+  if (!folder) throw new StorageError("That folder is not linked to Libera.", 404);
+  const marker: string | null = readFolderId(directoryPath);
+  if (marker && folder.id && marker !== folder.id) throw new StorageError("This folder belongs to a different link.", 409);
+  if (state.folders.some((item) => item !== folder && (item.path === directoryPath || (marker && item.id === marker)))) {
+    throw new StorageError("This folder is already linked.", 409);
+  }
+  const id: string | undefined = ensureDirectoryIdentity(adminRoot, directoryPath, folder.id) ?? folder.id;
+  const unmarked = Boolean(id) && readFolderId(directoryPath) === null;
+  writeDirectoryModeState(adminRoot, {
+    ...state,
+    folders: state.folders.map((item) => {
+      if (item !== folder) return item;
+      const kept = { ...item };
+      delete kept.unmarked;
+      return { ...kept, path: directoryPath, ...(id ? { id } : {}), ...(unmarked ? { unmarked: true } : {}),
+        locations: { ...item.locations, [directoryMachineKey()]: directoryPath } };
+    }),
+    recent: withRecentDirectory(state.recent, directoryPath),
+  });
+  const relinked = getLinkedFolder(safeName);
+  if (relinked) await mkdir(relinked.stateRoot, { recursive: true });
+  notifySearchChanges();
+  return { ...getDirectoryModeSummary(), name: safeName, changed: true };
 }
 
 /** Remove a folder from the library. Its files on disk are never touched. */

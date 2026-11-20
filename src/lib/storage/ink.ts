@@ -13,6 +13,7 @@ import { INK_DIR } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
 import { getFileType } from "@/lib/storage/file-types";
 import { moveFileIfExists, pathExists, writeJsonAtomically } from "@/lib/storage/fs-utils";
+import { fileExistence } from "@/lib/storage/library-links";
 import { cachedPdfIdentity } from "@/lib/storage/pdf-identity";
 import { matchByIdentity, mayBeBack, moveToFreeSlot, ORPHAN_GRACE_MS, ORPHAN_RETENTION_MS } from "@/lib/storage/pdf-sidecars";
 import { assertNotMigrating } from "@/lib/storage/migration-fence";
@@ -553,14 +554,9 @@ async function folderSource(folder: string): Promise<InkSource | null | "conflic
   return found;
 }
 
-async function fileExists(libraryPath: string): Promise<boolean | null> {
-  try {
-    const { notebook, pathParts } = splitFilePath(libraryPath);
-    return (await stat(filePathFromParts(notebook, pathParts))).isFile();
-  } catch (error) {
-    // Unreadable (offline drive, permissions): not known to be gone.
-    return (error as NodeJS.ErrnoException).code === "ENOENT" ? false : null;
-  }
+/** Whether the file is there by the exact names its folders list (as the tree and the notebook check see it); null when unreadable (offline drive, permissions): not known to be gone. */
+function fileExists(libraryPath: string, existence = fileExistence()): Promise<boolean | null> {
+  return existence.isFile(libraryPath);
 }
 
 /**
@@ -577,8 +573,9 @@ export async function reconcileInkFolders(notebook: string, files: Array<{ path:
   if (!folders.length && !storedNames.length) return { reattached: 0, setAside: 0 };
 
   const missing: Array<(typeof folders)[number] & { source: InkSource | null | "conflict" }> = [];
+  const existence = fileExistence();
   for (const found of folders) {
-    if (await fileExists(found.libraryPath) === false) missing.push({ ...found, source: await folderSource(found.folder) });
+    if (await fileExists(found.libraryPath, existence) === false) missing.push({ ...found, source: await folderSource(found.folder) });
   }
 
   const hashes = new Map<string, Promise<string | null>>();
@@ -636,7 +633,7 @@ export async function reconcileInkFolders(notebook: string, files: Array<{ path:
     let target: string | null = null;
     if (record.source) target = await match(record.source);
     // Without the bytes, only the file coming back under its old path is its own.
-    else if (await fileExists(record.originalPath) && !(await slotTaken(record.originalPath))) target = record.originalPath;
+    else if (await fileExists(record.originalPath, existence) && !(await slotTaken(record.originalPath))) target = record.originalPath;
     if (target) {
       const { notebook: owner, pathParts } = splitFilePath(target);
       if (await moveToFreeSlot(kept, inkFolderPath(owner, pathParts))) {

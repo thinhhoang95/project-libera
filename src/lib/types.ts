@@ -231,6 +231,8 @@ export type LiberaNotebookNode = {
 
 export type LiberaTree = {
   archiveIncluded?: boolean;
+  /** Some folder could not be read in full (it raced away, was unreadable or lay beyond a linked folder's cap): the rest is shown, and upkeep that needs the whole picture waits. */
+  incomplete?: boolean;
   lastNotebookName?: string;
   root: string;
   notebookPanelExpandedPaths: string[] | null;
