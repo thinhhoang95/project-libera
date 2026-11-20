@@ -7748,8 +7748,9 @@
     "saveChangesError": "Impossible d’enregistrer les modifications.",
     "saveFailedError": "L’enregistrement a échoué.",
     "fileChangedUnderYouError": "Ce fichier a changé depuis le chargement de la liste. La liste a été actualisée ; vérifiez-la et réessayez.",
-    "fileChangedOnDiskError": "Ce fichier a changé sur le disque. Vos modifications sont conservées ici ; enregistrer à nouveau remplace la version du disque.",
+    "fileChangedOnDiskError": "Ce fichier a changé sur le disque. Vos modifications sont conservées ici ; enregistrer à nouveau demande confirmation avant de remplacer la version du disque.",
     "fileGoneOnDiskError": "Ce fichier a été déplacé ou supprimé sur le disque. Vos modifications sont conservées ici.",
+    "fileMovedOntoOpenTabError": "Ce fichier a été déplacé vers {path}, déjà ouvert dans un autre onglet avec un texte différent. Les deux sont conservés : copiez ce dont vous avez besoin, puis fermez cet onglet.",
     "saveNamedFileError": "Impossible d’enregistrer {name} : {message}",
     "savePanelExpansionError": "Impossible d’enregistrer l’état de dépliage du panneau du carnet.",
     "saveTagsError": "Impossible d’enregistrer les étiquettes.",
@@ -7858,6 +7859,9 @@
     "removeFolderConfirm": "Retirer sans enregistrer",
     "removeFolderDescription": "{dirtyTabCount, plural, one {# onglet ouvert comporte} other {# onglets ouverts comportent}} des modifications non enregistrées dans {notebook}. Le dossier et ses fichiers restent sur le disque.",
     "removeFolderTitle": "Retirer le dossier de Libera",
+    "replaceDiskConfirm": "Remplacer la version du disque",
+    "replaceDiskDescription": "{name} a changé sur le disque depuis son ouverture. Remplacer cette version par votre texte ?",
+    "replaceDiskTitle": "Remplacer la version du disque",
     "working": "Traitement"
   },
   "workspaceInputDialog": {

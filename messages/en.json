@@ -7748,8 +7748,9 @@
     "saveChangesError": "Could not save changes.",
     "saveFailedError": "Save failed.",
     "fileChangedUnderYouError": "That file changed since the list was loaded. The list was refreshed; check it and try again.",
-    "fileChangedOnDiskError": "This file changed on disk. Your changes are kept here; saving again replaces the disk version.",
+    "fileChangedOnDiskError": "This file changed on disk. Your changes are kept here; saving again asks before replacing the disk version.",
     "fileGoneOnDiskError": "This file was moved or deleted on disk. Your changes are kept here.",
+    "fileMovedOntoOpenTabError": "This file moved to {path}, which is already open in another tab with different text. Both are kept: copy what you need, then close this tab.",
     "saveNamedFileError": "Could not save {name}: {message}",
     "savePanelExpansionError": "Could not save notebook panel expansion state.",
     "saveTagsError": "Could not save tags.",
@@ -7858,6 +7859,9 @@
     "removeFolderConfirm": "Remove without saving",
     "removeFolderDescription": "{dirtyTabCount, plural, one {# open tab has} other {# open tabs have}} unsaved edits in {notebook}. The folder and its files stay on disk.",
     "removeFolderTitle": "Remove folder from Libera",
+    "replaceDiskConfirm": "Replace disk version",
+    "replaceDiskDescription": "{name} changed on disk since you opened it. Replace that version with your text?",
+    "replaceDiskTitle": "Replace the version on disk",
     "working": "Working"
   },
   "workspaceInputDialog": {

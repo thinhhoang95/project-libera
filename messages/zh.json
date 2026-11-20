@@ -7748,8 +7748,9 @@
     "saveChangesError": "无法保存更改。",
     "saveFailedError": "保存失败。",
     "fileChangedUnderYouError": "该文件自列表加载后已更改。列表已刷新，请检查后重试。",
-    "fileChangedOnDiskError": "该文件在磁盘上已更改。你的修改仍保留在此处；再次保存将替换磁盘上的版本。",
+    "fileChangedOnDiskError": "该文件在磁盘上已更改。你的修改仍保留在此处；再次保存会先询问是否替换磁盘上的版本。",
     "fileGoneOnDiskError": "该文件在磁盘上已被移动或删除。你的修改仍保留在此处。",
+    "fileMovedOntoOpenTabError": "该文件已移动到 {path}，而该路径已在另一个标签页中打开且内容不同。两者都已保留：请复制所需内容，然后关闭此标签页。",
     "saveNamedFileError": "无法保存 {name}：{message}",
     "savePanelExpansionError": "无法保存笔记本面板的展开状态。",
     "saveTagsError": "无法保存标签。",
@@ -7858,6 +7859,9 @@
     "removeFolderConfirm": "不保存并移除",
     "removeFolderDescription": "{dirtyTabCount, plural, one {# 个已打开的标签页在 {notebook} 中包含未保存的编辑内容} other {# 个已打开的标签页在 {notebook} 中包含未保存的编辑内容}}。文件夹及其文件仍保留在磁盘上。",
     "removeFolderTitle": "从 Libera 中移除文件夹",
+    "replaceDiskConfirm": "替换磁盘版本",
+    "replaceDiskDescription": "自你打开以来，{name} 在磁盘上已更改。要用你的文本替换该版本吗？",
+    "replaceDiskTitle": "替换磁盘上的版本",
     "working": "正在处理"
   },
   "workspaceInputDialog": {

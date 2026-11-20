@@ -36,6 +36,12 @@ export type OpenTab = {
   saveDirectory?: string;
   status: "clean" | "dirty" | "saving" | "error";
   error?: string;
+  /**
+   * What is on disk when it is not the text this tab opened (a save found the file changed,
+   * or the file moved and changed outside the app); null when the file is gone. `saved` stays the
+   * tab's own baseline, so saving needs the person's decision (tab-retarget.ts saveBase).
+   */
+  diskConflict?: { text: string | null };
   viewState?: OpenTabViewState;
 };
 
@@ -299,6 +305,11 @@ export type WorkspaceConfirmDialogState =
       mode: "move-file-folder";
       destinationPath: string;
       file: LiberaFileNode;
+    }
+  | {
+      mode: "replace-disk-version";
+      tabId: string;
+      fileName: string;
     };
 
 export type MarkdownImageSelection = {

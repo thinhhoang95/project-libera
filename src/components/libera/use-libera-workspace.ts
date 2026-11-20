@@ -24,6 +24,7 @@ import type {
 import { apiRequest, emptyTree, encodeFilePath } from "@/components/libera/api-client";
 import { monitorSessionExpiration } from "./session-expiration";
 import { pendingSaves } from "@/components/libera/pending-saves";
+import { createSaveQueue, pathsUnderMovedFolder, planRetargets, reconcileMovedText, saveBase } from "./tab-retarget";
 import { pythonSidecarHref } from "@/lib/python/sidecar";
 import { latestPdfAnnotations } from "@/components/libera/pdf-annotation-events";
 import type {
@@ -369,6 +370,17 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   useLayoutEffect(() => {
     tabsRef.current = tabs;
   }, [tabs]);
+  /**
+   * Changes the tab list and the ref that mirrors it together, so work that
+   * follows in the same tick (a second retarget, a save that waited for the
+   * first) sees the change before React renders it. `change` must be pure.
+   */
+  function changeTabsNow(change: (current: OpenTab[]) => OpenTab[]) {
+    tabsRef.current = change(tabsRef.current);
+    setTabs(change);
+  }
+  // Text saves, one at a time per file (saveTabText).
+  const saveQueueRef = useRef(createSaveQueue());
   const [activeTabId, setActiveTabId] = useState("");
   // Where closed files were left, saved with the workspace so reopening one returns there.
   const [closedViewStates, setClosedViewStates] = useState<ClosedViewStates>({});
@@ -1417,9 +1429,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     });
   }
 
-  /** Unsaved text, ink or annotations (pending-saves.ts). */
+  /** Unsaved text, ink or annotations (pending-saves.ts). A save that failed leaves the text unsaved too. */
   function tabUnsaved(tab: OpenTab) {
-    return tab.status === "dirty" || pendingSaves.isDirty(tab.file.path);
+    return tab.status === "dirty" || tab.status === "error" || pendingSaves.isDirty(tab.file.path);
   }
 
   /** Close without saving: unsaved ink and annotations are dropped, with their recovery copy. */
@@ -1655,20 +1667,23 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   }
 
   /**
-   * The text of a tab whose Markdown moved to another notebook, where the
-   * server may have renamed citation keys or image URLs: the
-   * saved copy is the server's content, and the draft gets the same rewrites,
-   * or shows the new content when it had no unsaved changes.
+   * The text of a tab whose file moved (tab-retarget.ts reconcileMovedText).
+   * A move into another notebook may have renamed citation keys or image URLs:
+   * the saved copy is the server's content and the draft gets the same rewrites.
+   * Otherwise the text now at the destination is compared with the tab's baseline,
+   * so a note moved and edited outside the app reloads when clean and keeps its
+   * edits, with a conflict, when dirty.
    */
   function movedTabText(tab: OpenTab, draft: string, payload: LiberaFileMovePayload) {
+    if (!isTextFileType(tab.file.fileType) || !mayTakeContentFromDisk(tab.id, isSharedTab)) return null;
     const map = payload.references?.drafts.find((item) => item.path === payload.file.path)?.map;
-    if ((!map && !payload.imageSources) || !isTextFileType(tab.file.fileType) || !mayTakeContentFromDisk(tab.id, isSharedTab)) return null;
-    const rewrite = (text: string) => rewriteMarkdownImageSources(
-      rewriteCitationKeys(text, new Map(Object.entries(map ?? {}))).text,
-      payload.imageSources ?? {},
-    );
-    const saved = payload.content ?? rewrite(tab.saved);
-    return { saved, draft: draft === tab.saved ? saved : rewrite(draft) };
+    const rewrite = map || payload.imageSources
+      ? (text: string) => rewriteMarkdownImageSources(
+        rewriteCitationKeys(text, new Map(Object.entries(map ?? {}))).text,
+        payload.imageSources ?? {},
+      )
+      : undefined;
+    return reconcileMovedText({ saved: tab.saved, draft, fetched: payload.content, rewrite });
   }
 
   /** After a move: the destination's References panel reloads, and a notice says what was copied or renamed. */
@@ -3163,64 +3178,67 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       return;
     }
 
-    const draft = getTabDraft(activeTab);
-
-    if (draft === activeTab.saved && activeTab.status !== "error") {
-      // The text is saved; a note's ink blocks may not be.
-      await savePendingFor(activeTab);
+    const outcome = await saveTabText(activeTab.id);
+    if (outcome === "ask") {
+      // The disk has other text than this tab opened: replacing it is the person's decision.
+      setWorkspaceConfirmDialog({ mode: "replace-disk-version", tabId: activeTab.id, fileName: activeTab.file.name });
       return;
     }
+    if (outcome === "conflict" || outcome === "failed") return;
+    // The text is saved (or was); a note's ink blocks and their renderings go with it.
+    await savePendingFor(activeTab);
+    if (outcome === "saved") await refreshTree(activeTab.file.notebook);
+  }
 
-    updateTab(activeTab.id, (tab) => ({ ...tab, status: "saving", error: undefined }));
-
-    try {
-      // The version of the text this tab last loaded or saved: the server refuses (409) to replace a file that is another version or is gone.
-      // The draft stays in the editor and the error shows on the tab.
-      const baseVersion = await textVersion(activeTab.saved);
-      const payload = await workspaceFileRequest<LiberaFilePayload>("/api/files", {
-        method: "PATCH",
-        body: JSON.stringify({
-          path: activeTab.file.path,
-          content: draft,
-          baseVersion,
-        }),
-      }, (payload) => ({ paths: [payload.file.path] }));
-
-      const latestDraft = getTabDraft(activeTab);
-      updateTab(activeTab.id, (tab) => ({
-        ...tab,
-        file: payload.file,
-        saved: draft,
-        status: latestDraft === draft ? "clean" : "dirty",
-      }));
-      // With the note's text, its ink blocks and their renderings.
-      await savePendingFor(activeTab);
-      await refreshTree(activeTab.file.notebook);
-    } catch (error) {
-      // The disk has another version than this tab opened. Take it as the tab's saved text and keep the draft:
-      // the tab stays dirty and the next save, which now names that version, is a deliberate replacement.
-      if ((error as { status?: number }).status === 409) {
-        const onDisk = await apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(activeTab.file.path)}`).then(
-          (payload) => ({ text: payload.content ?? "" }),
-          (readError: { status?: number }) => (readError.status === 404 ? { text: null } : undefined),
-        );
-        if (onDisk) {
-          const gone = onDisk.text === null;
-          updateTab(activeTab.id, (tab) => ({
-            ...tab,
-            ...(gone ? {} : { saved: onDisk.text as string }),
-            status: "error",
-            error: tRef.current(gone ? "fileGoneOnDiskError" : "fileChangedOnDiskError"),
-          }));
-          return;
+  /**
+   * Writes a text tab with the version of the text it last loaded or saved: the
+   * server refuses (409) to replace a file that is another version or is gone.
+   * The draft stays in the editor. A conflict keeps the tab's own baseline and
+   * records what is on disk (`diskConflict`); the next Save then returns "ask"
+   * until the person decides (`replaceDisk`), and writes against that disk text only then.
+   * Saves of one file run one after another, each looking at the tab again, so a
+   * Save all that finds one running waits for it instead of racing it.
+   */
+  function saveTabText(tabId: string, options: { replaceDisk?: boolean } = {}): Promise<"saved" | "unchanged" | "ask" | "conflict" | "failed"> {
+    return saveQueueRef.current.run(tabId, async () => {
+      const tab = tabsRef.current.find((item) => item.id === tabId && !item.untitled);
+      if (!tab) return "unchanged";
+      const draft = getTabDraft(tab);
+      if (draft === tab.saved && tab.status !== "error") return "unchanged";
+      const basis = saveBase(tab, !!options.replaceDisk);
+      if ("ask" in basis) return "ask";
+      const patch = (change: (current: OpenTab) => OpenTab) => changeTabsNow((all) => all.map((item) => item.id === tabId ? change(item) : item));
+      patch((current) => ({ ...current, status: "saving", error: undefined }));
+      try {
+        const baseVersion = await textVersion(basis.base);
+        const payload = await workspaceFileRequest<LiberaFilePayload>("/api/files", {
+          method: "PATCH",
+          body: JSON.stringify({ path: tab.file.path, content: draft, baseVersion }),
+        }, (payload) => ({ paths: [payload.file.path] }));
+        const latestDraft = getTabDraft(tab);
+        patch((current) => ({ ...current, file: payload.file, saved: draft, diskConflict: undefined, status: latestDraft === draft ? "clean" : "dirty" }));
+        return "saved";
+      } catch (error) {
+        if ((error as { status?: number }).status === 409) {
+          const onDisk = await apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(tab.file.path)}`).then(
+            (payload) => ({ text: payload.content ?? "" }),
+            (readError: { status?: number }) => (readError.status === 404 ? { text: null } : undefined),
+          );
+          if (onDisk) {
+            // Not adopted as the baseline: the tab still describes the text it opened, until the person decides.
+            patch((current) => ({
+              ...current,
+              status: "error",
+              diskConflict: { text: onDisk.text },
+              error: tRef.current(onDisk.text === null ? "fileGoneOnDiskError" : "fileChangedOnDiskError"),
+            }));
+            return "conflict";
+          }
         }
+        patch((current) => ({ ...current, status: "error", error: error instanceof Error ? error.message : tRef.current("saveFailedError") }));
+        return "failed";
       }
-      updateTab(activeTab.id, (tab) => ({
-        ...tab,
-        status: "error",
-        error: error instanceof Error ? error.message : tRef.current("saveFailedError"),
-      }));
-    }
+    });
   }
 
   function openCreateNotebookDialog() {
@@ -3836,41 +3854,69 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
    * Retargets the tabs of several files that moved together (one host event).
    * Each tab is matched on its path as it was before any move, so a swap swaps
    * and two files never end up under one name; unsaved ink and annotations
-   * follow the same pairs.
+   * follow the same pairs. Tabs, drafts and unsaved state all come from one
+   * snapshot of the current tabs (tabsRef, kept ahead of the render by changeTabsNow).
+   * A destination that is already open in another tab is resolved first
+   * (tab-retarget.ts planRetargets): the tabs merge when no work is lost, and otherwise
+   * the moved file's tab stays on its old path with its draft, marked, for the person to sort out.
    */
   function retargetOpenTabs(items: { from: string; payload: LiberaFilePayload | LiberaFileMovePayload }[]) {
-    const byFrom = new Map(items.map((item) => [item.from, item.payload]));
-    pendingSaves.moveUnsavedMany(items.map(({ from, payload }) => ({ from, to: payload.file.path, sources: "imageSources" in payload ? payload.imageSources : undefined })));
-    const movedText = new Map<string, ReturnType<typeof movedTabText>>();
-    const drafts = new Map<string, string>();
-    for (const openTab of tabs) {
+    const snapshot = tabsRef.current;
+    const isFileTab = (tab: OpenTab) => !isGalleryTab(tab) && !isRecordingTab(tab) && !isPageTab(tab) && !tab.untitled;
+    const drafts = new Map(snapshot.map((tab) => [tab.file.path, getTabDraft(tab)]));
+    const decisions = planRetargets(
+      snapshot.map((tab) => ({ path: tab.file.path, draft: drafts.get(tab.file.path)!, saved: tab.saved, status: tab.status, inkDirty: pendingSaves.isDirty(tab.file.path), file: isFileTab(tab) })),
+      items.map(({ from, payload }) => ({ from, to: payload.file.path, inkCollision: pendingSaves.collides(from, payload.file.path) })),
+    );
+    const decided = new Map(decisions.map((decision) => [decision.from, decision]));
+    // Moves whose file has no open tab still carry their unsaved state along.
+    const byFrom = new Map(items.filter((item) => decided.get(item.from)?.kind !== "keep").map((item) => [item.from, item.payload]));
+    const merged = new Set(decisions.filter((decision) => decision.kind === "merge").map((decision) => decision.from));
+    const kept = new Map(decisions.flatMap((decision) => decision.kind === "keep" ? [[decision.from, decision.to] as const] : []));
+    pendingSaves.moveUnsavedMany(items.filter((item) => byFrom.has(item.from)).map(({ from, payload }) => ({ from, to: payload.file.path, sources: "imageSources" in payload ? payload.imageSources : undefined })));
+    const texts = new Map<string, NonNullable<ReturnType<typeof movedTabText>>>();
+    const nextDrafts = new Map<string, string>();
+    for (const openTab of snapshot) {
       const payload = byFrom.get(openTab.file.path);
-      if (!payload) continue;
-      const draft = getTabDraft(openTab);
+      if (!payload || merged.has(openTab.file.path)) continue;
+      const draft = drafts.get(openTab.file.path)!;
       const moved = movedTabText(openTab, draft, payload);
-      movedText.set(openTab.file.path, moved);
-      drafts.set(payload.file.path, moved?.draft ?? draft);
+      if (moved) texts.set(openTab.file.path, moved);
+      nextDrafts.set(payload.file.path, moved?.draft ?? draft);
     }
     // Forget every old draft before remembering any new one: a swap reuses the names.
-    for (const openTab of tabs) if (byFrom.has(openTab.file.path)) forgetTabDraft(openTab.id);
-    for (const [nextId, draft] of drafts) rememberTabDraft(nextId, draft);
-    setTabs((currentTabs) =>
-      currentTabs.map((currentTab) => {
-        const payload = byFrom.get(currentTab.file.path);
-        if (!payload) return currentTab;
+    for (const openTab of snapshot) if (byFrom.has(openTab.file.path)) forgetTabDraft(openTab.id);
+    for (const [nextId, draft] of nextDrafts) rememberTabDraft(nextId, draft);
+    const keptError = (to: string) => tRef.current("fileMovedOntoOpenTabError", { path: to });
+    const apply = (currentTabs: OpenTab[]) =>
+      currentTabs.flatMap((currentTab) => {
+        const from = currentTab.file.path;
+        if (merged.has(from)) return [];
+        const keptTo = kept.get(from);
+        if (keptTo !== undefined) return [{ ...currentTab, status: "error" as const, error: keptError(keptTo) }];
+        const payload = byFrom.get(from);
+        if (!payload) return [currentTab];
         const nextId = payload.file.path;
-        const moved = movedText.get(currentTab.file.path) ?? null;
-        return {
+        const moved = texts.get(from);
+        return [{
           ...currentTab,
           id: nextId,
-          draft: latestDraftByTabIdRef.current[nextId] ?? currentTab.draft,
+          draft: moved?.draft ?? latestDraftByTabIdRef.current[nextId] ?? currentTab.draft,
           file: payload.file,
           rawUrl: payload.rawUrl ?? `/api/files/raw/${encodeFilePath(nextId)}`,
-          ...(moved ? { saved: moved.saved, status: moved.draft === moved.saved ? "clean" as const : "dirty" as const } : {}),
-        };
-      }),
-    );
-    setActiveTabId((current) => byFrom.get(current)?.file.path ?? current);
+          ...(moved ? {
+            saved: moved.saved,
+            diskConflict: moved.conflict === null ? undefined : { text: moved.conflict },
+            status: moved.conflict !== null ? "error" as const : moved.draft === moved.saved ? "clean" as const : "dirty" as const,
+            error: moved.conflict !== null ? tRef.current("fileChangedOnDiskError") : undefined,
+          } : {}),
+        }];
+      });
+    changeTabsNow(apply);
+    setActiveTabId((current) => {
+      const decision = decided.get(current);
+      return decision?.kind === "merge" ? decision.to : byFrom.get(current)?.file.path ?? current;
+    });
     setClosedViewStates((current) => remapClosedViewStates(current, (path) => byFrom.get(path)?.file.path ?? path));
   }
 
@@ -4052,22 +4098,16 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       paths.some((path) => tab.file.path === path || tab.file.path.startsWith(`${path}/`)) && unsaved(tab));
   }
 
-  /** Saves those files, as Save does for the active one, so the migration moves what the user sees. */
+  /**
+   * Saves those files with the same guarded save as Save (saveTabText), so the migration moves
+   * what the user sees and never replaces text that changed on disk meanwhile: that stops the migration.
+   */
   async function saveTabsBeforeMigration(paths: string[]) {
     for (const tab of unsavedTabsUnder(paths)) {
-      const draft = getTabDraft(tab);
-      if (isTextFileType(tab.file.fileType) && !isSharedTab(tab.id) && (draft !== tab.saved || tab.status === "error")) {
-        updateTab(tab.id, (current) => ({ ...current, status: "saving", error: undefined }));
-        try {
-          const payload = await workspaceFileRequest<LiberaFilePayload>("/api/files", {
-            method: "PATCH",
-            body: JSON.stringify({ path: tab.file.path, content: draft }),
-          }, (payload) => ({ paths: [payload.file.path] }));
-          const latestDraft = getTabDraft(tab);
-          updateTab(tab.id, (current) => ({ ...current, file: payload.file, saved: draft, status: latestDraft === draft ? "clean" : "dirty" }));
-        } catch (error) {
-          const message = error instanceof Error ? error.message : tRef.current("saveFailedError");
-          updateTab(tab.id, (current) => ({ ...current, status: "error", error: message }));
+      if (isTextFileType(tab.file.fileType) && !isSharedTab(tab.id)) {
+        const outcome = await saveTabText(tab.id);
+        if (outcome === "ask" || outcome === "conflict" || outcome === "failed") {
+          const message = tabsRef.current.find((item) => item.id === tab.id)?.error ?? tRef.current("saveFailedError");
           throw new Error(tRef.current("saveNamedFileError", { name: tab.file.name, message }));
         }
       }
@@ -4177,14 +4217,16 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       payloads.push(...await Promise.all(open.slice(start, start + 4).map((move) =>
         apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(move.to)}`).catch(() => null))));
     }
-    // Then every tab follows in one go, so the editor re-renders once.
+    // Then every tab follows in one go, so the editor re-renders once (and a swap is seen as one).
+    const followers: { from: string; payload: LiberaFileMovePayload }[] = [];
     open.forEach((move, index) => {
       const maps = { ...(move.imageSources ? { imageSources: move.imageSources } : {}), ...(result.references ? { references: result.references } : {}) };
       const tab = isOpen(move.from);
       // Not readable now: the tab still follows, and its text gets the same rewrites the file got.
       const payload = payloads[index] ?? (tab ? { file: { ...tab.file, path: move.to, name: move.to.split("/").at(-1)!, notebook: move.to.split("/")[0] } } : null);
-      if (payload) retargetOpenTab(move.from, { ...payload, ...maps });
+      if (payload) followers.push({ from: move.from, payload: { ...payload, ...maps } });
     });
+    if (followers.length) retargetOpenTabs(followers);
     setFileInteractions((current) => {
       if (!Object.keys(current).some((path) => moves.has(path))) return current;
       const next = Object.fromEntries(Object.entries(current).map(([path, at]) => [moves.get(path) ?? path, at]));
@@ -4221,11 +4263,14 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     const open = pairs.filter((move) => isOpen(move.from));
     for (const move of pairs) if (!isOpen(move.from)) pendingSaves.moveUnsaved(move.from, move.to);
     const payloads = await Promise.all(open.map((move) => apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(move.to)}`).catch(() => null)));
+    // One batch: the destination text is reconciled with each tab, and a destination already open in another tab is resolved.
+    const followers: { from: string; payload: LiberaFilePayload }[] = [];
     open.forEach((move, index) => {
       const tab = isOpen(move.from);
       const payload = payloads[index] ?? (tab ? { file: { ...tab.file, path: move.to, name: move.to.split("/").at(-1)!, notebook: move.to.split("/")[0] } } : null);
-      if (payload) retargetOpenTab(move.from, payload);
+      if (payload) followers.push({ from: move.from, payload });
     });
+    if (followers.length) retargetOpenTabs(followers);
     setFileInteractions((current) => {
       if (!Object.keys(current).some((path) => moves.has(path))) return current;
       const next = Object.fromEntries(Object.entries(current).map(([path, at]) => [moves.get(path) ?? path, at]));
@@ -4343,18 +4388,15 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
 
     try {
-      await workspaceFileRequest<LiberaFilePayload>("/api/files", {
+      const payload = await workspaceFileRequest<LiberaFilePayload>("/api/files", {
         method: "PATCH",
         body: JSON.stringify({
           path: file.path,
           archive: true,
         }),
       }, (payload) => ({ moved: { from: file.path, to: payload.file.path } }));
-      forgetTabDraft(file.path);
-      setTabs((currentTabs) =>
-        currentTabs.filter((currentTab) => currentTab.file.path !== file.path),
-      );
-      setActiveTabId((current) => (current === file.path ? "" : current));
+      // The tab follows the archived file with whatever was typed while the request ran.
+      retargetOpenTab(file.path, payload);
       await refreshTree(file.notebook);
     } catch (error) {
       setWorkspaceError(error instanceof Error ? error.message : tRef.current("archiveFileError"));
@@ -4588,15 +4630,20 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
           ),
         ),
       );
-      tabs.forEach((tab) => {
-        if (isPathWithinPrefix(tab.file.path, folder.path)) {
-          forgetTabDraft(tab.id);
-        }
-      });
-      setTabs((currentTabs) =>
-        currentTabs.filter((currentTab) => !isPathWithinPrefix(currentTab.file.path, folder.path)),
+      // Open files follow the folder into the archive, each with its current text and what was typed meanwhile.
+      const archived = pathsUnderMovedFolder(
+        tabsRef.current.filter((tab) => !isGalleryTab(tab) && !isRecordingTab(tab) && !isPageTab(tab) && !tab.untitled).map((tab) => tab.file.path),
+        nextTree.moved,
       );
-      setActiveTabId((current) => (isPathWithinPrefix(current, folder.path) ? "" : current));
+      const followers = await Promise.all(archived.map(async (move) => {
+        const tab = tabsRef.current.find((item) => item.file.path === move.from);
+        const payload = await apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(move.to)}`).catch(() => null)
+          ?? { file: { ...tab!.file, path: move.to, name: move.to.split("/").at(-1)!, notebook: move.to.split("/")[0] } };
+        return { from: move.from, payload };
+      }));
+      if (followers.length) retargetOpenTabs(followers);
+      // Unsaved state of files that are not open follows the folder as well.
+      pendingSaves.moveUnsaved(folder.path, nextTree.moved.to, { prefix: true });
     } catch (error) {
       setWorkspaceError(error instanceof Error ? error.message : tRef.current("archiveFolderError"));
     }
@@ -4643,6 +4690,17 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
           workspaceConfirmDialog.destinationName,
           { skipDirtyCheck: true },
         );
+      }
+
+      if (workspaceConfirmDialog.mode === "replace-disk-version") {
+        const outcome = await saveTabText(workspaceConfirmDialog.tabId, { replaceDisk: true });
+        if (outcome === "saved") {
+          const tab = tabsRef.current.find((item) => item.id === workspaceConfirmDialog.tabId);
+          if (tab) {
+            await savePendingFor(tab);
+            await refreshTree(tab.file.notebook);
+          }
+        }
       }
 
       if (workspaceConfirmDialog.mode === "move-file-folder") {

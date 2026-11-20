@@ -54,6 +54,13 @@ function getDialogContent(dialog: WorkspaceConfirmDialogState, t: ReturnType<typ
         confirmLabel: t("removeFolderConfirm"),
         destructive: true,
       };
+    case "replace-disk-version":
+      return {
+        title: t("replaceDiskTitle"),
+        description: t("replaceDiskDescription", { name: dialog.fileName }),
+        confirmLabel: t("replaceDiskConfirm"),
+        destructive: true,
+      };
     case "move-file-node":
     case "move-file-folder":
       return {

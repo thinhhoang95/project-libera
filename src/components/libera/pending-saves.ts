@@ -201,15 +201,20 @@ export const unsavedJournal = {
     for (const key of keys) this.remove(path, key);
   },
 
-  /** A file moved or was renamed: its unsaved changes go with it. A newer record already at `to` wins. */
+  /**
+   * A file moved or was renamed: its unsaved changes go with it. A record
+   * already at `to` is another file's work: it stays, and the record at `from`
+   * stays too, rather than being dropped.
+   */
   async movePath(from: string, to: string) {
     if (from === to) return;
     await open();
     const keys = [...(journaled.get(from) ?? [])];
     for (const key of keys) {
+      if (journaled.get(to)?.has(key)) continue;
       const data = await this.get(from, key);
       this.remove(from, key);
-      if (data !== null && !journaled.get(to)?.has(key)) this.put(to, key, data);
+      if (data !== null) this.put(to, key, data);
     }
   },
 };
@@ -217,6 +222,16 @@ export const unsavedJournal = {
 // Private recovery follows file moves without becoming a pending sidecar Save.
 function hasPendingJournal(path: string) {
   return [...(journaled.get(path) ?? [])].some((key) => !key.startsWith("recovery:"));
+}
+
+/** The keys under which a path has live views or recovery records. */
+function movedKeys(path: string) {
+  return [...new Set([...(entries.get(path)?.keys() ?? []), ...(journaled.get(path) ?? [])])];
+}
+
+/** Whether a path already has a live view or recovery record under this key. */
+function keyTaken(path: string, key: string) {
+  return !!entries.get(path)?.has(key) || !!journaled.get(path)?.has(key);
 }
 
 // ---- The registry ------------------------------------------------------------------
@@ -272,6 +287,15 @@ export const pendingSaves = {
     return open ? [...open].some(hasPendingJournal) : [...journaled.keys()].some(hasPendingJournal);
   },
 
+  /**
+   * Whether moving `from` to `to` would put two views' state under one key:
+   * `to` already has a view or recovery record for a key that `from` has.
+   * moveUnsaved leaves such keys where they are, so nothing is overwritten.
+   */
+  collides(from: string, to: string) {
+    return movedKeys(from).some((key) => keyTaken(to, key));
+  },
+
   /** Saves every open view's unsaved changes for a file. */
   async save(path: string) {
     const dirty = [...(entries.get(path)?.values() ?? [])].filter((entry) => entry.dirty);
@@ -287,10 +311,17 @@ export const pendingSaves = {
   moveUnsaved(from: string, to: string, options: { prefix?: boolean; sources?: Record<string, string> } = {}) {
     if (from === to) return;
     const moved = (path: string) => (path === from ? to : options.prefix && path.startsWith(`${from}/`) ? `${to}${path.slice(from.length)}` : null);
+    // A key the destination already has is not overwritten (two tabs open on one file): it stays at the old path.
+    const blocked = new Set<string>();
+    for (const path of new Set([...journaled.keys(), ...entries.keys()])) {
+      const next = moved(path);
+      if (next) for (const key of movedKeys(path)) if (keyTaken(next, key)) blocked.add(recordId(path, key));
+    }
     for (const path of [...journaled.keys()]) {
       const next = moved(path);
       if (!next) continue;
       for (const key of [...(journaled.get(path) ?? [])]) {
+        if (blocked.has(recordId(path, key))) continue;
         const live = entries.get(path)?.has(key);
         const record = records.get(recordId(path, key));
         // Not read from IndexedDB yet: moved once the startup scan has it (below).
@@ -302,13 +333,15 @@ export const pendingSaves = {
     for (const [path, forPath] of [...entries]) {
       const next = moved(path);
       if (!next) continue;
-      entries.delete(path);
       const target = entries.get(next) ?? new Map<string, Entry & { mounted: boolean }>();
-      entries.set(next, target);
-      for (const [key, entry] of forPath) {
+      for (const [key, entry] of [...forPath]) {
+        if (blocked.has(recordId(path, key))) continue;
+        forPath.delete(key);
         target.set(key, entry);
         entry.retarget?.(next, options.sources);
       }
+      if (!forPath.size) entries.delete(path);
+      if (target.size) entries.set(next, target);
     }
     changed();
     void open().then(() => {
