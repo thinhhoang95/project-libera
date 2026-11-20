@@ -371,7 +371,7 @@ export async function movePythonSidecar(from: string, to: string, { replace = tr
 
 export async function copyPythonSidecar(from: string, to: string) {
   await migratePythonSidecar(from);
-  await copyFileIfExists(pythonSidecarFile(from).absolutePath, pythonSidecarFile(to).absolutePath);
+  await copyFileIfExists(pythonSidecarFile(from).absolutePath, pythonSidecarFile(to).absolutePath, { exclusive: true });
   const target = pythonSidecarFile(to).absolutePath;
   if (await pathExists(target)) await writeFile(target, withPreviousPythonFigureSources(await readFile(target, "utf8"), []));
 }

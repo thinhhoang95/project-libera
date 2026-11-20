@@ -7,7 +7,7 @@ import { StorageError } from "@/lib/storage/errors";
 import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 
 /** Codes after which there is no shared authority to ask: the disk is the only copy. */
-const NO_AUTHORITY = new Set(["collab-disabled", "notebook-not-joined", "not-shared"]);
+export const NO_AUTHORITY = new Set(["collab-disabled", "notebook-not-joined", "not-shared"]);
 
 function authorityFailure(what: string, error: unknown): never {
   if (error instanceof Error && error.name === "SharedWriteError") {

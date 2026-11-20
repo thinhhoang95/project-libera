@@ -19,7 +19,9 @@ import {
 } from "../../src/lib/storage/files";
 import { addReviewThreads, findReview } from "../../src/lib/storage/markdown-reviews";
 import { filePathFromParts, getAdminRoot } from "../../src/lib/storage/paths";
-import { setFileTagsForPath, setStarredFilePath } from "../../src/lib/storage/workspace-metadata";
+import { readReferenceLibrary, updateReferenceLibrary } from "../../src/lib/storage/references";
+import type { ReferenceEntry } from "../../src/lib/references/types";
+import { readWorkspaceMetadata, setFileTagsForPath, setStarredFilePath } from "../../src/lib/storage/workspace-metadata";
 import { assertNotebookSound, seedNotebook, splitLibraryPath, withTemporaryLibrary, writeAt, writeLibraryFile, writeReferenceLibrary } from "./notebook-test-helpers";
 
 // The notebook check (storage/integrity.ts) as the oracle for the app's
@@ -195,4 +197,61 @@ test("every file operation leaves its notebooks sound, and carries every record 
   await sound("Other", [CHART_LEFT_BEHIND]);
   // The tether stayed with its file all the way.
   assert.deepEqual(await tether("Nb", "Nb/_archive/refs.bib"), { libraryPath: "Nb/_archive/refs.bib" });
+}));
+
+// ---- Copy (findings 9, 10, 11)
+
+test("9: a copy skips a vacant name that still holds the records of an earlier file", () => withTemporaryLibrary(["Nb"], async () => {
+  const note = "Nb/notes/n.md";
+  await writeLibraryFile(note, "# Note\n");
+  // A file deleted outside the app left its review, tags and Python code at this name.
+  const stale = "Nb/notes/copy.md";
+  await addReviewThreads(stale, "old text", [{ range: { start: 0, end: 3 }, text: "stale comment" }]);
+  await setFileTagsForPath(stale, ["stale"]);
+  await writeAt(pythonCode(stale), "print('stale')\n");
+
+  const copied = await copyFileToDirectory(note, "Nb/notes", "copy.md");
+  assert.equal(copied.file.path, "Nb/notes/copy-1.md", "the copy took a name without records");
+  assert.equal(await comments(stale), 1, "the stale review is untouched");
+  assert.deepEqual((await readWorkspaceMetadata()).fileTags[stale], ["stale"]);
+  assert.equal(await readFile(pythonCode(stale), "utf8"), "print('stale')\n");
+  assert.ok(!(await exists(disk(stale))), "no file was made at the name that holds records");
+}));
+
+test("10: a copy cannot change the file type", () => withTemporaryLibrary(["Nb"], async () => {
+  await seedNotebook("Nb");
+  await assert.rejects(copyFileToDirectory("Nb/papers/a.pdf", "Nb/papers", "a.png"), /keeps its file type/);
+  await assert.rejects(copyFileToDirectory("Nb/notes/n.md", "Nb/notes", "n.txt"), /keeps its file type/);
+  assert.ok(!(await exists(disk("Nb/papers/a.png"))));
+  assert.ok(!(await exists(disk("Nb/notes/n.txt"))));
+  await copyFileToDirectory("Nb/papers/a.pdf", "Nb/papers", "a-copy.pdf");
+  assert.ok(await exists(disk("Nb/papers/a-copy.pdf")));
+}));
+
+test("11: a note copied to another notebook takes the references it cites, in its text and its review", () => withTemporaryLibrary(["Nb", "Other"], async () => {
+  const now = new Date().toISOString();
+  const entry = (id: string, key: string, family: string, title: string) => ({
+    id, key, aliases: [], csl: { type: "article-journal", author: [{ family, given: "A." }], issued: { "date-parts": [[2020]] }, title }, identifiers: {}, provenance: {},
+    status: "confirmed", attachments: [], createdAt: now, updatedAt: now, fieldUpdatedAt: {},
+  }) as unknown as ReferenceEntry;
+  await updateReferenceLibrary("Nb", null, [
+    { op: "put", entry: entry("a", "smith2020", "Smith", "Tides of the northern sea") },
+    { op: "put", entry: entry("b", "doe2020", "Doe", "Songs of the humpback whale") },
+  ]);
+  // The key `doe2020` means another work in the destination.
+  await updateReferenceLibrary("Other", null, [{ op: "put", entry: entry("c", "doe2020", "Rock", "Igneous rocks of the high plateau") }]);
+  const note = "Nb/notes/cite.md";
+  const text = "See [@smith2020] and [@doe2020].\n";
+  await writeLibraryFile(note, text);
+  await addReviewThreads(note, text, [{ range: { start: 0, end: 3 }, text: "check these" }]);
+
+  const copied = await copyFileToDirectory(note, "Other", "cite.md");
+  const body = await readFile(disk("Other/cite.md"), "utf8");
+  assert.match(body, /\[@smith2020\]/, "a missing key is copied with the entry");
+  assert.ok(!body.includes("[@doe2020]"), "a colliding key is not left to name the destination's other work");
+  assert.equal(copied.references?.copied.length, 2, "both cited works were copied");
+  const review = await findReview("Other/cite.md");
+  assert.equal(review?.snapshot, body, "the copied review's snapshot cites the same keys as the copy");
+  assert.equal(await readFile(disk(note), "utf8"), text, "the original is unchanged");
+  assert.ok(Object.values((await readReferenceLibrary("Other")).entries).some((value) => value.key === "smith2020"));
 }));

@@ -443,9 +443,9 @@ export async function copyInkFolder(fromNotebook: string, fromParts: string[], t
   const from = inkFolderPath(fromNotebook, fromParts);
   const to = inkFolderPath(toNotebook, toParts);
   if (from === to || !(await pathExists(from))) return;
-  await rm(to, { recursive: true, force: true });
   await mkdir(path.dirname(to), { recursive: true });
-  await cp(from, to, { recursive: true, errorOnExist: false, force: true });
+  // Never over strokes already there: a copy's name is checked free, so a file here means a race, and it fails.
+  await cp(from, to, { recursive: true, errorOnExist: true, force: false });
 }
 
 /** Deleting a file in Libera deletes its ink, as it does its other notes. */

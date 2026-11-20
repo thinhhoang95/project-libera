@@ -170,12 +170,13 @@ export async function deleteReviewPath(key: string) {
 export async function deleteReviewKey(key: string) {
   return transaction((tx) => { for (const [id, stored] of tx.keys()) if (stored === key) tx.remove(id); });
 }
-export async function copyReviewPath(from: string, to: string) {
+/** `snapshot` maps the copied review's text (a copy that cites other keys in its notebook). */
+export async function copyReviewPath(from: string, to: string, snapshot?: (text: string) => string) {
   return transaction(async (tx) => {
     for (const [id, key] of tx.keys()) if (under(key, from)) {
       const original = await tx.getIfPresent(id);
       if (!original) continue;
-      const copied = newReview(to + original.key.slice(from.length), original.snapshot, randomUUID());
+      const copied = newReview(to + original.key.slice(from.length), snapshot ? snapshot(original.snapshot) : original.snapshot, randomUUID());
       copied.enabled = original.enabled;
       copied.threads = structuredClone(original.threads).map((t) => ({ ...t, id: randomUUID(), messages: t.messages.map((m) => ({ ...m, id: randomUUID() })) }));
       tx.put(copied);
