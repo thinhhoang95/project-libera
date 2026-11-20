@@ -72,3 +72,34 @@ F64 was decided by the user: the content-identity pairing from `2632bbd` is gone
 
 After the merges the user set the rule the follow-up work holds to: **Check Notebook is the oracle**. An in-app move,
 fix or automatic upkeep step must never leave findings the verifier disagrees with, unless they were acknowledged.
+
+## After the round
+
+Built on the fixed branch, in parallel: links and asset paths follow every in-app move
+([move-link-refactor.md](../features/move-link-refactor.md)), multi-file selection with batch move and delete
+([multi-file-selection.md](../features/multi-file-selection.md)), and a follow-up that made the check, Try to fix,
+Acknowledge and the tree's upkeep share one rule each (`notebook-oracle-agreement.test.ts`).
+
+Tests, run once on the merged branch: 44 files, 487 tests, 481 pass, 5 skipped, 1 failing that predates this work
+(`global-search.test.ts` "the index stays on this computer…" compares a posix path on Windows).
+
+### In the app
+
+A dev server on an isolated data folder (`LIBERA_DATA_DIR`, collaboration off), a seeded notebook with links, a
+chart, LaTeX, an image and a PDF, and Check Notebook through the verify route after every step. The rail's context
+menu is Electron's native menu, so the browser run stood in for `window.liberaMenu` and picked items by label;
+drag and drop was driven with real `DragEvent`s on the rows.
+
+| Step | Result |
+|---|---|
+| Ctrl+Click two notes that link to each other, Move 2 files… | Both moved, links between them kept their form; check unchanged. **Found a bug first**: the batch stopped after the first file ("changed since it was read"), because moving it rewrote the second file's link and so its identity. Fixed in `a5e7bbf`: a batch defers each move's links step and runs one with the whole mapping. |
+| Drag `paper.pdf` onto another folder | Moved; the note linking to it was rewritten, the same path inside a code fence was not; check unchanged |
+| Rename a folder holding an image | Markdown image and HTML `<img>` by library address, and LaTeX `\includegraphics`, rewritten; check unchanged |
+| Archive File | Moved to `_archive`; its link still resolved, so it stayed as written; check unchanged |
+| Ctrl+Click two files, Delete 2 files… | Confirmation listed both; both gone; check unchanged |
+| Drop a selection on another notebook | Migration dialog with both files, warning that a moving note's links are updated; migrated; a link to a note that stayed now reads `../Lab/notes/intro.md`; both notebooks unchanged |
+| Outside the app: a PDF with annotations and a star, a starred note, a starred note renamed by case only, a tagged note moved where a second file of its name appeared | Check Notebook listed the stars and tags left behind and the PDF's annotations as belonging to the moved file. Try to fix paired the three by name (annotations and stars followed, case-only rename included) and left the tags with "Several files have this name". Acknowledge held the same tags back and offered only the citation index. Left listed: the links the outside moves broke (Try to fix does not rewrite links) and the ambiguous tags |
+
+A note on images: a note's relative image path such as `../images/fig.png` is not an image address the app can
+show (local images are `_assets/...` or `/api/files/raw/...`); the check reports it as unreadable and the link
+refactor leaves it, consistently.
