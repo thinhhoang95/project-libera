@@ -5,7 +5,7 @@ import { getStateRoot, relativeFilePath } from "@/lib/storage/paths";
 import { libraryNotebookNames } from "@/lib/storage/library-links";
 import { inspectReferenceLibrary } from "@/lib/storage/references";
 import { inspectReviewDocuments, inspectReviewKeys } from "@/lib/storage/review-files";
-import { existingSidecars, SIDECAR_KINDS } from "@/lib/storage/sidecars";
+import { existingSidecars, legacyAnnotationSidecars, SIDECAR_KINDS } from "@/lib/storage/sidecars";
 import { readWorkspaceMetadata } from "@/lib/storage/workspace-metadata";
 
 // What records of a file that was there before a path still holds (stars,
@@ -19,6 +19,17 @@ const RECORD_NAMES: Record<string, string> = {
   "pdf-annotations": "annotations", "image-annotations": "annotations", "pdf-outline": "outline", transcript: "transcript",
   definitions: "definitions", ink: "ink", python: "Python code",
 };
+
+/**
+ * Why no name can be shown free of review comments, or null. A review index
+ * that can't be read says nothing about any one path, so every name looks
+ * occupied; asking for the next free name would never end. Name allocation
+ * reports this first and stops (Archive File, Archive Folder, migration).
+ */
+export async function reviewIndexBlocker(): Promise<string | null> {
+  const { damaged } = await inspectReviewKeys(getStateRoot());
+  return damaged === undefined ? null : `The review comments index can't be read (${damaged}), so no free name can be found. Check the notebook, then try again.`;
+}
 
 export async function destinationRecords() {
   const caches = new Set(SIDECAR_KINDS.filter((kind) => kind.cache).map((kind) => kind.id));
@@ -38,11 +49,14 @@ export async function destinationRecords() {
   }
 
   return {
+    /** Set when the review index is unreadable: `at` then answers "review comments" for every path, which is "can't tell", not "occupied". */
+    blocker: reviewKeys.damaged === undefined ? null : await reviewIndexBlocker(),
     /** The names of the records still at `parts` of `notebook`; empty when the path is free of them. */
     async at(notebook: string, parts: string[], fileType: string | null): Promise<string[]> {
       const relative = relativeFilePath(notebook, parts);
       const kept = new Set<string>();
-      for (const sidecar of await existingSidecars(notebook, parts, fileType)) {
+      // Older annotation layouts too (legacyAnnotationSidecars): the arriving file would be given them.
+      for (const sidecar of [...await existingSidecars(notebook, parts, fileType), ...await legacyAnnotationSidecars(notebook, parts, fileType)]) {
         if (caches.has(sidecar.kind)) continue;
         // An ink folder with nothing in it holds no strokes.
         if (sidecar.kind === "ink" && !(await readdir(sidecar.path).catch(() => ["?"])).length) continue;

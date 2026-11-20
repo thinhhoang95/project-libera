@@ -11,12 +11,14 @@ import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { ARCHIVE_DIR, INK_DIR, MARKDOWN_ASSETS_DIR } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
+import { localFileIdentity } from "@/lib/storage/file-identity";
+import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { assertSupportedFileName, getFileType } from "@/lib/storage/file-types";
 import { pathExists } from "@/lib/storage/fs-utils";
 import { readNotebookMetadata } from "@/lib/storage/notebook-metadata";
 import { readWorkspaceMetadata } from "@/lib/storage/workspace-metadata";
 import { mergeLegacyFolderState } from "@/lib/storage/directory-mode";
-import { isNotebookMigrating } from "@/lib/storage/migration-fence";
+import { isNotebookMigrating, whenNotebookIdle } from "@/lib/storage/migration-fence";
 import {
   ensureAdminRoot,
   filePathFromParts,
@@ -41,11 +43,29 @@ import type {
   LiberaTreeNode,
 } from "@/lib/types";
 
+/**
+ * What one notebook's walk learned about itself, for upkeep: whether it saw
+ * everything it was meant to (a child that raced away, a folder that could not
+ * be listed or the linked-folder cap each make it incomplete), and the hidden
+ * archive folders it passed over.
+ */
+type TreeWalk = {
+  incomplete: boolean;
+  hiddenArchives: string[][];
+  budget?: { remaining: number; truncated: boolean };
+};
+
 type TreeReadOptions = {
   showArchive?: boolean;
   /** Set for a linked folder, which may be a large project rather than a notebook. */
   budget?: { remaining: number; truncated: boolean };
+  walk?: TreeWalk;
 };
+
+/** A folder or file that is no longer there is a race with Explorer or a sync client; anything else is one that cannot be read. */
+function isAbsentError(error: unknown) {
+  return ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "");
+}
 
 // Dependency and build folders hold no notes and can be enormous.
 const SKIPPED_LINKED_FOLDER_ENTRIES = new Set(["node_modules", "__pycache__", "bower_components"]);
@@ -73,11 +93,13 @@ export function isVisibleTreeEntry(name: string, linked = false) {
  * A notebook's visible files (library paths), without the tree's upkeep: no
  * index, prune or reconcile, so a check can read a notebook without changing
  * it. The archive is left out unless `includeArchive`. `onHidden` sees each
- * entry the tree hides. `unreadable` lists the folders that could not be
+ * entry the tree hides. `onEntry` sees every entry before it is looked at and
+ * says whether to go on (a budget, a cancel): stopping makes the listing
+ * `truncated`. `unreadable` lists the folders that could not be
  * listed (a folder that raced away is not one), so "exactly one file has this
  * name" can be told from "one that could be seen".
  */
-export async function listVisibleNotebookFiles(notebook: string, { limit = 20_000, onHidden, includeArchive = false }: { limit?: number; onHidden?: (libraryPath: string, name: string) => void; includeArchive?: boolean } = {}) {
+export async function listVisibleNotebookFiles(notebook: string, { limit = 20_000, onHidden, onEntry, includeArchive = false }: { limit?: number; onHidden?: (libraryPath: string, name: string) => void; onEntry?: () => boolean; includeArchive?: boolean } = {}) {
   const linked = getLinkedFolders().some((folder) => folder.name === notebook);
   const root = notebookPath(notebook);
   const files: string[] = [];
@@ -91,6 +113,7 @@ export async function listVisibleNotebookFiles(notebook: string, { limit = 20_00
       return;
     }
     for (const entry of entries) {
+      if (onEntry && !onEntry()) { truncated = true; return; }
       if (!parts.length && entry.name === ARCHIVE_DIR && !includeArchive) continue;
       if (!isVisibleTreeEntry(entry.name, linked)) { onHidden?.([notebook, ...parts, entry.name].join("/"), entry.name); continue; }
       if (files.length >= limit) { truncated = true; return; }
@@ -245,6 +268,12 @@ export async function getFileNode(
   };
 }
 
+/**
+ * A folder's nodes. A child that races away between the listing and its
+ * `stat`, or a subfolder that cannot be listed, is left out (or shown empty)
+ * and noted in `options.walk` instead of failing the whole refresh. Only the
+ * listing of `parentParts` itself throws: the caller decides what that means.
+ */
 async function readTreeDirectory(
   notebook: string,
   parentParts: string[],
@@ -253,15 +282,18 @@ async function readTreeDirectory(
   const directoryPath = itemPath(notebook, parentParts);
   const entries = await readdir(directoryPath, { withFileTypes: true });
   const children: LiberaTreeNode[] = [];
+  const skipped = () => { if (options.walk) options.walk.incomplete = true; };
 
   for (const entry of entries) {
     if (shouldSkipTreeEntry(entry.name, options)) {
+      if (entry.name === ARCHIVE_DIR && entry.isDirectory() && !options.showArchive) options.walk?.hiddenArchives.push([...parentParts, entry.name]);
       continue;
     }
 
     if (options.budget) {
       if (options.budget.remaining <= 0) {
         options.budget.truncated = true;
+        skipped();
         break;
       }
 
@@ -271,8 +303,15 @@ async function readTreeDirectory(
     const childParts = [...parentParts, entry.name];
 
     if (entry.isDirectory()) {
-      const stats = await stat(itemPath(notebook, childParts));
-      const grandChildren = await readTreeDirectory(notebook, childParts, options);
+      let stats: Stats;
+      try { stats = await stat(itemPath(notebook, childParts)); }
+      catch { skipped(); continue; }
+      let grandChildren: LiberaTreeNode[] = [];
+      try { grandChildren = await readTreeDirectory(notebook, childParts, options); }
+      catch (error) {
+        skipped();
+        if (isAbsentError(error)) continue;
+      }
       children.push({
         kind: "folder",
         name: entry.name,
@@ -289,16 +328,39 @@ async function readTreeDirectory(
     }
 
     if (entry.isFile() && getFileType(entry.name)) {
-      children.push(await getFileNode(notebook, childParts));
+      try { children.push(await getFileNode(notebook, childParts)); }
+      catch { skipped(); }
     }
   }
 
   return children.sort(sortTreeNodes);
 }
 
+/** Gives each local file node its identity, so a move or delete can tell it from a file that later takes its path. */
+function stampLocalFileIds(nodes: LiberaTreeNode[]) {
+  for (const node of nodes) {
+    if (node.kind === "folder") stampLocalFileIds(node.children);
+    else node.fileId = localFileIdentity(node);
+  }
+}
+
+/** A notebook's top level, or nothing (and an incomplete walk) when it cannot be listed. */
+async function readTreeRoot(notebook: string, options: TreeReadOptions) {
+  try {
+    const children = await readTreeDirectory(notebook, [], options);
+    // A shared notebook's files are identified by the host's listing (attachFileIds), never by this.
+    if (!isSharedNotebookPath(notebook)) stampLocalFileIds(children);
+    return children;
+  } catch {
+    if (options.walk) options.walk.incomplete = true;
+    return [];
+  }
+}
+
 async function getLinkedFolderNode(
   folder: LinkedFolder,
   options: { showArchive: boolean; validGroupIds: Set<string> },
+  walk?: TreeWalk,
 ): Promise<LiberaNotebookNode> {
   let folderStats: Stats | null = null;
 
@@ -312,8 +374,9 @@ async function getLinkedFolderNode(
   const fallbackDate = (folderStats?.birthtime ?? new Date(0)).toISOString();
   const metadata = await readNotebookMetadata(folder.name, fallbackDate, LINKED_FOLDER_METADATA_DEFAULTS);
   const budget = { remaining: LINKED_FOLDER_ENTRY_LIMIT, truncated: false };
+  if (walk) walk.budget = budget;
   const children = folderStats
-    ? await readTreeDirectory(folder.name, [], { showArchive: options.showArchive, budget })
+    ? await readTreeRoot(folder.name, { showArchive: options.showArchive, budget, walk })
     : [];
 
   return {
@@ -365,11 +428,34 @@ function maintenanceDue(notebook: string, mode: "always" | "throttled") {
   return true;
 }
 
-async function maintainNotebookSidecars(notebook: string, children: LiberaTreeNode[]) {
+/**
+ * Every file a moved file's side files could now be at, whatever the rail
+ * shows: the tree's own files and the archive folders it hides. Null when the
+ * walk did not see all of it (a folder that could not be read, a child that
+ * raced away, the linked-folder cap): a match among part of the files cannot
+ * be called unique.
+ */
+async function upkeepCandidates(notebook: string, children: LiberaTreeNode[], walk: TreeWalk) {
+  const nodes = [...children];
+  // The list grows while archives are read, which may hold archives of their own.
+  for (let index = 0; index < walk.hiddenArchives.length; index += 1) {
+    try { nodes.push(...await readTreeDirectory(notebook, walk.hiddenArchives[index], { showArchive: true, budget: walk.budget, walk })); }
+    catch { walk.incomplete = true; }
+  }
+  return walk.incomplete ? null : nodes;
+}
+
+const maintainNotebookSidecars = (notebook: string, children: LiberaTreeNode[], walk: TreeWalk) => whenNotebookIdle(notebook, () => maintainSidecars(notebook, children, walk));
+
+async function maintainSidecars(notebook: string, children: LiberaTreeNode[], walk: TreeWalk) {
   await prunePdfTextCaches(notebook).catch(() => undefined);
   await pruneAudioSidecars(notebook).catch(() => undefined);
-  await reconcilePdfSidecars(notebook, pdfFilesOf(children)).catch(() => undefined);
-  await reconcileInkFolders(notebook, inkSourceFilesOf(children)).catch(() => undefined);
+  // Without the whole picture nothing is matched, set aside or expired: the
+  // next refresh that sees every folder does it.
+  const candidates = await upkeepCandidates(notebook, children, walk);
+  if (!candidates) return;
+  await reconcilePdfSidecars(notebook, pdfFilesOf(candidates)).catch(() => undefined);
+  await reconcileInkFolders(notebook, inkSourceFilesOf(candidates)).catch(() => undefined);
 }
 
 /**
@@ -394,6 +480,7 @@ export async function getTree(options: { includeArchive?: boolean; maintenance?:
   const notebooks: LiberaNotebookNode[] = [];
   const filePaths = new Set<string>();
   const expandablePaths = new Set<string>();
+  let incomplete = false;
 
   for (const entry of entries) {
     // A linked folder's name wins over a notebook created on disk behind Libera's back.
@@ -402,17 +489,22 @@ export async function getTree(options: { includeArchive?: boolean; maintenance?:
     }
 
     const currentNotebookPath = notebookPath(entry.name);
-    const notebookStats = await stat(currentNotebookPath);
+    let notebookStats: Stats;
+    // A notebook removed since the listing is not one any more; the others still load.
+    try { notebookStats = await stat(currentNotebookPath); }
+    catch { incomplete = true; continue; }
     const metadata = await readNotebookMetadata(
       entry.name,
       notebookStats.birthtime.toISOString(),
     );
-    const children = await readTreeDirectory(entry.name, [], { showArchive });
+    const walk: TreeWalk = { incomplete: false, hiddenArchives: [] };
+    const children = await readTreeRoot(entry.name, { showArchive, walk });
     // A migration that has not finished may have moved a file but not yet its
     // sidecars: they are not orphans, and pruning them would lose them.
     if (maintenanceDue(entry.name, maintenance) && !(await isNotebookMigrating(entry.name))) {
-      await maintainNotebookSidecars(entry.name, children);
+      await maintainNotebookSidecars(entry.name, children, walk);
     }
+    if (walk.incomplete) incomplete = true;
 
     notebooks.push({
       kind: "notebook",
@@ -439,12 +531,14 @@ export async function getTree(options: { includeArchive?: boolean; maintenance?:
   }
 
   for (const folder of linkedFolders) {
-    const node = await getLinkedFolderNode(folder, { showArchive, validGroupIds });
+    const walk: TreeWalk = { incomplete: false, hiddenArchives: [] };
+    const node = await getLinkedFolderNode(folder, { showArchive, validGroupIds }, walk);
     if (!node.folder?.missing) {
       if (maintenanceDue(folder.name, maintenance) && !(await isNotebookMigrating(folder.name))) {
-        await maintainNotebookSidecars(folder.name, node.children);
+        await maintainNotebookSidecars(folder.name, node.children, walk);
       }
     }
+    if (walk.incomplete) incomplete = true;
     notebooks.push(node);
     collectFilePaths(node.children, filePaths);
     expandablePaths.add(node.name);
@@ -457,6 +551,7 @@ export async function getTree(options: { includeArchive?: boolean; maintenance?:
 
   return {
     archiveIncluded: showArchive,
+    ...(incomplete ? { incomplete: true } : {}),
     root: getAdminRoot(),
     lastNotebookName: await readLastNotebookName(),
     notebookPanelExpandedPaths:
@@ -507,7 +602,7 @@ export async function getNotebookNode(name: string, options: { includeArchive?: 
     }
     if (!notebookStats.isDirectory()) return null;
     const metadata = await readNotebookMetadata(name, notebookStats.birthtime.toISOString());
-    const children = await readTreeDirectory(name, [], { showArchive });
+    const children = await readTreeRoot(name, { showArchive });
     node = {
       kind: "notebook",
       name,

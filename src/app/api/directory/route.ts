@@ -6,6 +6,7 @@ import {
   getDirectoryModeSummary,
   openDirectory,
   openFileLocation,
+  relinkDirectory,
 } from "@/lib/storage/directory-mode";
 import { toStorageError } from "@/lib/storage/errors";
 
@@ -30,6 +31,7 @@ export async function POST(request: NextRequest) {
     const body = await request.json() as { action?: unknown; name?: unknown; path?: unknown };
     switch (body.action) {
       case "open": return NextResponse.json(await openDirectory(body.path));
+      case "relink": return NextResponse.json(await relinkDirectory(body.name, body.path));
       case "open-file": return NextResponse.json(await openFileLocation(body.path));
       case "close": return NextResponse.json(closeDirectory(body.name));
       case "clear-recent": return NextResponse.json(clearRecentDirectories());

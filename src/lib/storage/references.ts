@@ -9,6 +9,7 @@ import { applyLibraryOps, attachmentIdentity, emptyReferenceLibrary, LibraryOpEr
 import { REFERENCE_LIBRARY_VERSION, type ReferenceAttachment, type ReferenceLibrary, type ReferenceLibraryOp } from "@/lib/references/types";
 import { StorageError } from "@/lib/storage/errors";
 import { pathExists, writeJsonAtomically } from "@/lib/storage/fs-utils";
+import { fileExistence } from "@/lib/storage/library-links";
 import { notifySearchReferenceChanges } from "@/lib/storage/search-updates";
 import {
   filePathFromParts,
@@ -282,6 +283,11 @@ async function libraryNotebookNames() {
   ];
 }
 
+/** Linked folders not connected on this computer: their libraries can't be read or remapped now. */
+export function offlineLinkedFolderNames() {
+  return getLinkedFolders().filter((folder) => folder.unresolved).map((folder) => folder.name);
+}
+
 /** The notebooks (and linked folders) that have a References library file. */
 export async function referenceLibraryNotebooks() {
   return (await existingLibraries()).map(({ notebook }) => notebook);
@@ -379,7 +385,9 @@ export async function moveReferenceAttachments(from: string, to: string) {
  */
 export async function moveReferenceAttachmentsBatch(moves: ReadonlyMap<string, string>) {
   const failures: { notebook: string; error: unknown }[] = [];
-  if (!moves.size) return { changed: [] as string[], failures };
+  // A library in an unconnected linked folder keeps its old pointers; Check Notebook's reference check finds them once it is back.
+  const offline = moves.size ? offlineLinkedFolderNames() : [];
+  if (!moves.size) return { changed: [] as string[], failures, offline };
   // Tethered files follow through moveTetheredFilesBatch (the caller), not one "moved" event per file.
   let changed: string[] = [];
   try {
@@ -388,7 +396,7 @@ export async function moveReferenceAttachmentsBatch(moves: ReadonlyMap<string, s
     failures.push({ notebook: "", error });
   }
   for (const failure of failures) console.error(`[references] Could not update attachments in ${failure.notebook || "the libraries"}:`, failure.error);
-  return { changed, failures };
+  return { changed, failures, offline };
 }
 
 /** A file or folder at `removed` was deleted: detach every pointer into it. Never fails the caller. */
@@ -409,30 +417,35 @@ const WALK_ENTRY_LIMIT = 100_000;
 
 type CandidateFile = { path: string; absolutePath: string; size: number };
 
-/** Files in every notebook whose extension is one of `extensions`. */
+/**
+ * Files in every notebook whose extension is one of `extensions`. `complete`
+ * is false when the search missed somewhere (entry cap, unreadable folder,
+ * linked folder not connected): a match then can't be called the only one.
+ */
 async function candidateFiles(extensions: Set<string>) {
   const files: CandidateFile[] = [];
+  let complete = !getLinkedFolders().some((folder) => folder.unresolved);
   let remaining = WALK_ENTRY_LIMIT;
   async function walk(directory: string, relative: string) {
     let entries: Dirent[];
-    try { entries = await readdir(directory, { withFileTypes: true }); } catch { return; }
+    try { entries = await readdir(directory, { withFileTypes: true }); } catch { complete = false; return; }
     for (const entry of entries) {
-      if (remaining-- <= 0) return;
+      if (remaining-- <= 0) { complete = false; return; }
       if (entry.name.startsWith(".") || SKIPPED_ENTRIES.has(entry.name)) continue;
       const absolutePath = path.join(directory, entry.name);
       const childRelative = `${relative}/${entry.name}`;
       if (entry.isDirectory()) await walk(absolutePath, childRelative);
       else if (entry.isFile() && extensions.has(path.extname(entry.name).toLowerCase())) {
-        try { files.push({ path: childRelative, absolutePath, size: (await stat(absolutePath)).size }); } catch { /* Gone meanwhile. */ }
+        try { files.push({ path: childRelative, absolutePath, size: (await stat(absolutePath)).size }); } catch { complete = false; }
       }
     }
   }
   for (const notebook of await libraryNotebookNames()) {
     let root: string;
-    try { root = notebookPath(notebook); } catch { continue; }
+    try { root = notebookPath(notebook); } catch { complete = false; continue; }
     await walk(root, notebook);
   }
-  return files;
+  return { files, complete };
 }
 
 type MissingAttachment = { notebook: string; target: string; entryId: string; path: string; sha256: string; size: number };
@@ -457,15 +470,16 @@ async function missingAttachments(notebook?: string) {
     }
     return availableRoots.get(name)!;
   };
+  // "Gone" is Check Notebook's own test (an exact name in its folder's listing, a file): a case-only rename reads as moved here as it does there.
+  const disk = fileExistence();
   for (const { notebook: name, target } of await existingLibraries(notebook ? [notebook] : undefined)) {
     let library: ReferenceLibrary | null;
     try { library = await readLibraryFile(target); } catch { continue; }
     for (const entry of Object.values(library?.entries ?? {})) {
       for (const attachment of entry.attachments) {
         if (attachment.kind === "url" || !attachment.sha256 || typeof attachment.size !== "number") continue;
-        let absolutePath: string;
-        try { absolutePath = absoluteLibraryFile(attachment.path); } catch { continue; }
-        if (!(await pathExists(absolutePath)) && await rootAvailable(attachment.path)) {
+        try { absoluteLibraryFile(attachment.path); } catch { continue; }
+        if (await disk.isFile(attachment.path) === false && await rootAvailable(attachment.path)) {
           missing.push({ notebook: name, target, entryId: entry.id, path: attachment.path, sha256: attachment.sha256, size: attachment.size });
         }
       }
@@ -482,24 +496,29 @@ async function missingAttachments(notebook?: string) {
 export async function reattachMissingReferenceFiles(notebook?: string): Promise<ReattachResult> {
   const missing = await missingAttachments(notebook);
   if (!missing.length) return { missing: 0, walked: false, reattached: 0 };
-  const candidates = await candidateFiles(new Set(missing.map((item) => path.extname(item.path).toLowerCase())));
+  const { files: candidates, complete } = await candidateFiles(new Set(missing.map((item) => path.extname(item.path).toLowerCase())));
   const hashes = new Map<string, Promise<string | null>>();
   const hashOf = (file: CandidateFile) => {
     if (!hashes.has(file.absolutePath)) hashes.set(file.absolutePath, hashFile(file.absolutePath).catch(() => null));
     return hashes.get(file.absolutePath)!;
   };
-  const repoint = new Map<string, Map<string, Map<string, string>>>(); // target → entry → old path → new path
-  for (const item of missing) {
+  type Repoint = { next: string; sha256: string; size: number };
+  const repoint = new Map<string, Map<string, Map<string, Repoint>>>(); // target → entry → old path → new path and what chose it
+  // Without a complete search, "the only match" can't be told: leave every pointer alone.
+  for (const item of complete ? missing : []) {
     const extension = path.extname(item.path).toLowerCase();
     const matches: string[] = [];
+    let unreadable = false;
     for (const file of candidates) {
       if (file.size !== item.size || path.extname(file.path).toLowerCase() !== extension) continue;
-      if (await hashOf(file) === item.sha256) matches.push(file.path);
+      const hash = await hashOf(file);
+      if (hash === null) unreadable = true; // It could be a second copy.
+      else if (hash === item.sha256) matches.push(file.path);
     }
-    if (matches.length !== 1) continue;
-    const byEntry = repoint.get(item.target) ?? new Map<string, Map<string, string>>();
-    const byPath = byEntry.get(item.entryId) ?? new Map<string, string>();
-    byPath.set(item.path, matches[0]);
+    if (matches.length !== 1 || unreadable) continue;
+    const byEntry = repoint.get(item.target) ?? new Map<string, Map<string, Repoint>>();
+    const byPath = byEntry.get(item.entryId) ?? new Map<string, Repoint>();
+    byPath.set(item.path, { next: matches[0], sha256: item.sha256, size: item.size });
     byEntry.set(item.entryId, byPath);
     repoint.set(item.target, byEntry);
   }
@@ -510,6 +529,17 @@ export async function reattachMissingReferenceFiles(notebook?: string): Promise<
       let library: ReferenceLibrary | null;
       try { library = await readLibraryFile(target); } catch { return 0; }
       if (!library) return 0;
+      // The scan ran outside this lock: what it saw is rechecked here, under it.
+      // Same test as the check's. The old path counts as present unless it is known to be gone, the new one as absent unless known to be a file: when it can't be told, nothing moves.
+      const present = new Map<string, boolean>();
+      const disk = fileExistence();
+      for (const byPath of byEntry.values()) {
+        for (const [old, { next }] of byPath) {
+          present.set(old, await disk.isFile(old) !== false);
+          present.set(next, await disk.isFile(next) === true);
+        }
+      }
+      const existsAtCommit = (file: string) => present.get(file) ?? true;
       const now = new Date().toISOString();
       let count = 0;
       for (const [entryId, byPath] of byEntry) {
@@ -518,9 +548,12 @@ export async function reattachMissingReferenceFiles(notebook?: string): Promise<
         let entryChanged = false;
         entry.attachments = entry.attachments.map((attachment): ReferenceAttachment => {
           if (attachment.kind === "url") return attachment;
-          const next = byPath.get(attachment.path);
-          // Changed meanwhile, or the entry already points at that file.
-          if (!next || entry.attachments.some((other) => other.kind !== "url" && other.path === next)) return attachment;
+          const chosen = byPath.get(attachment.path);
+          if (!chosen) return attachment;
+          const { next } = chosen;
+          // Changed meanwhile (the original is back, or the record was replaced), or the entry already points at that file.
+          if (attachment.sha256 !== chosen.sha256 || attachment.size !== chosen.size || existsAtCommit(attachment.path) || !existsAtCommit(next)
+            || entry.attachments.some((other) => other.kind !== "url" && other.path === next)) return attachment;
           entryChanged = true;
           count += 1;
           return { ...attachment, path: next };

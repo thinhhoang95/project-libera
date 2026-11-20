@@ -36,6 +36,12 @@ export type OpenTab = {
   saveDirectory?: string;
   status: "clean" | "dirty" | "saving" | "error";
   error?: string;
+  /**
+   * What is on disk when it is not the text this tab opened (a save found the file changed,
+   * or the file moved and changed outside the app); null when the file is gone. `saved` stays the
+   * tab's own baseline, so saving needs the person's decision (tab-retarget.ts saveBase).
+   */
+  diskConflict?: { text: string | null };
   viewState?: OpenTabViewState;
 };
 
@@ -240,6 +246,12 @@ export type WorkspaceInputDialogState =
       error?: string;
     }
   | {
+      /** The selected files of one notebook, moved to one destination. */
+      mode: "move-files";
+      files: LiberaFileNode[];
+      error?: string;
+    }
+  | {
       mode: "rename-file";
       file: LiberaFileNode;
       error?: string;
@@ -271,14 +283,18 @@ export type WorkspaceConfirmDialogState =
   | {
       mode: "delete-file";
       file: LiberaFileNode;
+      /** Open files under the item with unsaved edits: deleting forgets that text too. */
+      unsavedNames: string[];
     }
   | {
       mode: "delete-folder";
       folder: LiberaFolderNode;
+      unsavedNames: string[];
     }
   | {
       mode: "delete-notebook";
       notebook: string;
+      unsavedNames: string[];
     }
   | {
       mode: "remove-folder";
@@ -295,6 +311,24 @@ export type WorkspaceConfirmDialogState =
       mode: "move-file-folder";
       destinationPath: string;
       file: LiberaFileNode;
+    }
+  | {
+      /** The selected files of one notebook, for a delete of all of them. */
+      mode: "delete-files";
+      files: LiberaFileNode[];
+      unsavedNames: string[];
+    }
+  | {
+      /** The selected files, some open with unsaved edits, for a move to a folder of their notebook. */
+      mode: "move-files-folder";
+      destinationPath: string;
+      files: LiberaFileNode[];
+      unsavedNames: string[];
+    }
+  | {
+      mode: "replace-disk-version";
+      tabId: string;
+      fileName: string;
     };
 
 export type MarkdownImageSelection = {
@@ -433,6 +467,10 @@ export type LiberaWorkspace = {
   shiftMarkdownList: (direction: "indent" | "outdent") => void;
   moveFileFromPrompt: (tab: OpenTab) => Promise<void>;
   moveFileToFolder: (file: LiberaFileNode, destinationPath: string) => Promise<void>;
+  /** The selected files of one notebook: to a folder of it directly, to another notebook through the migration dialog. */
+  moveFilesToFolder: (files: LiberaFileNode[], destinationPath: string) => Promise<void>;
+  moveFilesFromPrompt: (files: LiberaFileNode[]) => Promise<void>;
+  deleteFileNodesFromPrompt: (files: LiberaFileNode[]) => Promise<void>;
   openFile: (
     file: LiberaFileNode,
     options?: { viewState?: OpenTabViewState; placement?: "tab" | "right" | "bottom" },

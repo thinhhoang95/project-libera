@@ -26,7 +26,7 @@ import { assertMarkdownFileName, assertSupportedFileName, ensureImageName, ensur
 import { copyTranscript, followSharedAudioChanges } from "@/lib/storage/transcripts";
 import { followSharedPdfChanges } from "@/lib/storage/pdf-sidecars";
 import { copyInkThroughEdit } from "@/lib/storage/ink";
-import { assertDirectoryExists, copyFileIfExists, findAvailableFilePath, pathExists } from "@/lib/storage/fs-utils";
+import { assertDirectoryExists, copyFileIfExists, pathExists } from "@/lib/storage/fs-utils";
 import {
   assertSafeSegment,
   ensureAdminRoot,
@@ -42,11 +42,11 @@ import {
   splitFilePath,
 } from "@/lib/storage/paths";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
-import { moveReviewPath } from "@/lib/storage/markdown-reviews";
-import { moveReferenceAttachments } from "@/lib/storage/references";
+import { deleteReviewPath, moveReviewPath } from "@/lib/storage/markdown-reviews";
+import { detachReferenceAttachments, moveReferenceAttachments } from "@/lib/storage/references";
 import { getFileNode, getTree } from "@/lib/storage/tree";
-import { movePathDerivedRecords, readLiberaFile } from "@/lib/storage/files";
-import { SIDECAR_KINDS } from "@/lib/storage/sidecars";
+import { assertCopyKeepsType, assertNoLeftoverFolderRecords, assertNoLeftoverRecords, findAvailableCopyPath, movePathDerivedRecords, readLiberaFile } from "@/lib/storage/files";
+import { removeFileSidecars, removeFolderSidecars, SIDECAR_KINDS } from "@/lib/storage/sidecars";
 import { readSharedAuthorityBytes } from "@/lib/storage/shared-source";
 import { removeFileMetadataPath, removeFileMetadataPathPrefix, renameFileMetadataPathPrefix, removeNotebookPanelExpandedPathPrefix, renameNotebookPanelExpandedPathPrefix } from "@/lib/storage/workspace-metadata";
 import { getMarkdownImageAssetBySource, markdownImageSources } from "@/lib/storage/markdown-assets";
@@ -690,9 +690,12 @@ export async function moveSharedFile(relativePath: string, destinationDirectory:
   const moving = await getSharedFileNode(current.notebook, current.pathParts, options);
   await assertSharedDirectoryExists(itemPath(destination.notebook, destination.pathParts), relativeFilePath(destination.notebook, destination.pathParts), "Destination folder was not found.", options);
   const target = filePathFromParts(destination.notebook, nextParts);
-  if (sourcePath !== nextPath && await pathExists(target) && !(await sameItem(filePathFromParts(current.notebook, current.pathParts), target))) {
+  const own = await sameItem(filePathFromParts(current.notebook, current.pathParts), target);
+  if (sourcePath !== nextPath && await pathExists(target) && !own) {
     throw new StorageError("Destination file already exists.", 409);
   }
+  // A slot free in the manifest can still hold records of an earlier file on this computer: refused before the host moves anything, as a local move is.
+  if (sourcePath !== nextPath && !own) await assertNoLeftoverRecords(destination.notebook, nextParts, assertSupportedFileName(safeName));
   const config = hostConfig(sourcePath, options);
   await host(sourcePath, () => fileOp(source.projectId, { op: "rename", path: source.path, to: nextParts.join("/"), ...(options.expectedFileId ? { expectedFileId: options.expectedFileId } : {}) }, config));
   if (getFileType(current.name) === "audio" && sourcePath !== nextPath) {
@@ -703,9 +706,16 @@ export async function moveSharedFile(relativePath: string, destinationDirectory:
   if (getFileType(current.name) === "pdf" && sourcePath !== nextPath) await followSharedPdfChanges([{ from: sourcePath, to: nextPath }], []);
   // The host moves the file's ink, transcript and Python code with it in the same change (and refuses a rename that would lose one).
   // The records kept on this computer follow here, as for a local file.
-  await moveSharedLocalRecords(sourcePath, nextPath);
-  await movePathDerivedRecords(sourcePath, nextPath);
+  // The host has moved the file and cannot be asked to undo it, so every step runs and what stayed behind is reported.
+  const stayed = await moveSharedLocalRecords(sourcePath, nextPath);
+  await movePathDerivedRecords(sourcePath, nextPath).catch((error) => {
+    console.error(`[shared-writes] Could not move the review, attachment or tag records of ${sourcePath}:`, error);
+    stayed.push(`review comments, reference attachments or tags of ${sourcePath}`);
+  });
   notifySearchChanges([sourcePath, nextPath]);
+  if (stayed.length) {
+    throw new StorageError(`The file was moved, but these records could not be moved with it and stay at the old path: ${stayed.join("; ")}. Run Check Notebook to settle them.`, 500);
+  }
   return savedFile(nextPath, moving.size, () => readSharedText(nextPath, options).then((result) => result.text, () => undefined));
 }
 
@@ -767,8 +777,23 @@ export async function deleteSharedFile(relativePath: string, options: SharedIden
   // This user deleted it, so their own notes on it go too, as in a local notebook.
   if (getFileType(current.name) === "pdf") await followSharedPdfChanges([], [liberaPath]);
   // The host deletes the file's ink with it, in the same change.
-  await removeFileMetadataPath(liberaPath);
+  // The records kept on this computer go too, as in a local delete; the host cannot undo its deletion, so each step runs and failures are reported.
+  const left: string[] = [];
+  const cleanup = async (what: string, work: () => Promise<unknown>) => {
+    try { await work(); } catch (error) {
+      console.error(`[shared-writes] Could not remove the ${what} of ${liberaPath}:`, error);
+      left.push(what);
+    }
+  };
+  const fileType = getFileType(current.name);
+  if (fileType) await cleanup("local records", () => removeFileSidecars(current.notebook, current.pathParts, fileType));
+  await cleanup("review comments", () => deleteReviewPath(liberaPath));
+  await cleanup("reference attachments", () => detachReferenceAttachments(liberaPath));
+  await cleanup("stars and tags", () => removeFileMetadataPath(liberaPath));
   notifySearchChanges([liberaPath]);
+  if (left.length) {
+    throw new StorageError(`The file was deleted, but its ${left.join(", ")} could not be removed. Run Check Notebook to settle them.`, 500);
+  }
   // If it is slower than this, the host says when the file has left the disk.
   await diskCaughtUp(liberaPath, false);
   return getTree();
@@ -793,6 +818,8 @@ export async function renameSharedFolder(relativePath: string, name: string, opt
     }
     throw new StorageError("Destination folder already exists.", 409);
   }
+  // A name free in the manifest can still hold records of earlier files on this computer: refused before the host renames, as a local rename is.
+  if (sourcePath !== nextPath) await assertNoLeftoverFolderRecords(current.notebook, parts);
   // The files under the folder, as the manifest has them before the rename: their records move with them below.
   const files = sourcePath === nextPath ? [] : (await listSharedEntries(current.notebook, options)).filter((entry) => entry.kind !== "folder" && entry.path.startsWith(`${sourcePath}/`));
   const config = hostConfig(sourcePath, options);
@@ -822,9 +849,23 @@ export async function deleteSharedFolder(relativePath: string, options: SharedWr
   await assertSharedDirectoryExists(itemPath(current.notebook, current.pathParts), liberaPath, "Folder was not found.", options);
   const config = hostConfig(liberaPath, options);
   await host(liberaPath, () => fileOp(target.projectId, { op: "delete", path: target.path }, config));
-  await removeFileMetadataPathPrefix(liberaPath);
-  await removeNotebookPanelExpandedPathPrefix(liberaPath);
+  // The records kept on this computer go too, as in a local folder delete; each step runs and failures are reported (the host's deletion cannot be undone).
+  const left: string[] = [];
+  const cleanup = async (what: string, work: () => Promise<unknown>) => {
+    try { await work(); } catch (error) {
+      console.error(`[shared-writes] Could not remove the ${what} under ${liberaPath}:`, error);
+      left.push(what);
+    }
+  };
+  await cleanup("local records", () => removeFolderSidecars(current.notebook, current.pathParts));
+  await cleanup("review comments", () => deleteReviewPath(liberaPath));
+  await cleanup("reference attachments", () => detachReferenceAttachments(liberaPath));
+  await cleanup("stars and tags", () => removeFileMetadataPathPrefix(liberaPath));
+  await cleanup("panel state", () => removeNotebookPanelExpandedPathPrefix(liberaPath));
   notifySearchChanges();
+  if (left.length) {
+    throw new StorageError(`The folder was deleted, but its ${left.join(", ")} could not be removed. Run Check Notebook to settle them.`, 500);
+  }
   return getTree();
 }
 
@@ -837,11 +878,12 @@ export async function copyFileIntoSharedDirectory(relativePath: string, destinat
   const requestedName = destinationName?.trim()
     ? assertSafeSegment(destinationName, "File name")
     : `${path.basename(current.name, extension)} copy${extension}`;
-  assertSupportedFileName(requestedName);
+  assertCopyKeepsType(assertSupportedFileName(current.name), requestedName);
   const node = await getFileNode(current.notebook, current.pathParts);
   const directory = itemPath(destination.notebook, destination.pathParts);
   await assertDirectoryExists(directory, "Destination folder was not found.");
-  const available = await findAvailableFilePath(directory, requestedName);
+  // A name that holds no file, nor records of one that was there before.
+  const available = await findAvailableCopyPath(destination.notebook, destination.pathParts, requestedName, node.fileType);
   const parts = [...destination.pathParts, available.name];
   const liberaPath = relativeFilePath(destination.notebook, parts);
   // Validate the destination and service before creating any copied attachments.

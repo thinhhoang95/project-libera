@@ -8,7 +8,7 @@ import {
   normalizeAssetFileName,
   getContentType,
 } from "@/lib/storage/file-types";
-import { copyFileIfExists, findAvailableFilePath, moveFileIfExists, pathExists } from "@/lib/storage/fs-utils";
+import { copyFileIfExists, findAvailableFilePath, moveFileIfExists, moveWithoutReplacing, pathExists } from "@/lib/storage/fs-utils";
 import {
   ensureAdminRoot,
   filePathFromParts,
@@ -27,7 +27,7 @@ import { MARKDOWN_ASSETS_DIR, MARKDOWN_EXTENSIONS } from "@/lib/storage/constant
 import type { MarkdownImageAssetPayload } from "@/lib/types";
 import { assertNotSharedItem, isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { readSharedAuthorityBytes } from "@/lib/storage/shared-source";
-import { markdownImageSources, rewriteMarkdownImageSources } from "@/lib/markdown-image-sources";
+import { markdownImageSources, rawFileSourcePath, rewriteMarkdownImageSources } from "@/lib/markdown-image-sources";
 import { isInkBlockRenderingName } from "@/lib/ink/block";
 import { legacyPythonSidecarPath, ownsPythonFigureSource, parsePythonFigureSource, previousPythonFigureSources, pythonFigureFolder, pythonFigureSourcePrefix, pythonSidecarPath, withPreviousPythonFigureSources } from "@/lib/python/sidecar";
 import { assertNotMigrating } from "@/lib/storage/migration-fence";
@@ -56,18 +56,6 @@ function markdownAssetSourceTarget(documentPath: string, source: string) {
     documentPath,
     assetPath: normalizeMarkdownAssetPath(source.split(/[?#]/, 1)[0]),
   };
-}
-
-function rawFileSourcePath(source: string) {
-  if (!source.startsWith("/api/files/raw/")) {
-    return null;
-  }
-
-  return new URL(source, "http://libera.local").pathname
-    .slice("/api/files/raw/".length)
-    .split("/")
-    .map(decodeURIComponent)
-    .join("/");
 }
 
 function referencedMarkdownAssetPaths(documentPath: string, markdown: string) {
@@ -217,17 +205,37 @@ function ownedPrefixes(documentPath: string) {
 }
 
 /**
- * Library paths (lowercased) that notes of the other local notebooks embed by
- * their `/api/files/raw/` address. Null when one of those notebooks could not
- * be read in full.
+ * The library paths a note embeds by address rather than by its own relative
+ * path: `/api/files/raw/...`, and `/api/markdown-assets/raw?document=` naming
+ * a note of another notebook (the way a note keeps showing an image that
+ * stayed behind when it moved there).
  */
-export async function rawEmbedsInOtherNotebooks(notebook: string) {
+function libraryAddressedPaths(documentPath: string, markdown: string) {
+  const paths = new Set(referencedRawFilePaths(markdown));
+  for (const source of markdownImageSources(markdown)) {
+    if (!source.startsWith("/api/markdown-assets/raw")) continue;
+    try {
+      const target = markdownAssetSourceTarget(documentPath, source);
+      const owner = target && splitFilePath(target.documentPath).notebook;
+      if (target && owner !== splitFilePath(documentPath).notebook) paths.add(`${owner}/${target.assetPath}`);
+    } catch { /* A malformed address shows nothing. */ }
+  }
+  return paths;
+}
+
+/**
+ * Library paths (lowercased) that notes of the other local notebooks embed by
+ * address (see libraryAddressedPaths). `includeOwn` adds the notebook's own
+ * notes, whose raw addresses its relative-path scan doesn't see. Null when one
+ * of those notebooks could not be read in full.
+ */
+export async function rawEmbedsInOtherNotebooks(notebook: string, { includeOwn = false }: { includeOwn?: boolean } = {}) {
   const embeds = new Set<string>();
   for (const other of await libraryNotebookNames()) {
-    if (other === notebook) continue;
+    if (other === notebook && !includeOwn) continue;
     const { documents, complete } = await readMarkdownAssetDocuments(other).catch(() => ({ documents: [] as MarkdownDocument[], complete: false }));
     if (!complete) return null;
-    for (const document of documents) for (const raw of referencedRawFilePaths(document.content)) embeds.add(raw.toLowerCase());
+    for (const document of documents) for (const raw of libraryAddressedPaths(document.documentPath, document.content)) embeds.add(raw.toLowerCase());
   }
   return embeds;
 }
@@ -236,9 +244,10 @@ export async function rawEmbedsInOtherNotebooks(notebook: string) {
 export async function cleanupMarkdownImageAssets(notebook: string, previous: MarkdownDocument[], overrides: MarkdownDocument[] = []) {
   // The local archive remains writable inside a shared notebook, but its
   // shared assets belong to the host and cannot be collected by local deletes.
-  if (isSharedNotebookPath(`${notebook}/${MARKDOWN_ASSETS_DIR}`)) return;
+  if (isSharedNotebookPath(`${notebook}/${MARKDOWN_ASSETS_DIR}`)) return true;
   const { documents, complete } = await readMarkdownAssetDocuments(notebook);
-  if (!complete) return;
+  // False when a notebook could not be read in full: nothing was pruned, so a caller can say so.
+  if (!complete) return false;
   const references = new Set<string>();
   // A save can be superseded while this scan runs. Keep both the text on disk
   // and the caller's references; an older request must not prune a newer save.
@@ -287,7 +296,7 @@ export async function cleanupMarkdownImageAssets(notebook: string, previous: Mar
   let embeddedElsewhere = new Set<string>();
   if (pruned.length) {
     const elsewhere = await rawEmbedsInOtherNotebooks(notebook);
-    if (!elsewhere) return;
+    if (!elsewhere) return false;
     embeddedElsewhere = elsewhere;
   }
   for (const candidate of pruned) {
@@ -297,6 +306,7 @@ export async function cleanupMarkdownImageAssets(notebook: string, previous: Mar
     directories.add(path.dirname(asset.targetPath));
   }
   for (const directory of directories) await removeEmptyAssetParents(notebook, directory);
+  return true;
 }
 
 // A note's Python sidecar sits in its assets folder (lib/python/sidecar.ts),
@@ -346,9 +356,11 @@ async function migrateLegacyPythonSidecar(documentPath: string, alsoMoving?: str
  * Moves a note's Python code with the note. By default it replaces the code
  * at the destination; with `replace: false` (Try to fix) it never does:
  * false, and the code stays where it is, when the destination has some.
+ * With `exclusive` (a move in the app) code that arrives at the destination
+ * meanwhile is never replaced: the move is refused (409) and the code stays.
  * True when it moved or there was nothing to move.
  */
-export async function movePythonSidecar(from: string, to: string, { replace = true }: { replace?: boolean } = {}) {
+export async function movePythonSidecar(from: string, to: string, { replace = true, exclusive = false }: { replace?: boolean; exclusive?: boolean } = {}) {
   await migratePythonSidecar(from, to);
   const source = pythonSidecarFile(from);
   if (!(await pathExists(source.absolutePath))) return true;
@@ -358,7 +370,8 @@ export async function movePythonSidecar(from: string, to: string, { replace = tr
   const figures = (await readdir(path.dirname(source.absolutePath))).filter((name) => parsePythonFigureSource(name)).map((name) => `${pythonFigureSourcePrefix(from)}/${name}`);
   const previous = source.notebook === destination.notebook ? [...previousPythonFigureSources(code), ...figures] : [];
   await writeFile(source.absolutePath, withPreviousPythonFigureSources(code, previous));
-  if (replace) await moveFileIfExists(source.absolutePath, destination.absolutePath);
+  if (exclusive) await moveWithoutReplacing(source.absolutePath, destination.absolutePath);
+  else if (replace) await moveFileIfExists(source.absolutePath, destination.absolutePath);
   else {
     // Created exclusively: code saved there meanwhile is never replaced.
     try { await copyFileIfExists(source.absolutePath, destination.absolutePath, { exclusive: true }); }
@@ -371,7 +384,7 @@ export async function movePythonSidecar(from: string, to: string, { replace = tr
 
 export async function copyPythonSidecar(from: string, to: string) {
   await migratePythonSidecar(from);
-  await copyFileIfExists(pythonSidecarFile(from).absolutePath, pythonSidecarFile(to).absolutePath);
+  await copyFileIfExists(pythonSidecarFile(from).absolutePath, pythonSidecarFile(to).absolutePath, { exclusive: true });
   const target = pythonSidecarFile(to).absolutePath;
   if (await pathExists(target)) await writeFile(target, withPreviousPythonFigureSources(await readFile(target, "utf8"), []));
 }
@@ -393,14 +406,23 @@ export async function deletePythonSidecar(documentPath: string) {
   await removeEmptyAssetParents(sidecar.notebook, path.dirname(sidecar.absolutePath));
 }
 
-/** Library paths of the Markdown notes in a folder and its subfolders. */
+/**
+ * Library paths of the Markdown notes in a folder and its subfolders. A folder
+ * that can't be listed, or more entries than the scan cap, refuses (409): the
+ * notes it missed would keep their Python code and images behind a move or delete.
+ */
 export async function markdownPathsInFolder(notebook: string, folderParts: string[]) {
   const paths: string[] = [];
+  let remaining = 20_000;
   async function visit(parts: string[]) {
     let entries;
     try { entries = await readdir(path.join(notebookPath(notebook), ...parts), { withFileTypes: true }); }
-    catch { return; }
+    catch (error) {
+      if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) return;
+      throw new StorageError(`${relativeFilePath(notebook, parts)} could not be read in full, so the notes inside it and their code were not found. Nothing was changed.`, 409);
+    }
     for (const entry of entries) {
+      if (--remaining < 0) throw new StorageError(`${relativeFilePath(notebook, folderParts)} has too many items to find every note in it. Nothing was changed.`, 409);
       if (entry.name.startsWith(".") || entry.name === MARKDOWN_ASSETS_DIR) continue;
       if (entry.isDirectory()) await visit([...parts, entry.name]);
       else if (entry.isFile() && MARKDOWN_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) paths.push(relativeFilePath(notebook, [...parts, entry.name]));
@@ -408,6 +430,27 @@ export async function markdownPathsInFolder(notebook: string, folderParts: strin
   }
   await visit(folderParts);
   return paths;
+}
+
+/** The notes of a folder with their text, for a delete's asset cleanup; refuses like markdownPathsInFolder, and when a note can't be read. */
+export async function markdownDocumentsInFolder(notebook: string, folderParts: string[]): Promise<MarkdownDocument[]> {
+  const documents: MarkdownDocument[] = [];
+  for (const documentPath of await markdownPathsInFolder(notebook, folderParts)) {
+    const { notebook: owner, pathParts } = splitFilePath(documentPath);
+    try { documents.push({ documentPath, content: await readFile(filePathFromParts(owner, pathParts), "utf8") }); }
+    catch { throw new StorageError(`${documentPath} could not be read, so its code and images can't be cleaned up. Nothing was deleted.`, 409); }
+  }
+  return documents;
+}
+
+/** The notes among `documentPaths` that already have Python code at their path (either layout): code of files that were there before. */
+export async function pythonCodeAt(documentPaths: string[]) {
+  const found: string[] = [];
+  for (const documentPath of documentPaths) {
+    const legacy = splitFilePath(legacyPythonSidecarPath(documentPath));
+    if (await pathExists(pythonSidecarFile(documentPath).absolutePath) || await pathExists(filePathFromParts(legacy.notebook, legacy.pathParts))) found.push(documentPath);
+  }
+  return found;
 }
 
 async function writeAvailableAsset(directory: string, name: string, body: Buffer, verify?: () => Promise<void>) {
@@ -454,7 +497,12 @@ async function writeAvailableAsset(directory: string, name: string, body: Buffer
  * paths, so a note embedding one points at it instead of copying it; `copied`
  * lets notes that embed the same image share one copy in the destination.
  */
-export type MarkdownAssetBatch = { moved: ReadonlyMap<string, string>; copied: Map<string, string> };
+export type MarkdownAssetBatch = {
+  moved: ReadonlyMap<string, string>;
+  copied: Map<string, string>;
+  /** Called with each image file as soon as the copy created it, so a caller can record what is its own. */
+  onCreated?: (target: string) => Promise<void>;
+};
 
 /** Copies have independent image files and destinations never overwrite existing images. */
 export async function copyMarkdownImageAssets(from: string, to: string, markdown: string, includeOwnedUploads = false, batch?: MarkdownAssetBatch) {
@@ -516,7 +564,7 @@ export async function copyMarkdownImageAssets(from: string, to: string, markdown
       const sameFigure = ownFigure && await readFile(path.join(directory, asset.fileName)).then((body) => body.equals(asset.body), () => false);
       const available = sameFigure ? { path: path.join(directory, asset.fileName), name: asset.fileName }
         : await writeAvailableAsset(directory, normalizeAssetFileName(asset.fileName), asset.body);
-      if (!sameFigure) created.push(available.path);
+      if (!sameFigure) { created.push(available.path); await batch?.onCreated?.(available.path); }
       imageSources[source] = `${ownFigure ? pythonFigureSourcePrefix(to) : markdownAssetsPathPrefix(destination.pathParts)}/${available.name}`;
       copied.set(key, imageSources[source]);
       if (!ownFigure) batch?.copied.set(key, imageSources[source]);

@@ -15,9 +15,10 @@ import { rewriteCitationKeys } from "@/lib/references/citation-syntax";
 import { isLatexCitingPath, latexCitedKeys } from "@/lib/references/latex-cite-syntax";
 import { copyReferenceEntries } from "@/lib/references/copy-entries";
 import { notifyReferenceFilesAdded, referenceJobsFilePath } from "@/lib/references/jobs";
-import { copyReferencesOnMove, type ReferenceMoveResult } from "@/lib/references/moves";
+import { applyCitationRewrites, copyReferencesOnMove, type PlannedCitationRewrite, type ReferenceMoveResult } from "@/lib/references/moves";
 import { migrateImageAnnotations, migratePdfAnnotations } from "@/lib/storage/annotations";
 import { ARCHIVE_DIR, IGNORED_DOWNLOAD_ENTRIES, INK_DIR, MARKDOWN_ASSETS_DIR } from "@/lib/storage/constants";
+import { DestinationTakenError, movePathExclusive } from "../../../electron/collab/notebooks/fs-ops";
 import { StorageError } from "@/lib/storage/errors";
 import { getFileType } from "@/lib/storage/file-types";
 import { writeJsonAtomically } from "@/lib/storage/fs-utils";
@@ -25,7 +26,7 @@ import { cleanupMarkdownImageAssets, copyMarkdownImageAssets, markdownImageTarge
 import { moveReviewPaths } from "@/lib/storage/markdown-reviews";
 import { destinationRecords } from "@/lib/storage/destination-records";
 import { checkNothingLeftAt } from "@/lib/storage/integrity";
-import { migrationJournalDirectory, migrationJournalsChanged } from "@/lib/storage/migration-fence";
+import { claimNotebooksForMigration, migrationJournalDirectory, migrationJournalsChanged } from "@/lib/storage/migration-fence";
 import { createNotebook, deleteNotebook } from "@/lib/storage/notebooks";
 import {
   assertSafeSegment,
@@ -37,6 +38,7 @@ import {
   markdownAssetsDirectoryPathFromParts,
   notebookPath,
   splitFilePath,
+  withReadOnlyStorage,
 } from "@/lib/storage/paths";
 import { inspectReferenceLibrary, moveReferenceAttachmentsBatch, readReferenceLibrary } from "@/lib/storage/references";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
@@ -45,7 +47,9 @@ import { fileExistence, libraryNotebookNames, linkCandidates, readNotebookLinkIn
 import { extractNotebookLinkDestinations } from "@/lib/storage/notebook-links";
 import { isVisibleTreeEntry, listVisibleNotebookFiles } from "@/lib/storage/tree";
 import { renameFileMetadataPathPrefix, renameFileMetadataPaths, renameNotebookPanelExpandedPathPrefix } from "@/lib/storage/workspace-metadata";
-import type { LiberaNotebookMetadata } from "@/lib/types";
+import type { LiberaLinkRewrites, LiberaNotebookMetadata } from "@/lib/types";
+import { applyMovedLinks, followLinkRewrites, planMovedLinks, type AppliedLinkRewrite, type PathMove, type PlannedLinkRewrite } from "@/lib/storage/move-links";
+import { rewriteMovedPaths } from "@/lib/move-rewrites";
 
 // Notebook migration: move a selection of files and folders from one local
 // notebook to another (or to a new one), with everything Libera keeps for
@@ -60,7 +64,10 @@ import type { LiberaNotebookMetadata } from "@/lib/types";
 //   staging   Nothing in the source changes. Images notes embed are copied
 //             into the destination, and a note whose image paths change is
 //             written in full to a hidden staged file beside its destination.
-//             Then the journal is written once, with every rewrite map.
+//             The journal is saved before each item's first write (proof of
+//             what staging owns), then once more with every rewrite map. A
+//             PDF's or image's old annotation layout is upgraded in the
+//             source here, in place: the same data, which cancelling keeps.
 //   moving    Each file is published without ever replacing anything: a hard
 //             link (same inode, so its dates are kept) from the source, or
 //             from its staged copy; only then is the source removed. Its
@@ -70,6 +77,7 @@ import type { LiberaNotebookMetadata } from "@/lib/types";
 //             against the identity recorded in the plan.
 //   finalizing  One pass each, the journal recording each step as it ends:
 //             folders, stars/tags/reviews, images, reference attachments,
+//             paths in notes (move-links.ts, with the committed mapping),
 //             cited references, agent review and undo history, reference
 //             entries, the search index, and a check for leftovers.
 // The finished journal keeps the result until the client acknowledges it,
@@ -168,6 +176,13 @@ type JournalItem = MigrationItem & {
    */
   stagingBegan?: boolean;
   /**
+   * Image files staging created, saved as each one is made. Discarding staging
+   * removes exactly these (and the folders they leave empty): whatever else is
+   * in the note's `_assets` folders arrived from elsewhere. A crash between
+   * creating a file and saving it leaves that one copy behind, never a user's file removed.
+   */
+  createdImages?: string[];
+  /**
    * A copy made across drives: a sha256 of the file (a digest of the paths
    * and sizes, for a folder), saved before the copy is published. Recovery
    * accepts a destination only when it still has this content.
@@ -177,7 +192,7 @@ type JournalItem = MigrationItem & {
   images?: { created: string[]; imageSources: Record<string, string>; before: string; after: string };
 };
 
-type FinalizeStep = "folders" | "records" | "assets" | "attachments" | "tether" | "references" | "history" | "entries" | "notify";
+type FinalizeStep = "folders" | "records" | "assets" | "attachments" | "tether" | "links" | "references" | "history" | "entries" | "notify";
 
 type Journal = {
   version: 2;
@@ -207,6 +222,27 @@ type Journal = {
   entriesCopied?: boolean;
   finishedFolders?: { from: string; to: string }[];
   references?: ReferenceMoveResult | null;
+  /**
+   * The citation rewrites of moved notes (key map and text hashes before and
+   * after), saved before the first rewritten text is published, and whether
+   * they were all written. A resume finishes them with these maps, and
+   * accepts a note at its rewritten text as this migration's own.
+   */
+  citationRewrites?: PlannedCitationRewrite[];
+  citationRewritesApplied?: boolean;
+  /**
+   * The paths rewritten in notes and LaTeX sources so they follow what moved
+   * (storage/move-links.ts), planned with the committed mapping and saved
+   * before the first file is rewritten: each file's rewrite and its text
+   * hashes before and after. A resume applies these same rewrites; a file at
+   * its rewritten text is this migration's own (and is not rewritten again).
+   */
+  linkRewrites?: PlannedLinkRewrite[];
+  linkSkipped?: LiberaLinkRewrites["skipped"];
+  linkUnchecked?: string[];
+  /** The rewrites written (by path), and whether what keeps their text followed (reviews, history, indexes). */
+  linksApplied?: string[];
+  linkRecordsFollowed?: boolean;
   referenceEntries?: MigrationResult["referenceEntries"];
   /** Records that could not be updated. The files moved; these need attention. */
   bookkeeping: string[];
@@ -253,6 +289,8 @@ export type MigrationResult = {
   check: "clean" | "incomplete" | "unverified";
   /** A workspace group chosen for the new notebook, for the app to record. */
   workspaceGroup?: { notebook: string; groupId: string | null };
+  /** Paths in notes rewritten to follow the files that moved (moved notes by their new path), and those that could not be. */
+  links?: LiberaLinkRewrites;
   error?: string;
 };
 
@@ -583,8 +621,9 @@ async function realRoot(notebook: string) {
   return realpath(notebookPath(notebook)).catch(() => notebookPath(notebook));
 }
 
-async function buildPlan(request: MigrationRequest) {
-  await ensureAdminRoot();
+/** `readOnly`: the review's plan, which writes nothing (not even the admin folder). Run's plan may. */
+async function buildPlan(request: MigrationRequest, { readOnly = false }: { readOnly?: boolean } = {}) {
+  if (!readOnly) await ensureAdminRoot();
   if (!request || typeof request !== "object") throw new StorageError("Invalid migration request.", 400);
   const blockers: string[] = [];
   const source = assertSafeSegment(typeof request.source === "string" ? request.source : "", "Source notebook");
@@ -640,10 +679,47 @@ async function buildPlan(request: MigrationRequest) {
   // (case-insensitively).
   const takenFiles = new Set<string>();
   const takenFolders = new Set<string>();
+  /** The spellings planned for each folder name (lowercase), to tell when two differ only in case. */
+  const plannedSpellings = new Map<string, string>();
+  // One policy for what is already in the destination: the directory's listing,
+  // compared case-insensitively, as the namespace is documented. An exact
+  // lstat would miss a differently cased entry on a case-sensitive volume.
+  const listings = new Map<string, Map<string, string[]>>();
+  const listing = async (directory: string) => {
+    let names = listings.get(directory);
+    if (!names) {
+      names = new Map();
+      for (const name of create ? [] : await readdir(directory).catch(() => [] as string[])) names.set(name.toLowerCase(), [...(names.get(name.toLowerCase()) ?? []), name]);
+      listings.set(directory, names);
+    }
+    return names;
+  };
+  /** The entry at `parts` in the destination notebook under any spelling, with the spelling found; null when there is none. */
+  const entryAt = async (parts: string[]): Promise<{ stats: Stats; spelled: string[] } | null> => {
+    rawItemPath(destinationName, parts);
+    let current = notebookPath(destinationName);
+    const spelled: string[] = [];
+    for (const part of parts) {
+      const names = (await listing(current)).get(part.toLowerCase());
+      if (!names) return null;
+      const name = names.includes(part) ? part : names[0];
+      spelled.push(name);
+      current = path.join(current, name);
+    }
+    const stats = await lstatOrNull(current);
+    return stats ? { stats, spelled } : null;
+  };
   const existence = new Map<string, Stats | null>();
   const existing = async (parts: string[]) => {
     const key = parts.join("/");
-    if (!existence.has(key)) existence.set(key, create ? null : await lstatOrNull(rawItemPath(destinationName, parts)));
+    if (!existence.has(key)) {
+      const found = create ? null : await entryAt(parts);
+      // Another spelling is a different entry on a case-sensitive volume, which the documented namespace does not allow; on a case-insensitive one the exact name reaches it too.
+      if (found && found.spelled.join("/") !== key && !(await lstatOrNull(rawItemPath(destinationName, parts)))) {
+        blockers.push(`${[destinationName, ...parts].join("/")} differs only in case from the existing ${[destinationName, ...found.spelled].join("/")}. Rename one of them first.`);
+      }
+      existence.set(key, found?.stats ?? null);
+    }
     return existence.get(key)!;
   };
   const createdFolders = new Set<string>();
@@ -651,9 +727,14 @@ async function buildPlan(request: MigrationRequest) {
     for (let index = 1; index <= parts.length; index += 1) {
       const prefix = parts.slice(0, index);
       const libraryPath = [destinationName, ...prefix].join("/");
-      if (takenFiles.has(libraryPath.toLowerCase())) blockers.push(`${libraryPath} would be both a file and a folder.`);
-      if (takenFolders.has(libraryPath.toLowerCase())) continue;
-      takenFolders.add(libraryPath.toLowerCase());
+      const key = libraryPath.toLowerCase();
+      if (takenFiles.has(key)) blockers.push(`${libraryPath} would be both a file and a folder.`);
+      const planned = plannedSpellings.get(key);
+      if (planned === libraryPath) continue;
+      // Each exact spelling is validated, even when another spelling of the name already was.
+      if (planned) blockers.push(`${libraryPath} and ${planned} differ only in case, so they can't both be created.`);
+      else plannedSpellings.set(key, libraryPath);
+      takenFolders.add(key);
       const stats = await existing(prefix);
       if (!stats) createdFolders.add(libraryPath);
       else if (stats.isSymbolicLink()) blockers.push(`${libraryPath} is a link to another folder, so the migration can't go through it.`);
@@ -675,6 +756,8 @@ async function buildPlan(request: MigrationRequest) {
   // attachment...) can wait at a path with no file: the arriving file would
   // take them over. They are read once for the whole plan.
   const records = candidates.some((candidate) => candidate.kind === "file") ? await destinationRecords() : null;
+  // An unreadable review index makes every name look taken: report it, and don't search for a free one.
+  if (records?.blocker) blockers.push(records.blocker);
   /** Items renamed only because records of an earlier file are at their name, by target path. */
   const keptFree = new Set<string>();
   const ordered = [...candidates].sort((a, b) => a.fromParts.join("/").localeCompare(b.fromParts.join("/")));
@@ -689,15 +772,17 @@ async function buildPlan(request: MigrationRequest) {
       const key = target.toLowerCase();
       let clash = takenFiles.has(key) || takenFolders.has(key);
       let byRecords = false;
-      if (!clash && !create) clash = !!(await lstatOrNull(rawAbsolute(target)));
-      if (!clash && records && candidate.kind === "file") {
+      if (!clash && !create) clash = !!(await entryAt([...parent, next]));
+      if (!clash && records && !records.blocker && candidate.kind === "file") {
         byRecords = (await records.at(destinationName, [...parent, next], candidate.fileType)).length > 0;
         clash = byRecords;
       }
       if (!clash && !create) {
         if (candidate.kind === "file") clash = (await existingSidecars(destinationName, [...parent, next], candidate.fileType)).length > 0;
         if (!clash && candidate.fileType === "markdown") {
-          for (const directory of ownedAssetDirectories(target)) if (await lstatOrNull(directory)) clash = true;
+          for (const directory of ownedAssetDirectories(target)) {
+            if (await entryAt(path.relative(notebookPath(destinationName), directory).split(path.sep))) clash = true;
+          }
         }
       }
       if (!clash) { takenFiles.add(key); break; }
@@ -752,9 +837,9 @@ async function buildPlan(request: MigrationRequest) {
   };
 }
 
-/** What a migration would do. */
+/** What a migration would do. Reads only: finding a linked folder does not upgrade its state (paths.ts withReadOnlyStorage). */
 export async function planMigration(request: MigrationRequest): Promise<MigrationPlan> {
-  return (await buildPlan(request)).plan;
+  return withReadOnlyStorage(async () => (await buildPlan(request, { readOnly: true })).plan);
 }
 
 // ---- Warnings ----------------------------------------------------------------
@@ -777,7 +862,7 @@ async function planWarnings(plan: PlanCore, keptFree: ReadonlySet<string> = new 
     warnings.push({ kind: "cross-device", message: "The notebooks are on different drives, so files are copied and then removed from the source. Their creation dates are not kept.", paths: [] });
   }
 
-  // Markdown links are not rewritten when files move (docs/features/related-notebooks.md).
+  // Links and chart data that a move changes are rewritten in the links finalize step (docs/features/move-link-refactor.md); the review lists the notes concerned.
   try {
     const disk = fileExistence();
     const check = disk.check;
@@ -845,9 +930,9 @@ async function planWarnings(plan: PlanCore, keptFree: ReadonlySet<string> = new 
         if (arrived !== expected || !(allArriving.has(arrived) || (!allMoves.has(arrived) && before(arrived)))) outbound.add(note.from);
       }
     }
-    if (showing.size) warnings.push({ kind: "inbound-images", message: `${showing.size} ${showing.size === 1 ? "note that stays shows" : "notes that stay show"} images you are moving. Those images will no longer show there.`, paths: [...showing].sort() });
-    if (inbound.size) warnings.push({ kind: "inbound-links", message: `${inbound.size} ${inbound.size === 1 ? "note links" : "notes link"} to files you are moving. Those links will stop working.`, paths: [...inbound].sort() });
-    if (outbound.size) warnings.push({ kind: "outbound-links", message: `${outbound.size} moving ${outbound.size === 1 ? "note has links" : "notes have links"} that will no longer find their file from the new place.`, paths: [...outbound].sort() });
+    if (showing.size) warnings.push({ kind: "inbound-images", message: `${showing.size} ${showing.size === 1 ? "note that stays shows" : "notes that stay show"} images you are moving. Their image addresses are updated to follow them.`, paths: [...showing].sort() });
+    if (inbound.size) warnings.push({ kind: "inbound-links", message: `${inbound.size} ${inbound.size === 1 ? "note links" : "notes link"} to files you are moving. Those links are updated to follow them.`, paths: [...inbound].sort() });
+    if (outbound.size) warnings.push({ kind: "outbound-links", message: `${outbound.size} moving ${outbound.size === 1 ? "note has links" : "notes have links"} that would no longer find their file from the new place. They are updated to keep finding it.`, paths: [...outbound].sort() });
   } catch (error) {
     console.error("[migration] Could not check links:", error);
   }
@@ -960,7 +1045,11 @@ async function stageItem(journal: Journal, index: number, item: JournalItem, bat
 
   const source = absolute(item.from);
   const previous = await readFile(source, "utf8");
-  const images = await copyMarkdownImageAssets(item.from, item.to, previous, true, batch);
+  const recording: MarkdownAssetBatch = {
+    ...batch,
+    onCreated: async (target) => { (item.createdImages ??= []).push(target); await saveJournal(journal); },
+  };
+  const images = await copyMarkdownImageAssets(item.from, item.to, previous, true, recording);
   try {
     if (await readFile(source, "utf8") !== previous) throw new StorageError(`${item.from} changed while it was being prepared. Try again.`, 409);
     item.images = { created: images.created, imageSources: images.imageSources, before: hashText(previous), after: hashText(images.content) };
@@ -980,29 +1069,28 @@ async function stageItem(journal: Journal, index: number, item: JournalItem, bat
 }
 
 /**
- * Undo one item's staging: its staged note, its copied images, and the
- * `_assets` folders it owns. An item staging never began is left entirely
+ * Undo one item's staging: its staged note, the images it copied, and the
+ * `_assets` folders it made once they are empty. An item staging never began is left entirely
  * alone: whatever is at its planned paths is not this migration's.
  */
 async function discardItem(journal: Journal, index: number, item: JournalItem) {
   if (!item.stagingBegan && !item.images) { delete item.method; return; }
   await rm(stagedPath(journal, index, item), { force: true, recursive: true }).catch(() => undefined);
   await rm(`${stagedPath(journal, index, item)}.tmp`, { force: true }).catch(() => undefined);
-  for (const created of item.images?.created ?? []) await rm(created, { force: true }).catch(() => undefined);
+  for (const created of [...(item.createdImages ?? []), ...(item.images?.created ?? [])]) await rm(created, { force: true }).catch(() => undefined);
   const assets = path.join(notebookPath(item.to.split("/")[0]), MARKDOWN_ASSETS_DIR);
   for (const directory of item.ownedDirectories ?? []) {
-    // The folder did not exist when staging began, so what is in it came from
-    // this migration. With the created images recorded, only those (removed
-    // above) and the folders they leave empty go; without that record (a
-    // crash mid-staging) the journal's own proof is all there is.
-    if (item.images) await removeEmptyDirectories(directory);
-    else await rm(directory, { force: true, recursive: true }).catch(() => undefined);
+    // The folder did not exist when planned, but a sync client or the user can
+    // have put files there since: only the images recorded above are this
+    // migration's. What they leave empty goes, nothing else.
+    await removeEmptyDirectories(directory);
     // Parents left empty, up to and including `_assets`.
     for (let parent = path.dirname(directory); parent.startsWith(assets); parent = path.dirname(parent)) {
       if (!(await rmdir(parent).then(() => true, () => false))) break;
     }
   }
   delete item.images;
+  delete item.createdImages;
   delete item.method;
 }
 
@@ -1023,18 +1111,32 @@ type ItemState = "pending" | "published" | "finished";
 
 const NO_HARD_LINKS = new Set(["ENOTSUP", "EOPNOTSUPP", "EPERM", "ENOSYS", "EXDEV", "EMLINK"]);
 
-/** Publish `from` at `to` without ever replacing what is there. Returns false when it had to rename instead (no hard links). */
+const appeared = (to: string) => new StorageError(`${to} appeared while migrating. Nothing was replaced; review the migration again.`, 409);
+
+/**
+ * Move `from` to `to` (a file or a folder) without ever replacing what is
+ * there, also when something arrives while it runs: the name is claimed
+ * exclusively first (fs-ops), never checked and then renamed over.
+ */
+async function moveInto(from: string, to: string) {
+  try { await movePathExclusive(from, to); }
+  catch (error) {
+    if (error instanceof DestinationTakenError) throw appeared(to);
+    throw error;
+  }
+}
+
+/** Publish `from` at `to` without ever replacing what is there. Returns false when it had to move instead (no hard links). */
 async function publish(from: string, to: string) {
   try {
     await link(from, to);
     return true;
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code ?? "";
-    if (code === "EEXIST") throw new StorageError(`${to} appeared while migrating. Nothing was replaced; review the migration again.`, 409);
+    if (code === "EEXIST") throw appeared(to);
     if (!NO_HARD_LINKS.has(code)) throw error;
   }
-  if (await lstatOrNull(to)) throw new StorageError(`${to} appeared while migrating. Nothing was replaced; review the migration again.`, 409);
-  await rename(from, to);
+  await moveInto(from, to);
   return false;
 }
 
@@ -1045,7 +1147,7 @@ async function fileHash(target: string) {
   return hash.digest("hex");
 }
 
-/** A digest of a folder's relative paths, kinds and sizes (links by target), without following links. */
+/** A digest of a folder's relative paths, kinds and file contents (links by target), without following links. */
 async function directoryDigest(directory: string) {
   const lines: string[] = [];
   const walk = async (current: string, relative: string): Promise<void> => {
@@ -1055,7 +1157,7 @@ async function directoryDigest(directory: string) {
       const name = relative ? `${relative}/${entry.name}` : entry.name;
       if (entry.isDirectory()) { lines.push(`d ${name}`); await walk(target, name); }
       else if (entry.isSymbolicLink()) lines.push(`l ${name} ${await readlink(target).catch(() => "")}`);
-      else lines.push(`f ${name} ${(await lstat(target)).size}`);
+      else lines.push(`f ${name} ${(await lstat(target)).size} ${await fileHash(target)}`);
     }
   };
   await walk(directory, "");
@@ -1064,6 +1166,12 @@ async function directoryDigest(directory: string) {
 
 /** The destination holds this migration's file: checked by identity or recorded content, never assumed from a name or a size. */
 async function isOurs(journal: Journal, index: number, item: JournalItem, destination: Stats, staged: Stats | null) {
+  // A note whose links or citations were rewritten after it was published is a new file (an atomic write), at a text the journal recorded.
+  const rewritten = [journal.linkRewrites?.find((planned) => planned.path === item.to)?.after, journal.citationRewrites?.find((planned) => planned.path === item.to)?.after].filter(Boolean);
+  if (rewritten.length && destination.isFile()) {
+    const text = await readFile(located(item, item.to), "utf8").catch(() => null);
+    if (text !== null && rewritten.includes(hashText(text))) return true;
+  }
   if (item.method === "link" || item.method === "rename") {
     if (destination.dev === item.identity.dev && destination.ino === item.identity.ino) return true;
     // A folder copied from another drive (`rename` of a folder across drives is a copy): the copy's recorded digest must match.
@@ -1119,7 +1227,53 @@ async function retireSource(journal: Journal, index: number, item: JournalItem) 
       throw new StorageError(`${item.from} was edited after it was copied to ${item.to}. Both copies were kept; compare them and resume.`, 409);
     }
   }
-  await rm(source, { force: true, recursive: item.identity.directory });
+  if (!item.identity.directory) { await rm(source, { force: true }); return; }
+  const destination = located(item, item.to);
+  const destinationStats = await lstatOrNull(destination);
+  // Never the copy itself: the folder is retired only entry by entry, against what the destination holds.
+  if (!destinationStats || (destinationStats.dev === stats.dev && destinationStats.ino === stats.ino)) return;
+  const kept = await removeCopiedEntries(source, destination, "");
+  if (kept.length) {
+    const shown = kept.slice(0, 5).join(", ");
+    throw new StorageError(`${item.from} holds ${kept.length} ${kept.length === 1 ? "entry" : "entries"} that changed or arrived after the folder was copied (${shown}${kept.length > 5 ? ", ..." : ""}). They were kept in the source; move or remove them and resume.`, 409);
+  }
+}
+
+/** An entry of the source is, byte for byte, what the copy holds: only then is it safe to delete. */
+async function sameCopy(from: string, to: string, entry: Dirent) {
+  try {
+    if (entry.isSymbolicLink()) return (await lstat(to)).isSymbolicLink() && (await readlink(from)) === (await readlink(to));
+    const before = await lstat(from);
+    const copy = await lstat(to);
+    if (!before.isFile() || !copy.isFile() || before.size !== copy.size) return false;
+    if (await fileHash(from) !== await fileHash(to)) return false;
+    // Edited while it was being compared: newer than the copy.
+    const after = await lstat(from);
+    return after.ino === before.ino && after.size === before.size && after.mtimeMs === before.mtimeMs;
+  } catch { return false; }
+}
+
+/**
+ * Remove the entries of a folder copied across drives that the copy holds
+ * unchanged, and the folders that leave empty. A changed entry, one that
+ * arrived after the copy, or one that can't be compared stays. Returns the
+ * relative paths kept.
+ */
+async function removeCopiedEntries(source: string, copy: string, relative: string): Promise<string[]> {
+  const kept: string[] = [];
+  let entries: Dirent[];
+  try { entries = await readdir(source, { withFileTypes: true }); } catch { return [relative || "."]; }
+  for (const entry of entries) {
+    const name = relative ? `${relative}/${entry.name}` : entry.name;
+    const from = path.join(source, entry.name);
+    const to = path.join(copy, entry.name);
+    if (entry.isDirectory()) kept.push(...await removeCopiedEntries(from, to, name));
+    else if (await sameCopy(from, to, entry)) { if (!(await rm(from, { force: true }).then(() => true, () => false))) kept.push(name); }
+    else kept.push(name);
+  }
+  // Not recursive: an entry that arrived since the listing keeps the folder.
+  if (!kept.length && !(await rmdir(source).then(() => true, () => false))) kept.push(relative || ".");
+  return kept;
 }
 
 /** The file (or hidden entry) itself. */
@@ -1136,9 +1290,9 @@ async function commit(journal: Journal, index: number, item: JournalItem) {
       if (!(await publish(source, destination))) return;
       break;
     case "rename":
-      if (await lstatOrNull(destination)) throw new StorageError(`${item.to} appeared while migrating. Nothing was replaced; review the migration again.`, 409);
+      if (await lstatOrNull(destination)) throw appeared(item.to);
       if ((await stat(path.dirname(destination))).dev === item.identity.dev) {
-        await rename(source, destination);
+        await moveInto(source, destination);
         return;
       }
       // A hidden folder on another drive: copied to its staged name first, then renamed into place.
@@ -1148,7 +1302,7 @@ async function commit(journal: Journal, index: number, item: JournalItem) {
       item.contentHash = await directoryDigest(staged);
       if (await directoryDigest(source) !== item.contentHash) throw new StorageError(`${item.from} changed while it was being copied. Nothing was removed; review the migration again.`, 409);
       await saveJournal(journal);
-      await rename(staged, destination);
+      await moveInto(staged, destination);
       break;
     case "staged":
       if (!(await lstatOrNull(staged))) throw new StorageError(`The prepared copy of ${item.from} is missing. Stop this migration and review it again.`, 409);
@@ -1189,13 +1343,27 @@ async function moveItem(journal: Journal, index: number, item: JournalItem, stat
     await retireSource(journal, index, item);
     if (item.kind === "file") await withMovedReview(item.from, item.to, imageTransform(item), async () => undefined);
   }
-  if (item.kind === "file") {
-    const from = splitFilePath(item.from);
-    const to = splitFilePath(item.to);
-    const fileType = item.fileType ?? "";
-    await moveFileSidecars(from.notebook, from.pathParts, to.notebook, to.pathParts, fileType, fileType);
-  }
+  if (item.kind === "file") await followSidecars(item);
   return "finished";
+}
+
+/** A published file's sidecars follow it. Safe to repeat: nothing left at the old path is nothing to do. */
+async function followSidecars(item: JournalItem) {
+  const from = splitFilePath(item.from);
+  const to = splitFilePath(item.to);
+  const fileType = item.fileType ?? "";
+  await moveFileSidecars(from.notebook, from.pathParts, to.notebook, to.pathParts, fileType, fileType);
+}
+
+/**
+ * Whether a published item whose source is gone also has its review and
+ * sidecars at the new path, by doing what is left of it (both are safe to
+ * repeat). The disk saying the file is published does not say that.
+ */
+async function completeFollowers(item: JournalItem) {
+  if (item.kind !== "file") return;
+  await withMovedReview(item.from, item.to, imageTransform(item), async () => undefined);
+  await followSidecars(item);
 }
 
 // ---------------------------------------------------------------------------
@@ -1239,6 +1407,8 @@ async function step(journal: Journal, name: FinalizeStep, run: () => Promise<voi
     injectFault?.(`finalizing:${name}`);
     await run();
   } catch (error) {
+    // A simulated crash (tests) stops the run where it is, as a real one would: it is not the step's failure.
+    if ((error as { crash?: boolean }).crash) throw error;
     console.error(`[migration] Finalize step ${name} failed:`, error);
     const count = (journal.stepFailures?.[name]?.count ?? 0) + 1;
     const text = `${name}: ${errorText(error)}`;
@@ -1310,7 +1480,8 @@ async function finalize(journal: Journal, states: ItemState[]) {
   });
 
   await run("attachments", async () => {
-    const { changed, failures } = await moveReferenceAttachmentsBatch(moves);
+    const { changed, failures, offline } = await moveReferenceAttachmentsBatch(moves);
+    if (offline.length) note(journal, `${offline.join(", ")} ${offline.length === 1 ? "is" : "are"} not connected, so reference attachments or a tethered .bib file there may still point at the old paths. Check Notebook finds them once ${offline.length === 1 ? "it is" : "they are"} connected.`);
     for (const failure of failures) note(journal,`Reference attachments in ${failure.notebook || "a library"} still point at the old paths: ${errorText(failure.error)}`);
     // Open References panels of the libraries that changed reload (one event per library, not per file).
     for (const notebook of changed) {
@@ -1326,14 +1497,68 @@ async function finalize(journal: Journal, states: ItemState[]) {
     }
   });
 
+  await run("links", async () => {
+    // Paths in notes follow what moved, with the committed mapping: only items now at their new path (a partial migration rewrites for what moved).
+    // After images (staged with the notes), before citation keys (whose plan reads the text this leaves): the order the app applies too.
+    if (journal.linkRewrites === undefined) {
+      const moved: PathMove[] = journal.items.flatMap((item, index) => states[index] === "finished" ? [{ from: item.from, to: item.to, ...(item.identity.directory ? { folder: true } : {}) }] : []);
+      // An item at both places (its source edited after it was published) is the person's to sort out: neither copy is rewritten.
+      const unsettled = new Set(journal.items.flatMap((item, index) => states[index] === "published" ? [item.from, item.to] : []));
+      const plan = moved.length ? await planMovedLinks(moved, { ownMigration: true, leave: unsettled }) : { notes: [], skipped: [], unchecked: [] };
+      // Saved before the first file is rewritten: a resume applies these, never a plan made from texts already rewritten.
+      journal.linkRewrites = plan.notes;
+      journal.linkSkipped = plan.skipped;
+      journal.linkUnchecked = plan.unchecked;
+      await saveJournal(journal);
+      injectFault?.("links:planned");
+    }
+    let applied: AppliedLinkRewrite[] | null = null;
+    if (!journal.linksApplied) {
+      const outcome = await applyMovedLinks(journal.linkRewrites ?? []);
+      applied = outcome.applied;
+      journal.linksApplied = applied.map((rewritten) => rewritten.path);
+      if (outcome.failed.length) {
+        journal.linkSkipped = [...journal.linkSkipped ?? [], ...outcome.failed];
+        note(journal, `Links in ${[...new Set(outcome.failed.map((skip) => skip.path))].join(", ")} could not be updated. Check Notebook lists them.`);
+      }
+      await saveJournal(journal);
+    }
+    if (!journal.linkRecordsFollowed) {
+      // What keeps the rewritten texts follows once: after an interruption, from the journal's hashes.
+      const done = new Set(journal.linksApplied);
+      const notes = applied ?? (journal.linkRewrites ?? []).filter((planned) => done.has(planned.path));
+      // A moved note's undo history follows in the history step, with its other rewrites; the others' here.
+      const movedTo = new Set(files.map((item) => item.to));
+      for (const failure of await followLinkRewrites(notes, { history: (filePath) => !movedTo.has(filePath) })) note(journal, `Links: ${failure}`);
+      journal.linkRecordsFollowed = true;
+      await saveJournal(journal);
+    }
+  });
+
   await run("references", async () => {
     // References cited by notes follow them. LaTeX sources are never
     // rewritten by reference features, so they are left out, as they are
     // for single moves (references-moves.test.ts).
     const citing = files.filter((item) => item.fileType === "markdown").map((item) => ({ from: item.from, to: item.to }));
-    // Its key maps are what the history step rewrites by: a repeat would find the notes already rewritten and map nothing, so the output is kept.
+    // Its key maps are what the history step rewrites by: a repeat would find the notes already rewritten and map nothing, so the plan is
+    // saved before the first note is rewritten, and a resume finishes it from there instead of planning again.
     if (journal.references === undefined) {
-      journal.references = citing.length ? await copyReferencesOnMove(journal.source, journal.destination.notebook, citing) : null;
+      journal.references = citing.length ? await copyReferencesOnMove(journal.source, journal.destination.notebook, citing, {
+        onPlan: async (planned, rewrites) => {
+          journal.references = planned;
+          journal.citationRewrites = rewrites;
+          journal.citationRewritesApplied = false;
+          await saveJournal(journal);
+        },
+      }) : null;
+      // A failure after the plan was saved is the step's own, so it gets its retry (which finishes the rewrites).
+      if (journal.citationRewrites && journal.references?.error) throw new Error(journal.references.error);
+      if (journal.citationRewrites) journal.citationRewritesApplied = true;
+      await saveJournal(journal);
+    } else if (journal.citationRewrites && !journal.citationRewritesApplied) {
+      await applyCitationRewrites(journal.citationRewrites);
+      journal.citationRewritesApplied = true;
+      if (journal.references) delete journal.references.error;
       await saveJournal(journal);
     }
     if (journal.references?.error) note(journal, `Cited references: ${journal.references.error}`);
@@ -1342,19 +1567,25 @@ async function finalize(journal: Journal, states: ItemState[]) {
   await run("history", async () => {
     // Pending agent reviews and undo history see the files as the migration left them.
     const keyMaps = new Map((journal.references?.drafts ?? []).map((draft) => [draft.path, new Map(Object.entries(draft.map))]));
+    // Written link rewrites of moved notes: their undo history gets them here, between images and citation keys (the order the file got them).
+    const written = new Set(journal.linksApplied ?? []);
+    const linkMaps = new Map((journal.linkRewrites ?? []).filter((planned) => written.has(planned.path)).map((planned) => [planned.path, planned.rewrite]));
     const baselines = new Map<string, (text: string) => string>();
     const undo = new Map<string, MovedRunFile>();
     for (const item of files) {
       const images = imageTransform(item);
       const keys = keyMaps.get(item.to);
-      const transform = keys ? (text: string) => rewriteCitationKeys(images(text), keys).text : images;
+      const paths = linkMaps.get(item.to);
+      const withPaths = paths ? (text: string) => rewriteMovedPaths(images(text), item.to, paths) : images;
+      const transform = keys ? (text: string) => rewriteCitationKeys(withPaths(text), keys).text : withPaths;
       if (keys) baselines.set(item.to, (text) => rewriteCitationKeys(text, keys).text);
       let hashes: MovedRunFile["hashes"];
-      if (item.images && (keys || item.images.before !== item.images.after)) {
+      if ((item.images && (keys || paths || item.images.before !== item.images.after)) || (!item.images && paths)) {
         const now = await readFile(absolute(item.to), "utf8").catch(() => null);
-        if (now !== null) hashes = { before: item.images.before, after: hashText(now) };
+        const before = item.images?.before ?? journal.linkRewrites?.find((planned) => planned.path === item.to)?.before;
+        if (now !== null && before) hashes = { before, after: hashText(now) };
       }
-      undo.set(item.from, { to: item.to, ...(item.images || keys ? { transform } : {}), ...(hashes ? { hashes } : {}) });
+      undo.set(item.from, { to: item.to, ...(item.images || keys || paths ? { transform } : {}), ...(hashes ? { hashes } : {}) });
     }
     await transformReviewBaselines(baselines);
     await recordMovedRunFiles(undo);
@@ -1429,6 +1660,7 @@ async function resultOf(journal: Journal, states: ItemState[]): Promise<Migratio
   let leftovers: string[] = [];
   const missing: string[] = [];
   let unverified = false;
+  const linked = (to: string) => journal.linkRewrites?.find((planned) => planned.path === to);
   if (journal.state === "done") {
     const places: Parameters<typeof checkNothingLeftAt>[0] = [];
     for (const [index, item] of journal.items.entries()) {
@@ -1451,10 +1683,13 @@ async function resultOf(journal: Journal, states: ItemState[]): Promise<Migratio
         const stats = await lstatOrNull(located(item, item.to));
         if (!stats) missing.push(`${item.to} (not found)`);
         else if (stats.isDirectory() !== item.identity.directory) missing.push(`${item.to} (is not the ${item.identity.directory ? "folder" : "file"} that moved)`);
-        else if (stats.isFile() && item.images) {
-          // A note rewritten while moving: by the text it was rewritten to, as the resume reads it.
+        else if (stats.isFile() && (item.images || linked(item.to))) {
+          // A file rewritten by the migration: at the text its image, link or citation rewrite left, as the resume reads it.
           const text = await readFile(located(item, item.to), "utf8").catch(() => null);
-          if (text === null || hashText(text) !== item.images.after) missing.push(`${item.to} (is not the note that moved)`);
+          const rewrite = journal.citationRewrites?.find((planned) => planned.path === item.to);
+          // A file planned for links only (a LaTeX source) is the file that moved at the text the plan read, or at the one it wrote.
+          const accepted = [item.images?.after, linked(item.to)?.before, linked(item.to)?.after, rewrite?.after].filter(Boolean);
+          if (text === null || !accepted.includes(hashText(text))) missing.push(`${item.to} (is not the note that moved)`);
         } else if (stats.isFile() && stats.size !== item.identity.size) missing.push(`${item.to} (its size is ${stats.size} bytes, not ${item.identity.size})`);
       } catch (error) {
         unverified = true;
@@ -1483,6 +1718,11 @@ async function resultOf(journal: Journal, states: ItemState[]): Promise<Migratio
     check,
     ...(journal.createdNotebook && journal.create && journal.create.workspaceGroupId !== undefined
       ? { workspaceGroup: { notebook: journal.destination.notebook, groupId: journal.create.workspaceGroupId } } : {}),
+    ...(journal.linkRewrites ? { links: {
+      rewritten: journal.linkRewrites.filter((planned) => journal.linksApplied?.includes(planned.path)).map((planned) => ({ path: planned.path, rewrite: planned.rewrite })),
+      skipped: journal.linkSkipped ?? [],
+      unchecked: journal.linkUnchecked ?? [],
+    } } : {}),
     ...(journal.error ? { error: journal.error } : {}),
   };
 }
@@ -1600,8 +1840,10 @@ export async function runMigration(request: MigrationRequest, expectedToken: str
       finalized: [],
       bookkeeping: [],
     };
-    // The intent is recorded before anything is created.
-    await saveJournal(journal);
+    // The intent is recorded before anything is created. Try to fix, Acknowledge and the tree's upkeep
+    // are held off until it is on disk; from there the journal keeps them away (migration-fence.ts).
+    const release = claimNotebooksForMigration([plan.source, plan.destination.notebook]);
+    try { await saveJournal(journal); } finally { release(); }
 
     const batch: MarkdownAssetBatch = { moved: new Map(items.filter((item) => item.kind === "file").map((item) => [item.from, item.to])), copied: new Map() };
     try {
@@ -1681,8 +1923,17 @@ export async function resumeMigration(id: string, mode: "continue" | "stop"): Pr
       const states: ItemState[] = [];
       for (const [index, item] of journal.items.entries()) {
         const state = await reconcile(journal, index, item);
-        // Published and its source gone: finished. A source still there (kept by Stop) is not a clean move.
-        states[index] = state !== "published" ? "pending" : (await lstatOrNull(located(item, item.from))) ? "published" : "finished";
+        // Published and its source gone is not yet finished: its review and sidecars must have followed too, which the disk
+        // can't tell from the file alone, so what is left of that is done now. A source still there (kept by Stop) is not a clean move.
+        if (state !== "published") states[index] = "pending";
+        else if (await lstatOrNull(located(item, item.from))) states[index] = "published";
+        else {
+          try { await completeFollowers(item); states[index] = "finished"; }
+          catch (error) {
+            states[index] = "published";
+            note(journal, `${item.from}: ${errorText(error)}`);
+          }
+        }
       }
       await finalize(journal, states);
       return journal.result!;

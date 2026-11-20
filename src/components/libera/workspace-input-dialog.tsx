@@ -55,6 +55,17 @@ function getDialogContent(dialog: WorkspaceInputDialogState, t: ReturnType<typeo
           destinationName: "",
         },
       };
+    case "move-files":
+      return {
+        title: t("moveFilesTitle"),
+        description: t("moveFilesDescription", { count: dialog.files.length }),
+        submitLabel: t("moveFilesSubmit"),
+        initialValues: {
+          name: "",
+          destinationDirectory: parentPathForFilePath(dialog.files[0].path, dialog.files[0].notebook),
+          destinationName: "",
+        },
+      };
     case "rename-file":
       return {
         title: t("renameFileTitle"),
@@ -120,7 +131,7 @@ export function WorkspaceInputDialog({
       }
     >
       <WorkspaceInputDialogForm
-        key={`${dialog.mode}:${"file" in dialog ? dialog.file.path : "folder" in dialog ? dialog.folder.path : dialog.parentPath}`}
+        key={`${dialog.mode}:${"file" in dialog ? dialog.file.path : "files" in dialog ? dialog.files.map((file) => file.path).join("|") : "folder" in dialog ? dialog.folder.path : dialog.parentPath}`}
         dialog={dialog}
         error={dialog.error}
         initialValues={content.initialValues}
@@ -151,7 +162,7 @@ function WorkspaceInputDialogForm({
 
   return (
     <form className="space-y-4" id="workspace-input-dialog-form" onSubmit={handleSubmit}>
-      {dialog.mode === "copy-file" || dialog.mode === "move-file" ? (
+      {dialog.mode === "copy-file" || dialog.mode === "move-file" || dialog.mode === "move-files" ? (
         <div>
           <label
             className="block text-sm font-medium text-foreground"

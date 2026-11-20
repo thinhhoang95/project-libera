@@ -1,4 +1,5 @@
 import type { ReferenceMoveResult } from "@/lib/references/moves";
+import type { MovedPathRewrite } from "@/lib/move-rewrites";
 
 /**
  * What a file is. "page" is never a file on disk: it marks an app page that
@@ -231,6 +232,8 @@ export type LiberaNotebookNode = {
 
 export type LiberaTree = {
   archiveIncluded?: boolean;
+  /** Some folder could not be read in full (it raced away, was unreadable or lay beyond a linked folder's cap): the rest is shown, and upkeep that needs the whole picture waits. */
+  incomplete?: boolean;
   lastNotebookName?: string;
   root: string;
   notebookPanelExpandedPaths: string[] | null;
@@ -251,18 +254,54 @@ export type LiberaFilePayload = {
 };
 
 /**
+ * A step after the file itself moved (its records following it) that did not
+ * finish: `failed` threw (`message` says what), `held` was left at the old
+ * path on purpose (a review whose destination already has comments).
+ */
+export type LiberaMoveStep = { step: "images" | "reviews" | "attachments" | "metadata" | "references" | "history" | "links"; status: "failed" | "held"; message: string };
+
+/**
+ * Why a path that pointed at a moved file, or that a moved note wrote, was
+ * not rewritten (docs/features/move-link-refactor.md): another file would
+ * answer it (`shadowed`), a reference definition read by a link and an image
+ * that would need two paths, chart data in another notebook, a LaTeX chapter
+ * whose builds would need two paths, a spelling that can't be written back,
+ * a note that could not be read or written, a shared notebook's note, a note
+ * a migration is moving.
+ */
+export type LiberaLinkSkipReason = "shadowed" | "shared-definition" | "chart-notebook" | "latex-builds" | "unwritable" | "unreadable" | "shared-notebook" | "migrating";
+
+/** What a move did to the paths notes write (src/lib/storage/move-links.ts). */
+export type LiberaLinkRewrites = {
+  /** Each file whose text was rewritten, by its path after the move, and the rewrite (src/lib/move-rewrites.ts) to apply to texts the server did not see. */
+  rewritten: { path: string; rewrite: MovedPathRewrite }[];
+  /** Paths left as written although the move changed what they open: the file that writes it, the path as written, why. */
+  skipped: { path: string; written: string; reason: LiberaLinkSkipReason }[];
+  /** Notebooks whose notes could not all be read, so some links there may not have followed. */
+  unchecked: string[];
+};
+
+/**
  * PATCH /api/files after a move or rename. Markdown moved to another notebook
  * also reports the references copied along (src/lib/references/moves.ts).
  */
-/** A link in a moved note: `was` is the file it opened, `now` the file it opens from the new place (null: none). */
-export type LiberaMovedLink = { href: string; was: string; now: string | null };
-
-export type LiberaFileMovePayload =LiberaFilePayload & {
+export type LiberaFileMovePayload = LiberaFilePayload & {
+  /** Set with `unfinished`: the move that did happen, for a caller that retargets what it has open. */
+  moved?: { from: string; to: string };
+  /** What did not finish after the file moved; absent when everything did. Check Notebook, then Try to fix, completes it. */
+  unfinished?: LiberaMoveStep[];
   references?: ReferenceMoveResult;
-  /** Relative links of a moved Markdown note that open another file (or none) from its new place. */
-  changedLinks?: LiberaMovedLink[];
   /** Image URLs rewritten when moving Markdown into another notebook. */
   imageSources?: Record<string, string>;
+  /** Paths in notes rewritten to follow the move, and those that could not be. */
+  links?: LiberaLinkRewrites;
+};
+
+/** PATCH /api/folders after a rename or an archive: the tree, and what the move did to links. */
+export type LiberaFolderMovePayload = LiberaTree & {
+  moved?: { from: string; to: string };
+  unfinished?: LiberaMoveStep[];
+  links?: LiberaLinkRewrites;
 };
 
 export type PdfAnnotationsPayload = {

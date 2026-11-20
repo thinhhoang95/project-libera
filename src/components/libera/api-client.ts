@@ -1,4 +1,4 @@
-import type { ApiError, LiberaTree } from "@/lib/types";
+import type { ApiError, LiberaLinkRewrites, LiberaMoveStep, LiberaTree } from "@/lib/types";
 import { SESSION_EXPIRED_EVENT, SESSION_EXPIRED_HEADER } from "@/lib/auth-session";
 
 export async function apiRequest<T>(url: string, init?: RequestInit): Promise<T> {
@@ -18,11 +18,23 @@ export async function apiRequest<T>(url: string, init?: RequestInit): Promise<T>
   const payload = (await response.json().catch(() => ({}))) as Partial<ApiError>;
 
   if (!response.ok) {
-    // The status lets a caller tell "not found" from other failures.
-    throw Object.assign(new Error(payload.error ?? "Request failed."), { status: response.status });
+    // The status lets a caller tell "not found" from other failures; a move that happened anyway says what it did (committedMove).
+    const committed = payload as unknown as Partial<CommittedMove>;
+    throw Object.assign(new Error(payload.error ?? "Request failed."), {
+      status: response.status,
+      ...(committed.moved && Array.isArray(committed.unfinished) ? { committed: { moved: committed.moved, unfinished: committed.unfinished, ...(committed.links ? { links: committed.links } : {}) } } : {}),
+    });
   }
 
   return payload as T;
+}
+
+/** A move the server made although the request failed after it (MoveCommittedError, storage/files.ts): where the file went and what did not follow. */
+export type CommittedMove = { moved: { from: string; to: string }; unfinished: LiberaMoveStep[]; links?: LiberaLinkRewrites };
+
+/** The committed move an apiRequest error carries, or null when nothing moved. */
+export function committedMove(error: unknown): CommittedMove | null {
+  return (error as { committed?: CommittedMove } | null)?.committed ?? null;
 }
 
 export function encodeFilePath(filePath: string) {

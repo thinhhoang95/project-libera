@@ -33,6 +33,27 @@ function getDialogContent(dialog: WorkspaceConfirmDialogState, t: ReturnType<typ
         confirmLabel: t("deleteFileConfirm"),
         destructive: true,
       };
+    case "delete-files": {
+      // The first few names and a count, so a long selection still fits.
+      const shown = dialog.files.slice(0, MAX_NAMES_SHOWN).map((file) => file.name).join(", ");
+      return {
+        title: t("deleteFilesTitle"),
+        description: t("deleteFilesDescription", { count: dialog.files.length, names: shown, hidden: Math.max(0, dialog.files.length - MAX_NAMES_SHOWN) }),
+        confirmLabel: t("deleteFilesConfirm", { count: dialog.files.length }),
+        destructive: true,
+      };
+    }
+    case "move-files-folder":
+      return {
+        title: t("moveFilesTitle"),
+        description: t("moveFilesDescription", {
+          count: dialog.unsavedNames.length,
+          names: dialog.unsavedNames.slice(0, MAX_NAMES_SHOWN).join(", "),
+          hidden: Math.max(0, dialog.unsavedNames.length - MAX_NAMES_SHOWN),
+        }),
+        confirmLabel: t("moveFileConfirm"),
+        destructive: false,
+      };
     case "delete-folder":
       return {
         title: t("deleteFolderTitle"),
@@ -54,6 +75,13 @@ function getDialogContent(dialog: WorkspaceConfirmDialogState, t: ReturnType<typ
         confirmLabel: t("removeFolderConfirm"),
         destructive: true,
       };
+    case "replace-disk-version":
+      return {
+        title: t("replaceDiskTitle"),
+        description: t("replaceDiskDescription", { name: dialog.fileName }),
+        confirmLabel: t("replaceDiskConfirm"),
+        destructive: true,
+      };
     case "move-file-node":
     case "move-file-folder":
       return {
@@ -64,6 +92,14 @@ function getDialogContent(dialog: WorkspaceConfirmDialogState, t: ReturnType<typ
       };
   }
 }
+
+/** Open files with unsaved edits that a delete would also discard; named so it is not a surprise. */
+function unsavedNamesOf(dialog: WorkspaceConfirmDialogState): string[] {
+  return dialog.mode === "delete-file" || dialog.mode === "delete-files" || dialog.mode === "delete-folder" || dialog.mode === "delete-notebook"
+    ? dialog.unsavedNames : [];
+}
+
+const MAX_NAMES_SHOWN = 5;
 
 export function WorkspaceConfirmDialog({
   dialog,
@@ -77,6 +113,9 @@ export function WorkspaceConfirmDialog({
   }
 
   const content = getDialogContent(dialog, t);
+  const unsavedNames = unsavedNamesOf(dialog);
+  const shownNames = unsavedNames.slice(0, MAX_NAMES_SHOWN).join(", ");
+  const hiddenCount = unsavedNames.length - MAX_NAMES_SHOWN;
 
   return (
     <ModalDialog
@@ -112,6 +151,11 @@ export function WorkspaceConfirmDialog({
         <AlertTriangle aria-hidden className="mt-0.5 h-4 w-4 shrink-0" />
         <p>{t("cannotBeUndone")}</p>
       </div>
+      {unsavedNames.length ? (
+        <p className="mt-3 text-sm text-destructive" role="alert">
+          {t("deleteUnsavedWarning", { names: hiddenCount > 0 ? `${shownNames} (+${hiddenCount})` : shownNames })}
+        </p>
+      ) : null}
     </ModalDialog>
   );
 }

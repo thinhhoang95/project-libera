@@ -5,11 +5,12 @@ import { useEffect, useRef, useState } from "react";
 import { AlertCircle, AlertTriangle, ArrowRight, CheckCircle2, Info, Loader2, MinusCircle } from "lucide-react";
 import type { IntegrityCheckId, IntegrityCheckResult, IntegrityFinding, IntegrityProgress, IntegrityReport, IntegritySeverity, IntegrityStreamLine, SayParams } from "@/lib/storage/integrity";
 import type { RepairPlan, RepairResult, RepairUnmatched } from "@/lib/storage/repair";
-import type { CleanupPlan, CleanupResult } from "@/lib/storage/cleanup";
+import type { CleanupItem, CleanupPlan, CleanupResult } from "@/lib/storage/cleanup";
 import { REVIEWS_MOVED_EVENT } from "@/lib/markdown-review";
 import { SESSION_EXPIRED_EVENT, SESSION_EXPIRED_HEADER } from "@/lib/auth-session";
 import type { LiberaFileNode, LiberaTree, LiberaTreeNode } from "@/lib/types";
 import { apiRequest } from "./api-client";
+import { announceRepairMoves } from "./repair-channel";
 import { ModalDialog } from "./modal-dialog";
 
 // Results of the notebook check (storage/integrity.ts). The check only reads;
@@ -24,6 +25,8 @@ const primary = "rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-prim
 /** Sent after Try to fix moved records: `detail.moves` are the confirmed pairs, for tabs, saved workspaces and unsaved editor state to follow (use-libera-workspace.ts). */
 export const REPAIR_MOVED_EVENT = "libera:repair-moved";
 const PREVIEW = 20;
+/** Records of one cleanup item shown before "Show all". */
+const ENTRY_PREVIEW = 5;
 const ORDER: IntegritySeverity[] = ["error", "warning", "info"];
 /** Checks whose findings can come from a file moved outside the app. */
 const MOVABLE = new Set<IntegrityCheckId>(["sidecars", "assets", "records", "references"]);
@@ -176,6 +179,7 @@ function IntegrityBody({ notebook, tree, onOpenFile, onClose, onRepaired }: Dial
       setFixed(result); setPlan(null);
       window.dispatchEvent(new CustomEvent(REVIEWS_MOVED_EVENT, { detail: { paths: result.moved.map((move) => move.to) } }));
       window.dispatchEvent(new CustomEvent(REPAIR_MOVED_EVENT, { detail: { moves: result.moved.map(({ from, to }) => ({ from, to })) } }));
+      announceRepairMoves(result.moved);
       await settle();
       again();
     } catch (failure) { setFixError(failure instanceof Error ? failure.message : String(failure)); }
@@ -306,8 +310,29 @@ function CleanedSummary({ result }: { result: CleanupResult }) {
   const t = useTranslations("notebookIntegrityDialog");
   return <div role="status" className="mb-3 rounded-lg border border-border p-2 text-sm [overflow-wrap:anywhere]">
     <p className="font-medium">{result.cleared ? t("removedCount", { count: result.cleared }) : t("nothingRemoved")}</p>
+    {result.outcomes && result.outcomes.held + result.outcomes.unreadable > 0 && <p className="text-xs text-muted-foreground">{t("leftInPlace", { count: result.outcomes.held + result.outcomes.unreadable })}</p>}
     {result.problems.map((problem) => <p key={problem} className="text-xs text-destructive">{problem}</p>)}
   </div>;
+}
+
+/** One item of the cleanup: what it is, what it costs, and every concrete record with the file it was kept for (expandable when there are many). */
+function CleanupItemRow({ item }: { item: CleanupItem }) {
+  const t = useTranslations("notebookIntegrityDialog");
+  const [all, setAll] = useState(false);
+  // A single record that is the item itself says nothing more.
+  const entries = item.entries.filter((entry) => item.entries.length > 1 || entry.record !== item.path || entry.origin);
+  return <li className="px-3 py-2">
+    <p className="truncate text-xs font-medium" title={item.path}>{item.path}</p>
+    <p className="text-xs text-muted-foreground">{item.message}</p>
+    <p className={`text-xs ${item.lost ? "font-medium text-destructive" : ""}`}>{item.consequence}</p>
+    {entries.length > 0 && <ul className="mt-1 space-y-0.5 border-l border-border pl-2">
+      {(all ? entries : entries.slice(0, ENTRY_PREVIEW)).map((entry, index) => <li key={`${entry.record}-${index}`} className="text-xs">
+        <span className="block truncate" title={entry.record}>{entry.record}</span>
+        {entry.origin && <span className="block truncate text-muted-foreground" title={entry.origin}>{t("keptForFile", { path: entry.origin })}</span>}
+      </li>)}
+      {entries.length > ENTRY_PREVIEW && <li><button type="button" className="text-xs underline" onClick={() => setAll((value) => !value)}>{all ? t("showFewer") : t("showAll", { count: entries.length })}</button></li>}
+    </ul>}
+  </li>;
 }
 
 function CleanupPlanView({ plan, lost, understood, onUnderstood }: { plan: CleanupPlan; lost: number; understood: boolean; onUnderstood: (value: boolean) => void }) {
@@ -328,11 +353,7 @@ function CleanupPlanView({ plan, lost, understood, onUnderstood }: { plan: Clean
       ? <section className="rounded-lg border border-border">
         <h3 className="px-3 py-2 font-medium">{t("removedHeading", { count: items.length })}</h3>
         <ul className="divide-y divide-border border-t border-border">
-          {items.map((item, index) => <li key={`${item.path}-${index}`} className="px-3 py-2">
-            <p className="truncate text-xs font-medium" title={item.path}>{item.path}</p>
-            <p className="text-xs text-muted-foreground">{item.message}</p>
-            <p className={`text-xs ${item.lost ? "font-medium text-destructive" : ""}`}>{item.consequence}</p>
-          </li>)}
+          {items.map((item, index) => <CleanupItemRow key={`${item.path}-${index}`} item={item} />)}
         </ul>
       </section>
       : <p role="status" className="font-medium">{t("nothingStaleLeft")}</p>}
@@ -346,8 +367,8 @@ function RepairPlanView({ plan }: { plan: RepairPlan }) {
   function unmatchedReason(item: RepairUnmatched) {
     if (item.reason === "none") return t("unmatchedNone");
     if (item.reason === "shared-name") return t("unmatchedSharedName");
-    if (item.reason === "different") return t("unmatchedDifferent", { candidates: item.candidates.join(", "), count: item.candidates.length });
-    if (item.reason === "elsewhere") return t("unmatchedElsewhere", { candidates: item.candidates.join(", "), count: item.candidates.length });
+    if (item.reason === "unread") return t("unmatchedUnread", { candidates: item.candidates.join(", ") });
+    if (item.reason === "conflict") return t("unmatchedConflict", { candidates: item.candidates.join(", ") });
     if (item.reason === "own") return t("unmatchedOwn", { candidates: item.candidates.join(", "), count: item.candidates.length });
     return t("unmatchedSeveral", { candidates: item.candidates.join(", ") });
   }

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { access, copyFile, cp, link, lstat, mkdir, readdir, readFile, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
+import { access, chmod, copyFile, cp, link, lstat, mkdir, readdir, readFile, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { DestinationTakenError, movePathExclusive } from "../../../electron/collab/notebooks/fs-ops";
 import { StorageError } from "@/lib/storage/errors";
@@ -59,6 +59,92 @@ export async function movePath(currentPath: string, nextPath: string) {
     if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
     await cp(currentPath, nextPath, { recursive: true, errorOnExist: true, force: false, preserveTimestamps: true });
     await rm(currentPath, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Moves a file to a destination that must not exist, so a file that arrives
+ * there after the caller's check is never replaced (409 instead). `caseOnly`:
+ * the caller found the destination to be the file itself under another
+ * spelling of its name; that is confirmed again here (same device and inode)
+ * and only then renamed over, since an exclusive move would find it taken.
+ */
+export async function moveFileWithoutReplacing(currentPath: string, nextPath: string, { caseOnly = false } = {}) {
+  if (caseOnly && await isCaseOnlyRename(currentPath, nextPath)) {
+    await rename(currentPath, nextPath);
+    return;
+  }
+  const taken = () => new StorageError("Destination file already exists.", 409);
+  try { await movePathExclusive(currentPath, nextPath); }
+  catch (error) {
+    if (error instanceof DestinationTakenError) throw taken();
+    if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+    // Another drive: copy (which refuses an existing destination), then drop the source.
+    try { await cp(currentPath, nextPath, { recursive: true, errorOnExist: true, force: false, preserveTimestamps: true }); }
+    catch (copyError) {
+      if ((copyError as NodeJS.ErrnoException).code === "ERR_FS_CP_EEXIST") throw taken();
+      throw copyError;
+    }
+    await rm(currentPath, { recursive: true, force: true });
+  }
+}
+
+const PATH_LOCKS_KEY = Symbol.for("libera.pathLocks");
+const lockHolder = globalThis as { [PATH_LOCKS_KEY]?: Map<string, Promise<void>> };
+const pathLocks = lockHolder[PATH_LOCKS_KEY] ??= new Map<string, Promise<void>>();
+
+/**
+ * Runs `task` while no other task holds any of these paths (a save and a move
+ * of one file, or two moves to one name, never interleave). All paths are
+ * queued in one step, in arrival order, so tasks that share several can't
+ * wait on each other. Names are compared ignoring case: over-serializing a
+ * pair of names is harmless, missing a case-only alias is not.
+ */
+export async function withPathLocks<T>(paths: string[], task: () => Promise<T>): Promise<T> {
+  const keys = [...new Set(paths.map((target) => path.resolve(target).toLowerCase()))];
+  const before = keys.map((key) => pathLocks.get(key));
+  let release!: () => void;
+  const mine = new Promise<void>((resolve) => { release = resolve; });
+  for (const key of keys) pathLocks.set(key, mine);
+  try {
+    await Promise.all(before.map((earlier) => earlier?.catch(() => undefined)));
+    return await task();
+  } finally {
+    release();
+    for (const key of keys) if (pathLocks.get(key) === mine) pathLocks.delete(key);
+  }
+}
+
+/**
+ * Replaces an existing file with new bytes (staged in a temporary file, then
+ * renamed, as writeFileAtomic does) only while it still holds `expected`: the
+ * file is read again right before the rename, so a file that was put at the
+ * name meanwhile is refused (409) instead of overwritten. Node has no
+ * compare-and-swap rename; this narrows the window from the whole save to the
+ * gap between that read and the rename. A file that is gone is refused too.
+ */
+export async function replaceFileIfUnchanged(absolute: string, bytes: Uint8Array, expected: Buffer, messages: { gone: string; changed: string }) {
+  const previous = await stat(absolute).catch(() => null);
+  if (!previous) throw new StorageError(messages.gone, 409);
+  const temporary = path.join(path.dirname(absolute), `.libera-tmp-${randomUUID()}`);
+  try {
+    await writeFile(temporary, bytes, { flag: "wx", mode: previous.mode & 0o7777 });
+    await chmod(temporary, previous.mode & 0o7777).catch(() => undefined);
+    for (let attempt = 0; ; attempt += 1) {
+      const current = await readFile(absolute).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") throw new StorageError(messages.gone, 409);
+        throw error;
+      });
+      if (!current.equals(expected)) throw new StorageError(messages.changed, 409);
+      try { await rename(temporary, absolute); return; }
+      catch (error) {
+        // Windows refuses to replace a file another program holds open: retry briefly.
+        if (!["EPERM", "EBUSY", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "") || attempt >= 7) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
+      }
+    }
+  } finally {
+    await rm(temporary, { force: true }).catch(() => undefined);
   }
 }
 

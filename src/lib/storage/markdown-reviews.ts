@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { getStateRoot } from "./paths";
 import { StorageError } from "./errors";
 import { findReviewDocument, isSafeReviewId, readReviewDocument, readReviewDocuments, withReviewTransaction, type ReviewTransaction } from "./review-files";
@@ -143,9 +143,11 @@ export async function moveReviewPaths(moves: ReadonlyMap<string, string>, option
     if (options.replaceEmpty) {
       const sourceOf = new Map([...moves].map(([from, to]) => [to, from]));
       const replaced = new Map<string, string[]>();
+      // An empty destination review gives way only to a review that really is at the source.
+      const reviewed = new Set(tx.keys().map(([, key]) => key));
       for (const [id, key] of tx.keys()) {
         const from = sourceOf.get(key);
-        if (from === undefined || moves.has(key)) continue;
+        if (from === undefined || moves.has(key) || !reviewed.has(from)) continue;
         // A review whose file has not synced yet can't be shown to be empty.
         const doc = await tx.getIfPresent(id);
         if (doc && isEmptyReview(doc)) replaced.set(key, [...replaced.get(key) ?? [], id]);
@@ -163,19 +165,64 @@ export async function moveReviewPaths(moves: ReadonlyMap<string, string>, option
     return [...stayed];
   });
 }
+/**
+ * A move rewrote these notes' paths (storage/move-links.ts). A review taken
+ * of the text before gets the text after, its comments' anchors mapped
+ * through each edit in turn (`edits` run from the end of the text to its
+ * start), so a comment is never taken for one on changed text. A review of
+ * another text is left to sync when the note is next opened.
+ */
+export async function rewriteReviewSnapshots(changes: readonly { path: string; before: string; edits: readonly { start: number; end: number; text: string }[] }[]) {
+  const byPath = new Map(changes.filter((change) => change.edits.length).map((change) => [change.path, change]));
+  if (!byPath.size) return;
+  return transaction(async (tx) => {
+    for (const [id, key] of tx.keys()) {
+      const change = byPath.get(key);
+      if (!change) continue;
+      const doc = await tx.getIfPresent(id);
+      if (!doc || doc.snapshot !== change.before) continue;
+      let text = change.before;
+      let next = doc;
+      for (const edit of change.edits) {
+        text = text.slice(0, edit.start) + edit.text + text.slice(edit.end);
+        next = syncReview(next, text, false);
+      }
+      tx.put({ ...next, revision: doc.revision + 1 });
+    }
+  });
+}
 export async function deleteReviewPath(key: string) {
   return transaction((tx) => { for (const [id, stored] of tx.keys()) if (under(stored, key)) tx.remove(id); });
 }
-/** The review of exactly this path; reviews of files under a folder of the same name are kept. */
-export async function deleteReviewKey(key: string) {
-  return transaction((tx) => { for (const [id, stored] of tx.keys()) if (stored === key) tx.remove(id); });
+/** A review's content as one short string: it changes with every comment, reply or setting. */
+export const reviewVersion = (doc: ReviewDocument) => createHash("sha256").update(JSON.stringify(doc)).digest("hex").slice(0, 24);
+/**
+ * The review of exactly this path; reviews of files under a folder of the same
+ * name are kept. With `expectedVersion` (Acknowledge), the review is compared
+ * and removed in one transaction: a review that changed since it was shown is
+ * kept (`changed`). `absent` when there was none.
+ */
+export async function deleteReviewKey(key: string, expectedVersion?: string): Promise<"removed" | "absent" | "changed"> {
+  return transaction(async (tx) => {
+    const found = [...tx.keys()].filter(([, stored]) => stored === key);
+    if (!found.length) return "absent";
+    if (expectedVersion !== undefined) {
+      for (const [id] of found) {
+        const doc = await tx.getIfPresent(id);
+        if (!doc || reviewVersion(doc) !== expectedVersion) return "changed";
+      }
+    }
+    for (const [id] of found) tx.remove(id);
+    return "removed";
+  });
 }
-export async function copyReviewPath(from: string, to: string) {
+/** `snapshot` maps the copied review's text (a copy that cites other keys in its notebook). */
+export async function copyReviewPath(from: string, to: string, snapshot?: (text: string) => string) {
   return transaction(async (tx) => {
     for (const [id, key] of tx.keys()) if (under(key, from)) {
       const original = await tx.getIfPresent(id);
       if (!original) continue;
-      const copied = newReview(to + original.key.slice(from.length), original.snapshot, randomUUID());
+      const copied = newReview(to + original.key.slice(from.length), snapshot ? snapshot(original.snapshot) : original.snapshot, randomUUID());
       copied.enabled = original.enabled;
       copied.threads = structuredClone(original.threads).map((t) => ({ ...t, id: randomUUID(), messages: t.messages.map((m) => ({ ...m, id: randomUUID() })) }));
       tx.put(copied);

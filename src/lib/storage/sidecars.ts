@@ -1,19 +1,21 @@
 import type { Dirent } from "node:fs";
-import { readdir, rm, stat } from "node:fs/promises";
+import { readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { DEFINITIONS_FILE_TYPES, parseDefinitionsFile } from "@/lib/definitions";
 import { parseInkFileName } from "@/lib/ink/authors";
 import { parsePdfOutlineFile } from "@/lib/pdf-outline";
-import { inspectImageSidecar, inspectPdfSidecar } from "@/lib/storage/annotations";
+import { inspectImageSidecar, inspectLegacyAnnotations, inspectPdfSidecar } from "@/lib/storage/annotations";
 import { inspectPdfTextCache } from "@/lib/storage/pdf-text-cache";
 import { parseTranscript } from "@/lib/storage/transcripts";
 import { inspectAudioPeaksCache } from "@/lib/transcription/peaks";
 import { pythonSidecarPath } from "@/lib/python/sidecar";
 import { INK_DIR } from "@/lib/storage/constants";
 import { getFileType } from "@/lib/storage/file-types";
+import { foldedFileName } from "@/lib/storage/file-names";
+import { fileExistence } from "@/lib/storage/library-links";
 import { StorageError } from "@/lib/storage/errors";
 import { moveFileIfExists, moveWithoutReplacing, pathExists } from "@/lib/storage/fs-utils";
-import { inkFolderPath, inspectInkFolder, supportsInk, type InkFolderInspection } from "@/lib/storage/ink";
+import { inkChunksTheTypeLacks, inkFolderPath, inspectInkFolder, supportsInk, type InkFolderInspection } from "@/lib/storage/ink";
 import { deletePythonSidecar, movePythonSidecar } from "@/lib/storage/markdown-assets";
 import {
   assertSafeUserSegment,
@@ -112,7 +114,8 @@ export const SIDECAR_KINDS: readonly SidecarKind[] = [
 export const SIDECAR_PATH_HELPERS = ["pdfAnnotationsPath", "pdfOutlinePath", "pdfTextCachePath", "imageAnnotationsPath", "transcriptPath", "audioPeaksPath", "definitionsPath"] as const;
 
 async function moveKind(kind: SidecarKind, from: string, to: string) {
-  if (!kind.cache) return moveFileIfExists(from, to);
+  // A person's record never replaces one that arrived at the destination since the move was checked.
+  if (!kind.cache) return moveWithoutReplacing(from, to);
   try { await moveFileIfExists(from, to); }
   catch { await rm(from, { force: true, recursive: true }).catch(() => undefined); }
 }
@@ -128,7 +131,12 @@ export async function lostSidecarRecords(notebook: string, parts: string[], from
   const keptKinds = new Set(SIDECAR_KINDS.filter((kind) => kind.appliesTo(toType)).map((kind) => kind.id));
   const lost: string[] = [];
   for (const sidecar of await existingSidecars(notebook, parts, fromType)) {
-    if (caches.has(sidecar.kind) || keptKinds.has(sidecar.kind)) continue;
+    if (caches.has(sidecar.kind)) continue;
+    if (keptKinds.has(sidecar.kind)) {
+      // Both types take ink, but not the same chunks: the new editor would never show the old ones. A folder that can't be listed is not shown to fit.
+      if (sidecar.kind === "ink" && (await inkChunksTheTypeLacks(sidecar.path, toType).catch(() => ["?"])).length) lost.push(sidecar.kind);
+      continue;
+    }
     // An ink folder with nothing in it holds no strokes.
     if (sidecar.kind === "ink" && !(await readdir(sidecar.path).catch(() => ["?"])).length) continue;
     lost.push(sidecar.kind);
@@ -156,16 +164,17 @@ export async function moveFileSidecars(
 ): Promise<() => Promise<void>> {
   const lost = await lostSidecarRecords(fromNotebook, fromParts, fromType, toType);
   if (lost.length) throw new StorageError(`${fromNotebook}/${fromParts.join("/")} still has records (${lost.join(", ")}) that a ${toType} file cannot keep.`, 409);
-  const moved: { from: string; to: string }[] = [];
+  const moved: { from: string; to: string; cache: boolean }[] = [];
   let python: { from: string; to: string } | null = null;
   const undo = async () => {
     const stuck: string[] = [];
     if (python) {
       const { from, to } = python;
-      try { await movePythonSidecar(to, from); } catch { stuck.push(`its Python code is now at ${to}`); }
+      try { await movePythonSidecar(to, from, { exclusive: true }); } catch { stuck.push(`its Python code is now at ${to}`); }
     }
     for (const entry of [...moved].reverse()) {
-      try { await moveFileIfExists(entry.to, entry.from); } catch { stuck.push(`${entry.from} is now at ${entry.to}`); }
+      // Back only to a free place: what arrived at the old one meanwhile is not replaced.
+      try { await (entry.cache ? moveFileIfExists : moveWithoutReplacing)(entry.to, entry.from); } catch { stuck.push(`${entry.from} is now at ${entry.to}`); }
     }
     if (stuck.length) throw new StorageError(`Could not put the records of ${fromNotebook}/${fromParts.join("/")} back: ${stuck.join("; ")}.`, 500);
   };
@@ -177,7 +186,7 @@ export async function moveFileSidecars(
         const to = kind.filePath(toNotebook, toParts);
         const present = from !== to && await pathExists(from);
         await moveKind(kind, from, to);
-        if (present && (!kind.cache || await pathExists(to))) moved.push({ from, to });
+        if (present && (!kind.cache || await pathExists(to))) moved.push({ from, to, cache: Boolean(kind.cache) });
       } else {
         // Only a cache can be left here: the rest was refused above.
         await rm(from, { force: true, recursive: true }).catch(kind.cache ? () => undefined : (error) => { throw error; });
@@ -187,7 +196,7 @@ export async function moveFileSidecars(
       const from = `${fromNotebook}/${fromParts.join("/")}`;
       if (toType === "markdown") {
         const to = `${toNotebook}/${toParts.join("/")}`;
-        await movePythonSidecar(from, to);
+        await movePythonSidecar(from, to, { exclusive: true });
         python = { from, to };
       } else await deletePythonSidecar(from);
     }
@@ -211,15 +220,43 @@ export async function removeFileSidecars(notebook: string, pathParts: string[], 
  * A folder moved inside its notebook (rename, archive): the sidecar folders of
  * everything inside follow. Python sidecars are per note (markdown-assets.ts)
  * and stay with the caller.
+ *
+ * All or nothing, like moveFileSidecars: each completed transfer is recorded,
+ * and a failure takes back exactly those (never a kind that did not move, whose
+ * destination may hold records of its own). On success the result takes them
+ * all back. A take-back that cannot finish throws and names what is stuck.
  */
-export async function moveFolderSidecars(fromNotebook: string, fromParts: string[], toNotebook: string, toParts: string[]) {
-  for (const kind of SIDECAR_KINDS) {
-    const from = kind.directoryPath(fromNotebook, fromParts);
-    const to = kind.directoryPath(toNotebook, toParts);
-    // A cache is made again and may replace one; anything else never replaces what is there.
-    if (kind.cache) await moveKind(kind, from, to);
-    else await moveWithoutReplacing(from, to);
+export async function moveFolderSidecars(fromNotebook: string, fromParts: string[], toNotebook: string, toParts: string[]): Promise<() => Promise<void>> {
+  const moved: { from: string; to: string; cache: boolean }[] = [];
+  const undo = async () => {
+    const stuck: string[] = [];
+    for (const entry of [...moved].reverse()) {
+      // A cache is made again, so one that can't go back is not a loss.
+      if (entry.cache) { await moveFileIfExists(entry.to, entry.from).catch(() => undefined); continue; }
+      try { await moveWithoutReplacing(entry.to, entry.from); }
+      catch { stuck.push(`${entry.from} is now at ${entry.to}`); }
+    }
+    moved.length = 0;
+    if (stuck.length) throw new StorageError(`Could not put the records of ${fromNotebook}/${fromParts.join("/")} back: ${stuck.join("; ")}.`, 500);
+  };
+  try {
+    for (const kind of SIDECAR_KINDS) {
+      const from = kind.directoryPath(fromNotebook, fromParts);
+      const to = kind.directoryPath(toNotebook, toParts);
+      const present = from !== to && await pathExists(from);
+      // A cache is made again and may replace one; anything else never replaces what is there.
+      if (kind.cache) await moveKind(kind, from, to);
+      else await moveWithoutReplacing(from, to);
+      if (present && (!kind.cache || await pathExists(to))) moved.push({ from, to, cache: !!kind.cache });
+    }
+  } catch (error) {
+    // The original error stays the one thrown unless the take-back also failed.
+    const cause = error instanceof Error ? error.message : String(error);
+    try { await undo(); }
+    catch (stuck) { throw new StorageError(`${cause} ${(stuck as Error).message}`, 500); }
+    throw error;
   }
+  return undo;
 }
 
 /** A folder was deleted: remove the sidecar folders of everything inside. */
@@ -246,6 +283,26 @@ export async function existingSidecars(notebook: string, pathParts: string[], fi
     if (await pathExists(target)) found.push({ kind: "python", path: target });
   }
   return found;
+}
+
+/**
+ * Notes saved in an older annotation layout (a flat file or a dot file, keyed
+ * by file name alone) that a file arriving at `parts` would be given: when it
+ * is opened, the migrator attaches them to the one file of that name in the
+ * notebook. Read only (inspectLegacyAnnotations). `moving` is the file being
+ * moved there from the same notebook: it is not a rival owner, and with the
+ * same name the notes are its own (or ambiguous), not the destination's. A
+ * notebook that can't be listed is not shown to be free of them.
+ */
+export async function legacyAnnotationSidecars(notebook: string, parts: string[], fileType: string | null, moving?: string[]): Promise<ExistingSidecar[]> {
+  const kind = fileType === "pdf" || fileType === "image" ? fileType : null;
+  const name = parts.at(-1);
+  if (!kind || !name) return [];
+  if (moving && foldedFileName(moving.at(-1) ?? "") === foldedFileName(name)) return [];
+  const { files, namesakes } = await inspectLegacyAnnotations(notebook, parts, kind);
+  const rivals = namesakes?.filter((file) => !moving || foldedFileName(file.join("/")) !== foldedFileName(moving.join("/")));
+  if (rivals?.length) return [];
+  return files.map((file) => ({ kind: `${kind}-annotations`, path: file }));
 }
 
 export type ListedSidecar = ExistingSidecar & { kindInfo: SidecarKind; filePath: string; fileParts: string[] };
@@ -293,38 +350,18 @@ export async function listSidecars(notebook: string): Promise<{ sidecars: Listed
   return { sidecars: listed, unreadable };
 }
 
-/** A folder's names, once: `null` when it can't be listed (no permission, a drive offline), `false` when it is not there. */
-type Listing = Set<string> | null | false;
-
 /**
- * Whether the file is there by the exact name its folder lists, as the app's
- * tree and every record keyed by path see it: on a case-insensitive disk
- * (macOS, Windows) `stat` also says yes to `Paper.pdf` when the file was
- * renamed to `paper.pdf` outside the app, and its side files would never be
- * found. Null when it can't be told (no permission, a drive offline): such a
+ * Whether the file is there by the exact names its folders list, each folder
+ * on the way included, as the app's tree and every record keyed by path see
+ * it: on a case-insensitive disk (macOS, Windows) `stat` also says yes to
+ * `Paper.pdf` when the file, or a folder above it, was renamed to `paper.pdf`
+ * outside the app, and its side files would never be found. Null when it can't be told (no permission, a drive offline): such a
  * file is not taken for gone.
  */
-async function isFileOfType(notebook: string, parts: string[], kind: SidecarKind, listings: Map<string, Promise<Listing>>): Promise<boolean | null> {
+async function isFileOfType(notebook: string, parts: string[], kind: SidecarKind, existence: ReturnType<typeof fileExistence>): Promise<boolean | null> {
   const type = getFileType(parts.at(-1) ?? "");
   if (!type || !kind.appliesTo(type)) return false;
-  const target = filePathFromParts(notebook, parts);
-  const directory = path.dirname(target);
-  let listing = listings.get(directory);
-  if (!listing) {
-    listing = readdir(directory).then(
-      (names): Listing => new Set(names),
-      (error): Listing => ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "") ? false : null,
-    );
-    listings.set(directory, listing);
-  }
-  const names = await listing;
-  if (names === null) return null;
-  if (names === false || !names.has(path.basename(target))) return false;
-  try {
-    return (await stat(target)).isFile();
-  } catch (error) {
-    return ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "") ? false : null;
-  }
+  return existence.isFile([notebook, ...parts].join("/"));
 }
 
 function safeParts(parts: string[]) {
@@ -340,9 +377,9 @@ function safeParts(parts: string[]) {
  */
 export async function findOrphanedSidecars(notebook: string, listed?: ListedSidecar[]): Promise<OrphanedSidecar[]> {
   const orphans: OrphanedSidecar[] = [];
-  const listings = new Map<string, Promise<Listing>>();
+  const existence = fileExistence();
   for (const sidecar of listed ?? (await listSidecars(notebook)).sidecars) {
-    if (safeParts(sidecar.fileParts) && (await isFileOfType(notebook, sidecar.fileParts, sidecar.kindInfo, listings)) === false) {
+    if (safeParts(sidecar.fileParts) && (await isFileOfType(notebook, sidecar.fileParts, sidecar.kindInfo, existence)) === false) {
       orphans.push({ kind: sidecar.kind, path: sidecar.path, filePath: sidecar.filePath });
     }
   }

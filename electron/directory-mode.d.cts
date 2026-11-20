@@ -1,4 +1,6 @@
-export type LinkedFolderState = { name: string; path: string; id?: string; locations?: Record<string, string>; unresolved?: boolean };
+export type LinkedFolderState = { name: string; path: string; id?: string; locations?: Record<string, string>; unresolved?: boolean;
+  /** Connected by hand at a place that holds no identity marker (and cannot take one). */
+  unmarked?: boolean };
 export type DirectoryModeState = { version: 2; folders: LinkedFolderState[]; recent: string[] };
 
 export const MAX_RECENT_DIRECTORIES: number;
@@ -18,4 +20,6 @@ export function writeDirectoryModeState(adminRoot: string, state: DirectoryModeS
 
 export function directoryMachineKey(): string;
 export function ensureDirectoryIdentity(adminRoot: string, directoryPath: string, previousId?: string): string | null;
+/** The id a folder's marker holds, or null when it has none (or an unreadable one). */
+export function readFolderId(directoryPath: string): string | null;
 export function legacyDirectoryStateRoot(adminRoot: string, directoryPath: string): string;

@@ -194,8 +194,9 @@ test("Stop finishes what moved and leaves the rest untouched in the source", () 
   assert.deepEqual(leftovers, []);
   // The folder that only partly moved stays, with its records.
   assert.ok(existsSync(path.join(notebookPath("Src"), "notes")));
-  // Stopping after the image moved leaves the note that stayed showing it from its old place: the one expected finding.
-  await assertNotebookSound("Src", { allow: ["Src/notes/n.md: Shows Src/papers/fig.png, which is missing"] });
+  // Stopping after the image moved: the note that stayed shows it at its new place (links follow what moved, docs/features/move-link-refactor.md).
+  assert.ok(markdownImageSources(note).includes("/api/files/raw/Dst/papers/fig.png"), note);
+  await assertNotebookSound("Src");
   await assertNotebookSound("Dst");
 }));
 
@@ -429,13 +430,15 @@ test("the token covers the new notebook's details, and the result returns its wo
   assert.equal(result.check, "clean");
 }));
 
-test("a note that stays and shows a moving image is warned about, and the check sees the same", () => withLibrary(async () => {
+test("a note that stays and shows a moving image is told about, and shows it at its new place", () => withLibrary(async () => {
   await file("Src/fig.png", Buffer.from("png"));
   await file("Src/stays.md", "![](/api/files/raw/Src/fig.png)\n");
-  const { plan } = await migrate({ source: "Src", paths: ["Src/fig.png"], destination: { notebook: "Dst" } });
+  const { plan, result } = await migrate({ source: "Src", paths: ["Src/fig.png"], destination: { notebook: "Dst" } });
   assert.deepEqual(plan.warnings.find((warning) => warning.kind === "inbound-images")?.paths, ["Src/stays.md"]);
-  // What the review warned about is exactly what the notebook check finds afterwards.
-  await assertNotebookSound("Src", { allow: ["Src/stays.md: Shows Src/fig.png, which is missing"] });
+  // The image's library address follows it (docs/features/move-link-refactor.md): the check finds nothing.
+  assert.equal(await read(filePathFromParts("Src", ["stays.md"])), "![](/api/files/raw/Dst/fig.png)\n");
+  assert.deepEqual(result.links?.rewritten.map((note) => note.path), ["Src/stays.md"]);
+  await assertNotebookSound("Src");
   await assertNotebookSound("Dst");
 }));
 

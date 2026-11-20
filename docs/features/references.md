@@ -147,7 +147,7 @@ The syntax:
 
 ## Citations that never break
 
-- Notes cite keys, not file paths, so renaming or moving a PDF never changes a note. Libera updates the entry's attachment. Files moved outside Libera are found again by their content.
+- Notes cite keys, not file paths, so renaming or moving a PDF never changes a note. Libera updates the entry's attachment. Files moved outside Libera are found again by their content. Only when that search was complete (every folder readable, no linked folder disconnected, under the file cap) and found exactly one copy, and only if the original is still missing and the attachment unchanged when the change is saved; otherwise the pointer is left alone. When files move in a batch (notebook migration, Try to fix) and a linked folder is not connected, its attachments and tethered .bib are not updated; the result says so, and Check Notebook finds them once it is back.
 - Keys are generated once (family name, year and first title word) and never change on their own.
 - When you rename a key, the old key keeps working as an alias. **Update citations…** rewrites the notes that use it, after a preview, and can be undone. Merging duplicates works the same way.
 - Moving a note to another notebook copies the references it cites into that notebook's library, renaming keys only when they would clash.

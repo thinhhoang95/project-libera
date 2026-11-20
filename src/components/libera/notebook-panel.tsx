@@ -2,7 +2,7 @@
 
 import { useWorkspaceView } from "./workspace-view-context";
 import { useLocale, useTranslations } from "next-intl";
-import { createContext, memo, useContext, useMemo, useState, useSyncExternalStore } from "react";
+import { createContext, memo, useContext, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { CSSProperties, DragEvent, MouseEvent, RefObject } from "react";
 import {
   ArrowDownUp,
@@ -61,6 +61,19 @@ import {
 } from "./sidebar-sort-preference";
 import { useRecorderLauncher } from "@/components/libera/recording/meeting-recorder";
 import { NotebookIntegrityDialog } from "@/components/libera/notebook-integrity-dialog";
+import { beginDrag, consumeDrag } from "@/components/libera/drop-target";
+import {
+  NO_SELECTION,
+  draggedFiles,
+  isSelected,
+  pruneSelection,
+  selectRange,
+  selectedFiles,
+  toggleFile,
+  usesBatchMenu,
+  visibleFiles,
+  type FileSelection,
+} from "@/components/libera/file-selection";
 
 const UPLOAD_ACCEPT = [...SUPPORTED_UPLOAD_EXTENSIONS].join(",");
 
@@ -123,6 +136,12 @@ export type NotebookPanelProps = {
   onEditNotebook: (notebook: LiberaNotebookNode) => void;
   onEditNotebookGroup: (group: LiberaNotebookGroup) => void;
   onMoveFile: (file: LiberaFileNode, destinationPath: string) => Promise<void>;
+  /** The selected files of one notebook, dropped on a folder: moved there, or sent to the migration dialog for another notebook. */
+  onMoveFiles?: (files: LiberaFileNode[], destinationPath: string) => Promise<void>;
+  /** "Move N files…": asks for the destination. Without it the batch menu has no Move. */
+  onMoveFilesPrompt?: (files: LiberaFileNode[]) => Promise<void>;
+  /** "Delete N files…": asks for confirmation. Without it the batch menu has no Delete. */
+  onDeleteFiles?: (files: LiberaFileNode[]) => Promise<void>;
   onOpenFile: (file: LiberaFileNode, options?: { viewState?: OpenTabViewState }) => Promise<void>;
   onRenameFolder: (folder: LiberaFolderNode) => Promise<void>;
   onRenameFile: (file: LiberaFileNode) => Promise<void>;
@@ -435,6 +454,15 @@ const NoteLinksContext = createContext<NoteLinks>({
 const FileTagsContext = createContext<Record<string, string[]>>({});
 const ShowFileDetailsContext = createContext(true);
 
+/**
+ * The files picked in the rail and what a click on a file row does with them.
+ * In a context so the row components need no extra props through every level.
+ */
+const FileSelectionContext = createContext<{
+  selection: FileSelection;
+  onFileClick: (file: LiberaFileNode, event: MouseEvent) => void;
+}>({ selection: NO_SELECTION, onFileClick: () => undefined });
+
 function FileTooltipDetails({ file, tags }: { file: LiberaFileNode; tags: string[] }) {
   const t = useTranslations("notebookPanel");
   const locale = useLocale();
@@ -614,6 +642,9 @@ function NotebookPanelContent({
   onEditNotebook,
   onEditNotebookGroup,
   onMoveFile,
+  onMoveFiles,
+  onMoveFilesPrompt,
+  onDeleteFiles,
   onOpenFile,
   onRenameFolder,
   onRenameFile,
@@ -632,6 +663,10 @@ function NotebookPanelContent({
   const tCommon = useTranslations("common");
   const tImport = useTranslations("lib.references.import");
   const [draggingFile, setDraggingFile] = useState<LiberaFileNode | null>(null);
+  const dragSlot = useRef<LiberaFileNode[] | null>(null);
+  const [pickedFiles, setSelection] = useState<FileSelection>(NO_SELECTION);
+  // A refresh may have moved or removed picked files: what left the tree leaves the selection.
+  const selection = useMemo(() => pruneSelection(pickedFiles, tree), [pickedFiles, tree]);
   const [dragOverPath, setDragOverPath] = useState("");
   const [deepSearchQuery, setDeepSearchQuery] = useState("");
   const [deepSearchOpen, setDeepSearchOpen] = useState(false);
@@ -686,15 +721,55 @@ function NotebookPanelContent({
     void openSidebarNativeMenu(target, nativeMenuPointFromMouseEvent(event));
   }
 
+  /**
+   * One place that sets the drag, so the ref a drop reads and the state the rows render agree.
+   * A drag that starts on a selected file carries the whole selection.
+   */
+  function setDragging(file: LiberaFileNode | null) {
+    if (file) beginDrag(dragSlot, draggedFiles(selection, file, tree));
+    else dragSlot.current = null;
+    setDraggingFile(file);
+  }
+
   async function dropFileOnPath(destinationPath: string) {
-    if (!draggingFile) {
+    // Taken before the await: this drag is over, so a slow move cannot clear the next one.
+    const dropped = consumeDrag(dragSlot);
+    if (!dropped) {
       return;
     }
 
-    await onMoveFile(draggingFile, destinationPath);
     setDraggingFile(null);
     setDragOverPath("");
+    if (dropped.length === 1) {
+      await onMoveFile(dropped[0], destinationPath);
+      return;
+    }
+    setSelection(NO_SELECTION);
+    await onMoveFiles?.(dropped, destinationPath);
   }
+
+  /** Plain click opens the file and clears the selection; Ctrl/Cmd toggles it; Shift picks a range of the notebook's visible files. */
+  function clickFile(file: LiberaFileNode, event: MouseEvent) {
+    if (event.shiftKey) {
+      const notebook = sortedTree.notebooks.find((item) => item.name === file.notebook);
+      const visible = notebook ? visibleFiles(notebook.children, (path) => expanded.has(path), visibleNodeLimitForPath, notebook.path) : [];
+      setSelection(selectRange(selection, file, visible));
+      return;
+    }
+    if (event.ctrlKey || event.metaKey) {
+      setSelection(toggleFile(selection, file));
+      return;
+    }
+    if (selection.paths.length) setSelection(NO_SELECTION);
+    void onOpenFile(file);
+  }
+
+  const fileSelectionContext = useMemo(
+    () => ({ selection, onFileClick: clickFile }),
+    // clickFile reads the expansion and limits of the render it was made in.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [selection, sortedTree, expanded, visibleNodeLimits, onOpenFile],
+  );
 
   function openDeepSearch(searchQuery: string) {
     setDeepSearchQuery(searchQuery);
@@ -762,6 +837,22 @@ function NotebookPanelContent({
     target: SidebarMenuTarget,
     point: NativeMenuPoint,
   ) {
+    // Right-clicking one of two or more selected files acts on all of them.
+    if (target.kind === "file" && usesBatchMenu(selection, target.file)) {
+      const files = selectedFiles(selection, tree);
+      const batchItemId = await showNativeMenu(
+        [
+          { id: "move-files", label: t("menuMoveFiles", { count: files.length }), enabled: Boolean(onMoveFilesPrompt) },
+          { type: "separator" },
+          { id: "delete-files", label: t("menuDeleteFiles", { count: files.length }), enabled: Boolean(onDeleteFiles) },
+        ],
+        point,
+      );
+      if (batchItemId === "move-files") await onMoveFilesPrompt?.(files);
+      else if (batchItemId === "delete-files") await onDeleteFiles?.(files);
+      return;
+    }
+
     const fileIsStarred =
       target.kind === "file" ? starredFilePaths.has(target.file.path) : false;
     const isArchivedItem =
@@ -1010,7 +1101,16 @@ function NotebookPanelContent({
         <NoteLinksContext.Provider value={noteLinks}>
         <FileTagsContext.Provider value={tree.fileTags}>
         <ShowFileDetailsContext.Provider value={tree.notebookViewOptions.showFileDetails}>
-        <div className="space-y-2">
+        <FileSelectionContext.Provider value={fileSelectionContext}>
+        <div
+          aria-label={t("libraryHeading")}
+          aria-multiselectable="true"
+          className="space-y-2"
+          role="tree"
+          onKeyDown={(event) => {
+            if (event.key === "Escape" && selection.paths.length) setSelection(NO_SELECTION);
+          }}
+        >
           <StarredFilesSection
             activeTabId={activeTabId}
             dragOverPath={dragOverPath}
@@ -1023,7 +1123,7 @@ function NotebookPanelContent({
             onOpenFile={onOpenFile}
             onShowMore={() => showMoreNodes(STARRED_FILES_PAGINATION_KEY)}
             onSetDragOverPath={setDragOverPath}
-            onSetDraggingFile={setDraggingFile}
+            onSetDraggingFile={setDragging}
             onUploadFiles={onUploadFiles}
             visibleLimit={visibleNodeLimitForPath(STARRED_FILES_PAGINATION_KEY)}
           />
@@ -1057,7 +1157,7 @@ function NotebookPanelContent({
               onSelectNotebook={onSelectNotebook}
               onShowMoreNodes={showMoreNodes}
               onSetDragOverPath={setDragOverPath}
-              onSetDraggingFile={setDraggingFile}
+              onSetDraggingFile={setDragging}
               onStartUpload={onStartUpload}
               onToggleNotebook={onToggleNotebook}
               onUploadFiles={onUploadFiles}
@@ -1096,7 +1196,7 @@ function NotebookPanelContent({
               onSelectNotebook={onSelectNotebook}
               onShowMoreNodes={showMoreNodes}
               onSetDragOverPath={setDragOverPath}
-              onSetDraggingFile={setDraggingFile}
+              onSetDraggingFile={setDragging}
               onStartUpload={onStartUpload}
               onToggleNotebook={onToggleNotebook}
               onUploadFiles={onUploadFiles}
@@ -1104,6 +1204,7 @@ function NotebookPanelContent({
             />
           ))}
         </div>
+        </FileSelectionContext.Provider>
         </ShowFileDetailsContext.Provider>
         </FileTagsContext.Provider>
         </NoteLinksContext.Provider>
@@ -1489,10 +1590,7 @@ function NotebookSection({
           onSetDragOverPath(notebook.path);
         }}
         onDragLeave={() => onSetDragOverPath("")}
-        onDrop={(event) => {
-          event.preventDefault();
-          onDropFile(notebook.path);
-        }}
+        onDrop={(event) => handleFileDropOnDirectory(event, draggingFile, notebook.path, onDropFile)}
       >
         <button
           className="libera-sidebar-icon-button h-5 w-5 shrink-0 rounded text-sm"
@@ -1828,6 +1926,7 @@ function TreeNodeRow({
   const noteLinks = useContext(NoteLinksContext);
   const fileTags = useContext(FileTagsContext);
   const showFileDetails = useContext(ShowFileDetailsContext);
+  const { selection, onFileClick } = useContext(FileSelectionContext);
 
   if (node.kind === "folder") {
     const isExpanded = expanded.has(node.path);
@@ -1966,9 +2065,11 @@ function TreeNodeRow({
       draggable
       fullName={node.name}
       renderDetails={() => <FileTooltipDetails file={node} tags={tags} />}
+      role="treeitem"
+      aria-selected={isSelected(selection, node.path)}
       style={{ paddingLeft: `${8 + depth * 16}px` }}
       type="button"
-      onClick={() => onOpenFile(node)}
+      onClick={(event) => onFileClick(node, event)}
       onContextMenu={(event) => onContextMenu(event, { kind: "file", file: node })}
       onDragOver={(event) =>
         handleFileDragOverDirectory(

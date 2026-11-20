@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { lstat, readdir, readFile } from "node:fs/promises";
+import { constants, createReadStream } from "node:fs";
+import { access, lstat, readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { listReviewEntryPaths } from "@/lib/agent/review-store";
 import { listRunFiles } from "@/lib/agent/snapshots";
@@ -11,22 +12,26 @@ import { readTetherTarget } from "@/lib/references/bib-tether";
 import { ARCHIVE_DIR, MARKDOWN_ASSETS_DIR, MARKDOWN_EXTENSIONS, ORPHANED_SIDECARS_DIR } from "@/lib/storage/constants";
 import { planBibMirror } from "@/lib/references/bib-mirror";
 import type { ReferenceLibrary } from "@/lib/references/types";
-import { readIndexedLibraryPaths } from "@/lib/search/database";
-import { searchIndexFile } from "@/lib/search/settings";
+import { readIndexedLibraryRows } from "@/lib/search/database";
+import { latexBuildProductFilter } from "@/lib/search/latex-products";
+import { getSearchPreferences, searchIndexFile } from "@/lib/search/settings";
+import { readFileSignature } from "@/lib/storage/file-signature";
 import { citationIndexPath, readCitationIndex } from "@/lib/storage/reference-citations";
 import { fileExistence, libraryNotebookNames, linkCandidates, resolveLinkTargetWith } from "@/lib/storage/library-links";
 import { decodeMarkdownHeadingHash, findMarkdownHeadingAnchorIndex, markdownHeadingAnchors, type MarkdownHeadingAnchor } from "@/lib/markdown-heading-anchors";
-import { savedAnnotationIds } from "@/lib/storage/annotations";
+import { markdownHtmlAnchors } from "@/lib/markdown-link-occurrences";
+import { listLegacyAnnotations, savedAnnotationIds, type SavedAnnotationIds } from "@/lib/storage/annotations";
 import { parseTranscript } from "@/lib/storage/transcripts";
 import { markdownImageTargets, unreferencedMarkdownAssets } from "@/lib/storage/markdown-assets";
 import { extractNotebookLinkDestinations, forgetNotebookLinkReads, linkIndexPath, readLinkIndex } from "@/lib/storage/notebook-links";
-import { assertSafeSegment, audioPeaksPath, getLinkedFolder, withReadOnlyStorage, getStateRoot, notebookMetadataPath, notebookPath, notebookSystemDirectoryPath, orphanedSidecarsDirectoryPath, relativeFilePath, filePathFromParts, transcriptPath } from "@/lib/storage/paths";
+import { assertSafeSegment, audioPeaksPath, getLinkedFolder, withReadOnlyStorage, getStateRoot, notebookMetadataPath, notebookPath, notebookSystemDirectoryPath, orphanedSidecarsDirectoryPath, relativeFilePath, filePathFromParts, splitFilePath, transcriptPath } from "@/lib/storage/paths";
 import { inspectReferenceLibrary } from "@/lib/storage/references";
-import { inspectMissingReviewDocuments, inspectReviewKeys } from "@/lib/storage/review-files";
-import { existingSidecars, listSidecars, findOrphanedSidecars, type SidecarInspection } from "@/lib/storage/sidecars";
-import { matchByIdentity, readOrphans } from "@/lib/storage/pdf-sidecars";
+import { inspectLegacyReviewKeys, inspectReviewDocumentProblems, inspectReviewKeys } from "@/lib/storage/review-files";
+import { listSidecars, findOrphanedSidecars, SIDECAR_KINDS, type SidecarInspection } from "@/lib/storage/sidecars";
+import { matchByIdentity, mayBeBack, readOrphans, slotTakenBy } from "@/lib/storage/pdf-sidecars";
 import { getFileType } from "@/lib/storage/file-types";
 import { pythonSidecarDocumentPath, pythonSidecarPath } from "@/lib/python/sidecar";
+import { foldedFileName } from "@/lib/storage/file-names";
 import { listVisibleNotebookFiles } from "@/lib/storage/tree";
 import { inspectWorkspaceMetadata } from "@/lib/storage/workspace-metadata";
 import { StorageError } from "@/lib/storage/errors";
@@ -172,7 +177,23 @@ export class IntegrityBudget {
     return !this.reached;
   }
 
+  /**
+   * Whether `bytes` more can still be read within the byte limit. Asked
+   * before a file is read, so one the budget can't hold is never read: when
+   * it can't, the budget is used up (`reached` says so).
+   */
+  admits(bytes: number) {
+    if (this.reached) return false;
+    if (this.statistics.bytesRead + bytes <= this.limits.bytes) return true;
+    const megabytes = Math.round(this.limits.bytes / 1024 / 1024);
+    this.reached = `the limit of ${megabytes} MB read`;
+    this.reachedSay = { code: "byteLimitReached", params: { megabytes } };
+    return false;
+  }
+
   read(bytes: number) { this.statistics.filesRead += 1; this.statistics.bytesRead += bytes; }
+  /** Bytes of a file being streamed (hashing), counted as they pass so a stop is not held up by a big file. */
+  streamed(bytes: number) { this.statistics.bytesRead += bytes; }
   visit(entries = 1) { this.statistics.entriesVisited += entries; }
   probe() { this.statistics.probes += 1; }
 }
@@ -192,6 +213,26 @@ const LABELS: Record<IntegrityCheckId, string> = {
 
 const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
 const under = (libraryPath: string, notebook: string) => libraryPath.startsWith(`${notebook}/`);
+/**
+ * The one archive scope: every module that decides from the notebook's files
+ * (the check, Try to fix, Acknowledge, the tree's upkeep) lists them with the
+ * archive (`_archive`) included, so an archived file counts wherever it can
+ * change a verdict (where a side file went, whether Python code has an owner,
+ * a LaTeX source). Pass what `listVisibleNotebookFiles` takes besides it.
+ */
+export const listNotebookInventory = (notebook: string, options: Omit<NonNullable<Parameters<typeof listVisibleNotebookFiles>[1]>, "includeArchive"> = {}) =>
+  listVisibleNotebookFiles(notebook, { ...options, includeArchive: true });
+
+/**
+ * Whether a listing saw every file. When not (cut by a limit, or a folder
+ * that could not be read), a decision that needs "no other file has this
+ * name, bytes or owner" can't be made: such a check is partial and offers
+ * nothing for deletion.
+ */
+export const inventoryComplete = (listing: { truncated: boolean; unreadable: readonly string[] }) => !listing.truncated && listing.unreadable.length === 0;
+
+/** A check that could not look at `count` files (no permission, a drive that is not connected) says so instead of passing them. */
+const filesUnchecked = (count: number) => said("filesUnchecked", `${plural(count, "file")} could not be checked (no permission, or a drive that is not connected), so what depends on ${count === 1 ? "it" : "them"} is not judged.`, { count });
 
 /** `73` → "1:13", `3723` → "1:02:03". */
 function clock(seconds: number) {
@@ -200,19 +241,31 @@ function clock(seconds: number) {
   return (parts[0] ? parts : parts.slice(1)).map((part, index) => index ? String(part).padStart(2, "0") : String(part)).join(":");
 }
 
-/** A recording's length, from its transcript or else its waveform; null when neither says. */
-async function recordingDuration(libraryPath: string) {
+/**
+ * A recording's length, from its transcript or else its waveform, but only a
+ * length saved for this recording as it is now (the size it was made for, as
+ * the owners judge their caches). `stale` says a saved length exists that
+ * does not belong to the file (replaced since) or the file could not be
+ * measured, so the position of a link can't be judged; null and not stale:
+ * nothing saved.
+ */
+async function recordingDuration(libraryPath: string): Promise<{ duration: number | null; stale: boolean }> {
   const [notebook, ...parts] = libraryPath.split("/");
+  let size: number;
+  try { size = (await stat(filePathFromParts(notebook, parts))).size; } catch { return { duration: null, stale: true }; }
+  let stale = false;
   for (const [file, read] of [
-    [transcriptPath(notebook, parts), (value: unknown) => parseTranscript(value)?.audio.duration],
-    [audioPeaksPath(notebook, parts), (value: unknown) => (value as { duration?: unknown } | null)?.duration],
+    [transcriptPath(notebook, parts), (value: unknown) => { const transcript = parseTranscript(value); return transcript && { duration: transcript.audio.duration, size: transcript.audio.size }; }],
+    [audioPeaksPath(notebook, parts), (value: unknown) => { const peaks = value as { key?: unknown; duration?: unknown } | null; return { duration: peaks?.duration, size: typeof peaks?.key === "string" ? Number(peaks.key.split(":")[0]) : NaN }; }],
   ] as const) {
     try {
-      const duration = read(JSON.parse(await readFile(file, "utf8")));
-      if (typeof duration === "number" && Number.isFinite(duration) && duration > 0) return duration;
+      const saved = read(JSON.parse(await readFile(file, "utf8")));
+      if (!saved || typeof saved.duration !== "number" || !Number.isFinite(saved.duration) || saved.duration <= 0) continue;
+      if (saved.size === size) return { duration: saved.duration, stale: false };
+      stale = true;
     } catch { /* None saved, or unreadable: the next one may say. */ }
   }
-  return null;
+  return { duration: null, stale };
 }
 
 /** Whether something is at a path. `unknown` (no permission, a drive error) is never reported as missing. */
@@ -222,37 +275,156 @@ async function probe(absolutePath: string): Promise<"present" | "absent" | "unkn
 }
 
 /**
- * Nothing is left at these places: each item itself, and for a file its
- * sidecars. The migration's final check; `unverified` when a place could not
- * be checked.
+ * Whether a readable file is at a path, for the consumers that open it as one
+ * (an image, a TeX source): a folder, or a link whose target is gone, is
+ * `absent`; `unknown` (no permission, a drive error) is never reported as missing.
+ */
+async function probeFile(absolutePath: string): Promise<"present" | "absent" | "unknown"> {
+  try {
+    if (!(await stat(absolutePath)).isFile()) return "absent";
+    await access(absolutePath, constants.R_OK);
+    return "present";
+  } catch (error) { return ["ENOENT", "ENOTDIR", "ELOOP"].includes((error as NodeJS.ErrnoException).code ?? "") ? "absent" : "unknown"; }
+}
+
+/**
+ * A file's bytes, read within the byte budget: its size is checked before the
+ * read (a file the budget can't hold is never read: the budget is then used
+ * up) and the bytes actually read are counted. Null when not read, whether
+ * for the budget or because it can't be read; `budget.reached` tells which.
+ */
+async function readWithin(budget: IntegrityBudget, file: string): Promise<Buffer | null> {
+  budget.allows();
+  let size: number;
+  try { size = (await stat(file)).size; } catch { return null; }
+  if (!budget.admits(size)) return null;
+  try {
+    const bytes = await readFile(file);
+    budget.read(bytes.length);
+    return bytes;
+  } catch { return null; }
+}
+
+/**
+ * The SHA-256 of a file, streamed so that a stop or a spent budget ends it
+ * between chunks instead of after the whole file. "over-budget" when the file
+ * would pass the byte limit or the budget ran out meanwhile; null when it
+ * can't be read. A stop throws `IntegrityCheckCancelled`.
+ */
+async function hashWithin(budget: IntegrityBudget, file: string, size: number): Promise<string | null | "over-budget"> {
+  // A file too big for what is left is not compared (reported per file), while smaller ones still can be.
+  if (!budget.allows() || budget.statistics.bytesRead + size > budget.limits.bytes) return "over-budget";
+  const hash = createHash("sha256");
+  budget.read(0);
+  try {
+    for await (const chunk of createReadStream(file) as AsyncIterable<Buffer>) {
+      budget.streamed(chunk.length);
+      if (!budget.allows()) return "over-budget";
+      hash.update(chunk);
+    }
+  } catch (error) {
+    if (error instanceof IntegrityCheckCancelled) throw error;
+    return null;
+  }
+  return hash.digest("hex");
+}
+
+/** The places a file's side files live (one per kind that applies to its type, and a note's Python code), as `existingSidecars` looks them up. */
+function sidecarSlots(libraryPath: string, fileType: string | null) {
+  const [notebook, ...parts] = libraryPath.split("/");
+  const slots: { kind: string; absolutePath: string }[] = [];
+  if (!fileType) return slots;
+  for (const kind of SIDECAR_KINDS) if (kind.appliesTo(fileType)) slots.push({ kind: kind.id, absolutePath: kind.filePath(notebook, parts) });
+  if (fileType === "markdown") {
+    const python = splitFilePath(pythonSidecarPath(libraryPath));
+    slots.push({ kind: "python", absolutePath: filePathFromParts(python.notebook, python.pathParts) });
+  }
+  return slots;
+}
+
+/**
+ * Nothing is left at these places: each item itself, its side files, and the
+ * records that name its old path (stars, tags, review comments, pending agent
+ * changes, reference attachments, the tether, side files set aside for it).
+ * The migration's final check; `unverified` when a place or a store could not
+ * be checked, which is never read as clean.
  */
 export async function checkNothingLeftAt(items: { label: string; absolutePath: string; libraryPath?: string; fileType?: string | null }[]) {
   const leftovers: string[] = [];
   let unverified = false;
+  const unchecked = (label: string, why?: string) => { unverified = true; leftovers.push(`${label} (could not be checked${why ? `: ${why}` : ""})`); };
+  const files: { label: string; libraryPath: string }[] = [];
   for (const item of items) {
     try {
       const state = await probe(item.absolutePath);
       if (state === "present") leftovers.push(item.label);
-      if (state === "unknown") { unverified = true; leftovers.push(`${item.label} (could not be checked)`); }
+      if (state === "unknown") unchecked(item.label);
       if (!item.libraryPath || item.fileType === undefined) continue;
-      const [notebook, ...parts] = item.libraryPath.split("/");
-      for (const sidecar of await existingSidecars(notebook, parts, item.fileType)) leftovers.push(`${item.label} (${sidecar.kind})`);
+      files.push({ label: item.label, libraryPath: item.libraryPath });
+      for (const slot of sidecarSlots(item.libraryPath, item.fileType)) {
+        const found = await probe(slot.absolutePath);
+        if (found === "present") leftovers.push(`${item.label} (${slot.kind})`);
+        if (found === "unknown") unchecked(`${item.label} (${slot.kind})`);
+      }
     } catch (error) {
-      unverified = true;
-      leftovers.push(`${item.label} (could not be checked: ${error instanceof Error ? error.message : String(error)})`);
+      unchecked(item.label, error instanceof Error ? error.message : String(error));
     }
   }
+  if (files.length) await recordsLeftAt(files, leftovers, unchecked);
   return { leftovers, unverified };
+}
+
+/** The stores that keep a record by a file's path, asked whether any still names one of `files`. */
+async function recordsLeftAt(files: { label: string; libraryPath: string }[], leftovers: string[], unchecked: (label: string, why?: string) => void) {
+  const labelOf = new Map(files.map((file) => [file.libraryPath, file.label]));
+  const found = (libraryPath: string, record: string) => { const label = labelOf.get(libraryPath); if (label !== undefined) leftovers.push(`${label} (${record})`); };
+  const guarded = async (what: string, read: () => Promise<void>) => { try { await read(); } catch (error) { unchecked(what, error instanceof Error ? error.message : String(error)); } };
+  await guarded("stars and tags", async () => {
+    const { metadata, damaged } = await inspectWorkspaceMetadata();
+    if (damaged) return unchecked("stars and tags", damaged);
+    for (const starred of metadata.starredFilePaths) found(starred, "star");
+    for (const tagged of Object.keys(metadata.fileTags)) found(tagged, "tags");
+  });
+  await guarded("review comments", async () => {
+    const reviews = await inspectReviewKeys(getStateRoot());
+    if (reviews.damaged) return unchecked("review comments", reviews.damaged);
+    for (const key of reviews.keys) found(key, "review comments");
+  });
+  await guarded("pending agent reviews", async () => {
+    const pending = await listReviewEntryPaths();
+    if (pending.unreadable) unchecked("pending agent reviews", `${pending.unreadable} could not be read`);
+    for (const reviewed of pending.paths) found(reviewed, "agent changes");
+  });
+  await guarded("reference attachments", async () => {
+    for (const library of await libraryNotebookNames()) {
+      let inspected;
+      try { inspected = await inspectReferenceLibrary(library); } catch (error) { unchecked(`reference library of ${library}`, error instanceof Error ? error.message : String(error)); continue; }
+      if ("damaged" in inspected) { unchecked(`reference library of ${library}`, inspected.damaged); continue; }
+      for (const entry of Object.values(inspected.library?.entries ?? {})) for (const attachment of entry.attachments) if (attachment.kind !== "url") found(attachment.path, "reference attachment");
+    }
+  });
+  for (const notebook of new Set(files.map((file) => file.libraryPath.split("/")[0]))) {
+    await guarded(`.bib tether of ${notebook}`, async () => {
+      const tether = await readTetherTarget(notebook);
+      if (tether && "damaged" in tether) return unchecked(`.bib tether of ${notebook}`, tether.damaged);
+      if (tether && "libraryPath" in tether) found(tether.libraryPath, ".bib tether");
+    });
+    await guarded(`side files set aside in ${notebook}`, async () => {
+      for (const { record } of await readOrphans(notebook)) found(record.originalPath, "set-aside side file");
+    });
+  }
 }
 
 type NoteDocument = { documentPath: string; content: string };
 
 /**
  * The notebook's Markdown notes, read within the check's budget: notes are read
- * one by one while the budget allows (time, entries, and `byteLimit` of text);
- * those after that are only counted, so a huge or slow collection can't exceed
- * the budget before the first check starts. `complete` is false when some
- * folder or note could not be read, or notes were left out.
+ * one by one while the budget allows (time, entries, and `byteLimit` of raw
+ * bytes, taken from the file's size before it is read); those after that are
+ * only counted, so a huge or slow collection can't exceed the budget before
+ * the first check starts. The walk asks the budget at each entry, so a stop
+ * ends it. `complete` is false when some folder or note could not be read,
+ * or notes were left out.
  */
 async function readNotes(notebook: string, budget: IntegrityBudget, byteLimit: number) {
   const documents: NoteDocument[] = [];
@@ -270,17 +442,27 @@ async function readNotes(notebook: string, budget: IntegrityBudget, byteLimit: n
       if (--remaining < 0) { complete = false; return; }
       if (entry.name.startsWith(".") || [MARKDOWN_ASSETS_DIR, "node_modules", "__pycache__", "bower_components"].includes(entry.name)) continue;
       const next = [...parts, entry.name];
-      if (entry.isDirectory()) { await visit(next); continue; }
+      if (entry.isDirectory()) {
+        // A folder not entered may hold notes that are not even counted: the notes are not complete.
+        if (spent || !budget.allows()) { spent = true; complete = false; continue; }
+        await visit(next);
+        continue;
+      }
       if (!entry.isFile() || !MARKDOWN_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) continue;
       if (spent || !budget.allows()) { spent = true; leftOut += 1; continue; }
-      let content: string;
-      try { content = await readFile(filePathFromParts(notebook, next), "utf8"); }
+      // The size is checked before the read, and the bytes actually read are counted after it.
+      let size: number;
+      try { size = (await stat(filePathFromParts(notebook, next))).size; }
       catch { complete = false; continue; }
-      if (bytes + content.length > byteLimit) { spent = true; byteLimited = true; leftOut += 1; continue; }
-      bytes += content.length;
+      if (bytes + size > byteLimit) { spent = true; byteLimited = true; leftOut += 1; continue; }
+      let raw: Buffer;
+      try { raw = await readFile(filePathFromParts(notebook, next)); }
+      catch { complete = false; continue; }
+      if (bytes + raw.length > byteLimit) { spent = true; byteLimited = true; leftOut += 1; continue; }
+      bytes += raw.length;
       budget.visit();
-      budget.read(content.length);
-      documents.push({ documentPath: relativeFilePath(notebook, next), content });
+      budget.read(raw.length);
+      documents.push({ documentPath: relativeFilePath(notebook, next), content: raw.toString("utf8") });
     }
   };
   await visit([]);
@@ -318,15 +500,22 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
   options.onProgress?.({ check: "notebook", label: LABELS.notebook, index: 0, total: Object.keys(LABELS).length });
   let announced = true;
   const staged: string[] = [];
-  const visible = await listVisibleNotebookFiles(notebook, {
+  // One archive scope for every check: the archive is listed, as Try to fix
+  // lists it, so an archived file counts wherever it can change a verdict (a
+  // side file's return, a note's Python code, a LaTeX source). Each entry is
+  // counted and the budget asked as the walk goes.
+  const visible = await listNotebookInventory(notebook, {
     limit: limits.entries,
-    onHidden: (libraryPath, entryName) => { budget.visit(); if (entryName.startsWith(".libera-migrating-")) staged.push(libraryPath); },
+    onEntry: () => { budget.visit(); return budget.allows(); },
+    onHidden: (libraryPath, entryName) => { if (entryName.startsWith(".libera-migrating-")) staged.push(libraryPath); },
   });
-  budget.visit(visible.files.length);
   counts.files = visible.files.length;
+  /** Not every file was listed: where a side file went, or whether a note owns some code, can't be told then. */
+  const inventoryCut = !inventoryComplete(visible);
   const unreadableFolders = said("foldersUnreadable",
     `${plural(visible.unreadable.length, "folder")} could not be read (${visible.unreadable.slice(0, 3).join(", ")}${visible.unreadable.length > 3 ? ", …" : ""}), so files in ${visible.unreadable.length === 1 ? "it" : "them"} were not seen.`,
     { count: visible.unreadable.length, names: visible.unreadable.slice(0, 3).join(", ") + (visible.unreadable.length > 3 ? ", …" : "") });
+  const notebookTooLarge = said("notebookTooLarge", `${notebook} has more files than one check reads (${visible.files.length}).`, { name: notebook, count: visible.files.length });
   const notes = await readNotes(notebook, budget, limits.bytes);
   counts.notes = notes.documents.length + notes.leftOut;
   /** Notes read within the budget; the checks that read notes say when some were left out. */
@@ -346,6 +535,12 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     return probes.get(absolutePath)!;
   };
 
+  const fileProbes = new Map<string, Promise<"present" | "absent" | "unknown">>();
+  const probeFileOnce = (absolutePath: string) => {
+    if (!fileProbes.has(absolutePath)) fileProbes.set(absolutePath, probeFile(absolutePath));
+    return fileProbes.get(absolutePath)!;
+  };
+
   const absoluteOf = (libraryPath: string) => { const [owner, ...parts] = libraryPath.split("/"); return path.join(notebookPath(owner), ...parts); };
 
   const order = Object.keys(LABELS) as IntegrityCheckId[];
@@ -357,8 +552,13 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     else options.onProgress?.({ check: id, label: LABELS[id], index: order.indexOf(id), total: order.length });
     const before = findings.length;
     try {
-      budget.allows();
-      const add = (finding: Omit<IntegrityFinding, "check">) => {
+      // A check is not started once the budget is gone: it would read past the limit it reports.
+      if (!budget.allows()) {
+        const reason = said("stoppedAt", `Stopped at ${budget.reached}.`, { reason: budget.reachedSay!.code, ...budget.reachedSay!.params });
+        checks.push({ id, label: LABELS[id], status: "incomplete", note: reason.text, notes: [{ code: reason.code, params: reason.params }] });
+        return;
+      }
+      const add =(finding: Omit<IntegrityFinding, "check">) => {
         if (findings.length >= limits.findings) { findingsCut = true; return; }
         findings.push({ check: id, ...finding });
       };
@@ -386,7 +586,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
       try { JSON.parse(text); }
       catch { add({ severity: "error", path: notebook, message: "The notebook's settings file can't be read, so its color, emoji and group are the defaults.", fix: "Restore it from your sync service's version history; saving the notebook's settings writes a new one.", ...say("settingsCorrupt", undefined, "settingsCorruptFix") }); }
     }
-    if (visible.truncated) return said("notebookTooLarge", `${notebook} has more files than one check reads (${visible.files.length}).`, { name: notebook, count: visible.files.length });
+    if (visible.truncated) return notebookTooLarge;
     if (visible.unreadable.length) return unreadableFolders;
   });
 
@@ -398,17 +598,21 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     /** The file each side file was made for (size and content hash), as it recorded it. */
     const identities = new Map<string, { size: number; contentHash: string }>();
     let unreadSidecars = 0;
+    /** Side files that could not be read: what they say about their file is unknown, so nothing is offered for removal on their account. */
+    const unread = new Set<string>();
     budget.visit(sidecars.length);
     // Each owner's reading of what it saved (sidecars.ts `inspect`), and the
     // file's size against the one the side file was made for: a stat, not a
     // hash. PDFs and images are read only to find where a missing file went
     // (below), and only those of the size it had.
     const sizes = new Map<string, number | null>();
+    /** Files whose size could not be read for a reason other than being gone (no permission, a drive error): not compared, never passed. */
+    const sizeUnknown = new Set<string>();
     const sizeOf = async (fileParts: string[]) => {
       const key = fileParts.join("/");
       if (!sizes.has(key)) {
         budget.probe();
-        const stats = await lstat(path.join(notebookPath(notebook), ...fileParts)).catch(() => null);
+        const stats = await lstat(path.join(notebookPath(notebook), ...fileParts)).catch((error: NodeJS.ErrnoException) => { if (!["ENOENT", "ENOTDIR"].includes(error.code ?? "")) sizeUnknown.add(key); return null; });
         sizes.set(key, stats?.isFile() ? stats.size : null);
       }
       return sizes.get(key) ?? null;
@@ -422,24 +626,14 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     const notCompared = new Set<string>();
     const hashOf = (fileParts: string[], size: number) => {
       const key = fileParts.join("/");
-      if (!fileHashes.has(key)) fileHashes.set(key, (async () => {
-        if (!budget.allows() || budget.statistics.bytesRead + size > limits.bytes) return "over-budget" as const;
-        try {
-          const bytes = await readFile(path.join(notebookPath(notebook), ...fileParts));
-          budget.read(bytes.length);
-          return createHash("sha256").update(bytes).digest("hex");
-        } catch (error) {
-          if (error instanceof IntegrityCheckCancelled) throw error;
-          return null;
-        }
-      })());
+      if (!fileHashes.has(key)) fileHashes.set(key, hashWithin(budget, path.join(notebookPath(notebook), ...fileParts), size));
       return fileHashes.get(key)!;
     };
-    /** Whether the file's content is not the one recorded (same size assumed); null when it could not be compared. */
+    /** Whether the file's content is not the one recorded (same size assumed); null when it could not be compared, which is counted as not compared. */
     const contentDiffers = async (filePath: string, fileParts: string[], size: number, recorded: string) => {
       const hash = await hashOf(fileParts, size);
-      if (hash === "over-budget") { notCompared.add(filePath); return null; }
-      return hash === null ? null : hash.toLowerCase() !== recorded.toLowerCase();
+      if (hash === "over-budget" || hash === null) { notCompared.add(filePath); return null; }
+      return hash.toLowerCase() !== recorded.toLowerCase();
     };
     const outdatedCaches = new Map<string, CleanupAction[]>();
     const name = (kind: string) => kind.replace(/-/g, " ");
@@ -452,7 +646,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
       if (kind.layout === "folder") {
         if (!kind.inspectFolder) continue;
         let ink;
-        try { ink = await kind.inspectFolder(sidecar.path, getFileType(sidecar.fileParts.at(-1) ?? "") ?? ""); } catch { unreadSidecars += 1; continue; }
+        try { ink = await kind.inspectFolder(sidecar.path, getFileType(sidecar.fileParts.at(-1) ?? "") ?? ""); } catch { unreadSidecars += 1; unread.add(sidecar.path); continue; }
         budget.read(ink.bytes);
         if (ink.unreadable.length) add({ severity: "error", path: sidecar.filePath, message: `${plural(ink.unreadable.length, "ink file")} of ${sidecar.filePath} can't be read, so ${ink.unreadable.length === 1 ? "its" : "their"} ink is not shown (${ink.unreadable.slice(0, 3).join(", ")}).`, fix: "Restore them from your sync service's version history.", ...say("inkUnreadable", { count: ink.unreadable.length, path: sidecar.filePath, names: ink.unreadable.slice(0, 3).join(", ") }, "inkUnreadableFix") });
         if (ink.misplaced.length) add({ severity: "info", path: sidecar.filePath, message: `${plural(ink.misplaced.length, "ink file")} of ${sidecar.filePath} ${ink.misplaced.length === 1 ? "belongs" : "belong"} to a page or block this kind of file doesn't have, so ${ink.misplaced.length === 1 ? "it is" : "they are"} never shown.`, clear: [{ type: "ink-files", filePath: sidecar.filePath, names: ink.misplaced }], ...say("inkMisplaced", { count: ink.misplaced.length, path: sidecar.filePath }) });
@@ -460,9 +654,10 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
         sources.push(...ink.sources.map((source) => ({ size: source.size, contentHash: source.sha256 })));
         inkSources = ink.sourceFiles.map(({ name, source }) => ({ name, size: source.size, contentHash: source.sha256 || null }));
       } else {
-        let text: string;
-        try { text = await readFile(sidecar.path, "utf8"); } catch { unreadSidecars += 1; continue; }
-        budget.read(text.length);
+        const bytes = await readWithin(budget, sidecar.path);
+        // The budget, not the file, is why nothing more is read: the check says where it stopped.
+        if (!bytes) { if (budget.reached) break; unreadSidecars += 1; unread.add(sidecar.path); continue; }
+        const text = bytes.toString("utf8");
         let inspection: SidecarInspection | null = null;
         let valid = true;
         try { const value = JSON.parse(text); inspection = kind.inspect ? kind.inspect(value) : null; valid = !kind.inspect || inspection !== null; } catch { valid = false; }
@@ -479,7 +674,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
       if (identity?.contentHash) identities.set(sidecar.path, { size: identity.size, contentHash: identity.contentHash });
       if (!sources.length || orphaned.has(sidecar.path)) continue;
       const size = await sizeOf(sidecar.fileParts);
-      if (size === null) continue;
+      if (size === null) { if (sizeUnknown.has(sidecar.fileParts.join("/"))) notCompared.add(sidecar.filePath); continue; }
       if (kind.layout === "folder") {
         // One page's file with an old size is not the folder: the pages drawn on the current version stay.
         const stale = inkSources.filter((recorded) => recorded.size !== size).map((recorded) => recorded.name);
@@ -488,7 +683,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
         if (sameSize.length) {
           // The same size, another content: the file was replaced.
           const hash = await hashOf(sidecar.fileParts, size);
-          if (hash === "over-budget") notCompared.add(sidecar.filePath);
+          if (hash === "over-budget" || hash === null) notCompared.add(sidecar.filePath);
           const changed = typeof hash === "string" ? sameSize.filter((recorded) => recorded.contentHash!.toLowerCase() !== hash.toLowerCase()).map((recorded) => recorded.name) : [];
           if (changed.length) add({ severity: "info", path: sidecar.filePath, message: `${plural(changed.length, "ink file")} of ${sidecar.filePath} ${changed.length === 1 ? "was" : "were"} drawn on another file (its content differs, though its size is the same), so ${changed.length === 1 ? "it" : "they"} may no longer fit it (${changed.slice(0, 3).join(", ")}).`, fix: "Open the file to see whether the ink still fits; the pages drawn on the current version are kept.", clear: [{ type: "ink-files", filePath: sidecar.filePath, names: changed }], ...say("inkStaleContent", { count: changed.length, path: sidecar.filePath, names: changed.slice(0, 3).join(", ") }, "inkStaleFix") });
         }
@@ -510,33 +705,79 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     const follows = (kind: string, fileType: string | null) =>
       (fileType === "pdf" && ["pdf-annotations", "pdf-outline", "definitions"].includes(kind)) || (kind === "ink" && (fileType === "pdf" || fileType === "image"));
     const sized = new Map<string, Promise<{ path: string; size: number }[]>>();
+    /** The candidates were not all measured (the budget ran out): a file of the recorded size may be among those left out. */
+    let candidatesCut = false;
     const filesOfType = (fileType: string) => {
       if (!sized.has(fileType)) sized.set(fileType, (async () => {
         const found: { path: string; size: number }[] = [];
         for (const file of visible.files) {
           if (getFileType(file) !== fileType) continue;
+          if (!budget.allows()) { candidatesCut = true; break; }
           budget.probe();
           const size = await sizeOf(file.split("/").slice(1));
           if (size !== null) found.push({ path: file, size });
+          else if (sizeUnknown.has(file.split("/").slice(1).join("/"))) candidatesCut = true;
         }
         return found;
       })());
       return sized.get(fileType)!;
     };
     const hashes = new Map<string, Promise<string | null>>();
-    const taken = (kind: string) => new Set(sidecars.filter((sidecar) => sidecar.kind === kind && !orphaned.has(sidecar.path)).map((sidecar) => sidecar.filePath.toLowerCase()));
-    const owner = async (kind: string, fileType: string | null, identity: { size: number; contentHash: string } | undefined) => {
+    /** Whether a file's slot for this kind of side file is taken: the upkeep's own test (the file system's case rules), not a lower-cased guess. */
+    const slotTaken = (kind: string) => slotTakenBy(SIDECAR_KINDS.find((candidate) => candidate.id === kind)!.filePath);
+    /** Hashes the same-size candidates one by one within the budget (matchByIdentity would hash them outside it); one not compared is counted as such. */
+    const hashSameSize = async (sameSize: { path: string; size: number }[]) => {
+      for (const candidate of sameSize) {
+        if (hashes.has(candidate.path)) continue;
+        const hash = await hashOf(candidate.path.split("/").slice(1), candidate.size);
+        if (typeof hash !== "string") notCompared.add(candidate.path);
+        hashes.set(candidate.path, Promise.resolve(typeof hash === "string" ? hash : null));
+      }
+    };
+    /**
+     * Where the file a side file was made for went: its path; null when no
+     * file has its bytes; "unknown" when a file of its size could not be
+     * hashed (budget, a stop, a read error), so one may have them. Each
+     * candidate is hashed in turn within the budget (matchByIdentity would
+     * hash them outside it), and one not compared is counted as such.
+     */
+    const owner = async (kind: string, fileType: string | null, identity: { size: number; contentHash: string } | undefined): Promise<string | null | "unknown"> => {
       if (!identity || !follows(kind, fileType)) return null;
       const candidates = kind === "ink" ? [...await filesOfType("pdf"), ...await filesOfType("image")] : await filesOfType(fileType!);
-      return matchByIdentity(identity, candidates, taken(kind), hashes);
+      const taken = slotTaken(kind);
+      const sameSize: { path: string; size: number }[] = [];
+      for (const candidate of candidates) if (candidate.size === identity.size && !(await taken(candidate.path))) sameSize.push(candidate);
+      await hashSameSize(sameSize);
+      const found = await matchByIdentity(identity, candidates, taken, hashes);
+      if (found) return found;
+      for (const candidate of sameSize) if (await hashes.get(candidate.path) === null) return "unknown";
+      return null;
     };
     for (const orphan of orphans) {
       if (!budget.allows()) break;
       const what = `Saved ${name(orphan.kind)} of ${orphan.filePath}, which is not in the notebook`;
       const moved = await owner(orphan.kind, getFileType(orphan.filePath), identities.get(orphan.path));
-      add(moved
+      // Offered for removal only when every input is known: a side file that could not be read, a listing that was cut, a candidate that could not be hashed may each hide the file it follows.
+      const decided = moved === null && !unread.has(orphan.path) && !inventoryCut && !candidatesCut;
+      add(moved !== null && moved !== "unknown"
         ? { severity: "info", path: orphan.filePath, message: `${what}, belong to ${moved}: the same file, moved outside the app. They go to it the next time the notebook is opened.`, ...say("orphanSideFileMoved", { kind: orphan.kind, path: orphan.filePath, moved }) }
-        : { severity: "warning", path: orphan.filePath, message: `${what}.`, fix: "Put the file back where it was and it is found again. If it is gone for good, the side file can be removed from the notebook's .libera folder; keep a copy if unsure.", clear: [{ type: "side-file", kind: orphan.kind, filePath: orphan.filePath, gone: orphan.filePath }], ...say("orphanSideFile", { kind: orphan.kind, path: orphan.filePath }, "orphanSideFileFix") });
+        : { severity: "warning", path: orphan.filePath, message: `${what}.`, fix: "Put the file back where it was and it is found again. If it is gone for good, the side file can be removed from the notebook's .libera folder; keep a copy if unsure.", ...(decided ? { clear: [{ type: "side-file", kind: orphan.kind, filePath: orphan.filePath, gone: orphan.filePath }] } : {}), ...say("orphanSideFile", { kind: orphan.kind, path: orphan.filePath }, "orphanSideFileFix") });
+    }
+    // Notes still in an older layout, keyed by file name alone: read without
+    // upgrading them (annotations.ts listLegacyAnnotations). The migrator gives
+    // them to the one file of that name when it is opened, and sets them aside
+    // when there are several.
+    const older = await listLegacyAnnotations(notebook);
+    if (older.unreadable) unreadSidecars += 1;
+    for (const { kind, name: fileName, owners } of older.legacy) {
+      if (owners.length === 1) {
+        const owned = `${notebook}/${owners[0].join("/")}`;
+        add({ severity: "info", path: owned, message: `Saved ${kind} annotations of ${owned} are still in an older layout; they are moved to it the next time it is opened.`, ...say("legacyAnnotations", { kind, path: owned }) });
+      } else if (owners.length) {
+        add({ severity: "warning", path: notebook, message: `Saved ${kind} annotations of "${fileName}" are in an older layout that does not say which of ${owners.length} files of that name they belong to, so none of them gets them: they are set aside the next time one is opened.`, fix: "Copy the notes out of the notebook's .libera folder if you want to keep them; they can't be matched to a file by name alone.", ...say("legacyAnnotationsAmbiguous", { kind, name: fileName, count: owners.length }, "legacyAnnotationsAmbiguousFix") });
+      } else {
+        add({ severity: "info", path: notebook, message: `Saved ${kind} annotations of "${fileName}" are in an older layout and no file of that name is in the notebook. A file of that name that comes back, alone in the notebook, is given them.`, ...say("legacyAnnotationsNoFile", { kind, name: fileName }) });
+      }
     }
     // Side files set aside for files that left the notebook outside the app,
     // waiting for them to come back. Those whose file is back go to it the
@@ -544,15 +785,27 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     // (pdf-sidecars.ts reconcilePdfSidecars, ink.ts reconcileInkFolders): the
     // same bytes, or, with none recorded, the file back under its old path
     // without side files of that kind. They are never stale.
-    const listed = new Set(visible.files);
     const comesBack = async (kind: string, fileType: string | null, originalPath: string, identity: { size: number; contentHash: string } | null) =>
-      identity ? owner(kind, fileType, identity) : listed.has(originalPath) && !taken(kind).has(originalPath.toLowerCase()) ? originalPath : null;
+      identity ? owner(kind, fileType, identity) : (await disk.isFile(originalPath)) === true && !(await slotTaken(kind)(originalPath)) ? originalPath : null;
+    /**
+     * Whether the owner of a set-aside record may be back though nothing is
+     * reattached (its slot is taken, or its bytes match several files): the
+     * upkeep's expiry rule (`mayBeBack`), so such work is kept, never offered.
+     */
+    const mayReturn = async (kind: string, fileType: string | null, originalPath: string, identity: { size: number; contentHash: string } | null) => {
+      const candidates = identity && follows(kind, fileType) ? (kind === "ink" ? [...await filesOfType("pdf"), ...await filesOfType("image")] : await filesOfType(fileType!)) : [];
+      if (identity) await hashSameSize(candidates.filter((candidate) => candidate.size === identity.size));
+      return mayBeBack({ originalPath, source: identity }, candidates, hashes, (libraryPath) => disk.isFile(libraryPath));
+    };
+    /** Set-aside records whose fate is unknown (a candidate could not be hashed): kept, never offered for removal. */
+    const unsettled: string[] = [];
     const returning: string[] = [];
     const kinds = { annotations: "pdf-annotations", outline: "pdf-outline", definitions: "definitions" } as const;
     for (const { file, record } of await readOrphans(notebook)) {
       if (!budget.allows()) break;
       const moved = await comesBack(kinds[record.kind], "pdf", record.originalPath, record.source ?? null);
-      if (moved) { returning.push(file); add({ severity: "info", path: moved, message: `Saved ${name(kinds[record.kind])} set aside when ${record.originalPath} left the notebook belong to ${moved}${record.source ? ", the same file" : ""}. They go to it the next time the notebook is opened.`, ...say("sideSetAside", { kind: kinds[record.kind], originalPath: record.originalPath, path: moved, sameFile: record.source ? "yes" : "no" }) }); }
+      if (moved === "unknown" || (moved === null && await mayReturn(kinds[record.kind], "pdf", record.originalPath, record.source ?? null))) unsettled.push(file);
+      else if (moved) { returning.push(file); add({ severity: "info", path: moved, message: `Saved ${name(kinds[record.kind])} set aside when ${record.originalPath} left the notebook belong to ${moved}${record.source ? ", the same file" : ""}. They go to it the next time the notebook is opened.`, ...say("sideSetAside", { kind: kinds[record.kind], originalPath: record.originalPath, path: moved, sameFile: record.source ? "yes" : "no" }) }); }
     }
     const setAsideInk = orphanedSidecarsDirectoryPath(notebook, "ink");
     for (const entry of await readdir(setAsideInk, { withFileTypes: true }).catch(() => [])) {
@@ -563,8 +816,10 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
       if (typeof record?.originalPath !== "string") continue;
       const source = record.source && typeof record.source.size === "number" && typeof record.source.sha256 === "string" ? { size: record.source.size, contentHash: record.source.sha256 } : null;
       const moved = await comesBack("ink", getFileType(record.originalPath), record.originalPath, source);
-      if (moved) { returning.push(directory); add({ severity: "info", path: moved, message: `Ink set aside when ${record.originalPath} left the notebook belongs to ${moved}. It goes to it the next time the notebook is opened.`, ...say("inkSetAside", { originalPath: record.originalPath, path: moved }) }); }
+      if (moved === "unknown" || (moved === null && await mayReturn("ink", getFileType(record.originalPath), record.originalPath, source))) unsettled.push(directory);
+      else if (moved) { returning.push(directory); add({ severity: "info", path: moved, message: `Ink set aside when ${record.originalPath} left the notebook belongs to ${moved}. It goes to it the next time the notebook is opened.`, ...say("inkSetAside", { originalPath: record.originalPath, path: moved }) }); }
     }
+    returning.push(...unsettled);
     const isReturning = (file: string) => returning.some((kept) => file === kept || file.startsWith(`${kept}${path.sep}`));
     const setAside = path.join(notebookSystemDirectoryPath(notebook), ORPHANED_SIDECARS_DIR);
     const kept: CleanupAction[] = [];
@@ -576,13 +831,14 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
       }
     };
     await walk(setAside);
-    if (kept.length) add({ severity: "info", path: notebook, message: `${kept.length} side ${kept.length === 1 ? "file is" : "files are"} kept for files that left the notebook outside the app, in case they come back.`, clear: kept, ...say("sideFilesKept", { count: kept.length }) });
+    if (kept.length) add({ severity: "info", path: notebook, message: `${kept.length} side ${kept.length === 1 ? "file is" : "files are"} kept for files that left the notebook outside the app, in case they come back.`, ...(!inventoryCut && !candidatesCut && !budget.reached ? { clear: kept } : {}), ...say("sideFilesKept", { count: kept.length }) });
     const partial: Said[] = [];
     if (unreadable.length || unreadSidecars) partial.push(said("sideFilesUnreadable", `${unreadable.length + unreadSidecars} side ${unreadable.length + unreadSidecars === 1 ? "file or folder" : "files or folders"} could not be read.`, { count: unreadable.length + unreadSidecars }));
     // A file the budget no longer covered was not compared with what its side files were made for: it is not passed.
     if (notCompared.size) partial.push(said("sideFileContentUnverified", `The content of ${plural(notCompared.size, "file")} was not compared with what its side files were made for (the limit of ${Math.round(limits.bytes / 1024 / 1024)} MB read).`, { count: notCompared.size, megabytes: Math.round(limits.bytes / 1024 / 1024) }));
     // A file back in a folder that could not be listed is not seen to be back: what is kept for it can't be called stale.
-    if (visible.unreadable.length && !partial.length) partial.push(unreadableFolders);
+    if (visible.truncated) partial.push(notebookTooLarge);
+    else if (visible.unreadable.length && !partial.length) partial.push(unreadableFolders);
     return partial;
   });
 
@@ -596,7 +852,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     if (unused.some((asset) => !asset.toLowerCase().endsWith(".py"))) {
       for (const note of readable) {
         for (const target of markdownImageTargets(note.documentPath, note.content)) {
-          if (target.absolutePath && await probeOnce(target.absolutePath) !== "present") embedded.add(path.basename(target.absolutePath).toLowerCase());
+          if (target.absolutePath && await probeFileOnce(target.absolutePath) !== "present") embedded.add(foldedFileName(path.basename(target.absolutePath)));
         }
       }
     }
@@ -604,26 +860,34 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     // code of its own would have is most likely that note's, its folder
     // moved or renamed. It is kept too.
     const codeNames = new Map<string, string>();
-    if (unused.some((asset) => asset.toLowerCase().endsWith(".py"))) {
+    const hasCode = unused.some((asset) => asset.toLowerCase().endsWith(".py"));
+    /** The notes that could own some code were not all seen (listing cut, a probe that could not say, the budget): no code is offered for removal. */
+    let ownersCut = hasCode && inventoryCut;
+    let unknownOwners = 0;
+    if (hasCode) {
       for (const file of visible.files) {
         if (getFileType(file) !== "markdown") continue;
+        if (!budget.allows()) { ownersCut = true; break; }
         const own = pythonSidecarPath(file);
-        if (await probeOnce(path.join(notebookPath(notebook), ...own.split("/").slice(1))) === "absent") codeNames.set(own.slice(own.lastIndexOf("/") + 1).toLowerCase(), file);
+        const state = await probeOnce(path.join(notebookPath(notebook), ...own.split("/").slice(1)));
+        if (state === "absent") codeNames.set(foldedFileName(own.slice(own.lastIndexOf("/") + 1)), file);
+        else if (state === "unknown") { ownersCut = true; unknownOwners += 1; }
       }
     }
     for (const asset of unused) {
       const python = asset.toLowerCase().endsWith(".py");
-      const name = asset.slice(asset.lastIndexOf("/") + 1).toLowerCase();
+      const name = foldedFileName(asset.slice(asset.lastIndexOf("/") + 1));
       const wanted = !python && embedded.has(name);
       const owner = python ? codeNames.get(name) : undefined;
       add(python
         ? owner
           ? { severity: "warning", path: asset, message: `Python code of a note that is not in the notebook, named like ${owner}: probably its code, left behind when a folder moved.`, fix: `Move it to ${pythonSidecarPath(owner)} to give it back to ${owner}.`, ...say("pythonCodeOfMovedFolder", { owner, sidecarPath: pythonSidecarPath(owner) }, "pythonCodeOfMovedFolderFix") }
-          : { severity: "warning", path: asset, message: "Python code of a note that is not in the notebook.", fix: "Move the note back and it is found again; remove the code only once you no longer need it.", clear: [{ type: "asset", path: asset, ...(pythonSidecarDocumentPath(asset) ? { gone: pythonSidecarDocumentPath(asset)! } : {}) }], ...say("pythonCodeOrphan", undefined, "pythonCodeOrphanFix") }
+          : { severity: "warning", path: asset, message: "Python code of a note that is not in the notebook.", fix: "Move the note back and it is found again; remove the code only once you no longer need it.", ...(ownersCut ? {} : { clear: [{ type: "asset", path: asset, ...(pythonSidecarDocumentPath(asset) ? { gone: pythonSidecarDocumentPath(asset)! } : {}) }] }), ...say("pythonCodeOrphan", undefined, "pythonCodeOrphanFix") }
         : wanted
           ? { severity: "info", path: asset, message: "An image no note shows, but a note shows a missing image of this name: probably this one, left behind when the note moved.", fix: "Point the note's image at this file, or insert it again.", ...say("imageLeftBehind", undefined, "imageLeftBehindFix") }
           : { severity: "info", path: asset, message: "An image no note shows (an open, unsaved note may still use it).", fix: "It can be removed once no note needs it.", clear: [{ type: "asset", path: asset }], ...say("imageUnused", undefined, "imageUnusedFix") });
     }
+    if (ownersCut) return visible.truncated ? notebookTooLarge : visible.unreadable.length ? unreadableFolders : unknownOwners ? filesUnchecked(unknownOwners) : undefined;
   });
 
   await run("images", async (add) => {
@@ -633,7 +897,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
       for (const target of markdownImageTargets(note.documentPath, note.content)) {
         budget.probe();
         if (!target.absolutePath) { add({ severity: "warning", path: note.documentPath, message: `The image address "${target.source}" can't be read.`, ...say("imageAddressUnreadable", { source: target.source }) }); continue; }
-        const state = await probeOnce(target.absolutePath);
+        const state = await probeFileOnce(target.absolutePath);
         if (state === "unknown") unchecked += 1;
         if (state === "absent") add({ severity: "error", path: note.documentPath, message: `Shows ${target.libraryPath ?? target.source}, which is missing.`, fix: "Put the image back, or insert it again.", ...say("imageMissing", { target: target.libraryPath ?? target.source }, "imageMissingFix") });
       }
@@ -649,15 +913,16 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     // a recording's length from their side files).
     const byPath = new Map(readable.map((note) => [note.documentPath, note]));
     const headings = new Map<string, MarkdownHeadingAnchor[]>();
+    const htmlAnchors = new Map<string, Set<string>>();
     const hasHeading = (note: { documentPath: string; content: string }, fragment: string) => {
       if (!headings.has(note.documentPath)) headings.set(note.documentPath, markdownHeadingAnchors(note.content));
       if (findMarkdownHeadingAnchorIndex(headings.get(note.documentPath)!, fragment) >= 0) return true;
-      // An HTML anchor (`<a id="…">`) is a place to link to as well.
-      const name = decodeMarkdownHeadingHash(fragment);
-      return note.content.includes(`id="${name}"`) || note.content.includes(`name="${name}"`);
+      // An HTML anchor (`<a id="…">`) is a place to link to as well: a real `id` or `name` attribute, in either quote style.
+      if (!htmlAnchors.has(note.documentPath)) htmlAnchors.set(note.documentPath, markdownHtmlAnchors(note.content));
+      return htmlAnchors.get(note.documentPath)!.has(decodeMarkdownHeadingHash(fragment));
     };
-    const annotationIds = new Map<string, Promise<Set<string> | null>>();
-    const durations = new Map<string, Promise<number | null>>();
+    const annotationIds = new Map<string, Promise<SavedAnnotationIds>>();
+    const durations = new Map<string, ReturnType<typeof recordingDuration>>();
     const durationOf = (libraryPath: string) => {
       if (!durations.has(libraryPath)) durations.set(libraryPath, recordingDuration(libraryPath));
       return durations.get(libraryPath)!;
@@ -699,13 +964,17 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
         if (annotation) {
           budget.probe();
           if (!annotationIds.has(target.path)) annotationIds.set(target.path, savedAnnotationIds(target.path));
-          const ids = await annotationIds.get(target.path)!;
-          if (ids && !ids.has(annotation)) add({ severity: "warning", path: note.documentPath, message: `The link "${href}" points at an annotation of ${target.path} that is no longer there; ${opensAtStart}`, fix: "Link to the place again.", ...say("linkAnnotationGone", { href, path: target.path }, "linkAnnotationGoneFix") });
+          const saved = await annotationIds.get(target.path)!;
+          // No side file: the annotations are gone. An older layout or an unreadable one can't be judged here.
+          if (saved.state === "legacy" || saved.state === "unreadable") uncheckedLinks += 1;
+          else if (saved.state === "absent" || !saved.ids.has(annotation)) add({ severity: "warning", path: note.documentPath, message: `The link "${href}" points at an annotation of ${target.path} that is no longer there; ${opensAtStart}`, fix: "Link to the place again.", ...say("linkAnnotationGone", { href, path: target.path }, "linkAnnotationGoneFix") });
         }
         const time = view?.audio?.currentTime;
         if (time !== undefined && time > 0) {
-          const duration = await durationOf(target.path);
-          if (duration && time > duration + 1) add({ severity: "warning", path: note.documentPath, message: `The link "${href}" points at ${clock(time)}, past the end of ${target.path} (${clock(duration)}).`, fix: "Link to the moment again.", ...say("linkPastEnd", { href, time: clock(time), path: target.path, duration: clock(duration) }, "linkPastEndFix") });
+          const { duration, stale } = await durationOf(target.path);
+          // A length saved for another version of the recording says nothing about this one.
+          if (stale && !duration) uncheckedLinks += 1;
+          else if (duration && time > duration + 1) add({ severity: "warning", path: note.documentPath, message: `The link "${href}" points at ${clock(time)}, past the end of ${target.path} (${clock(duration)}).`, fix: "Link to the moment again.", ...say("linkPastEnd", { href, time: clock(time), path: target.path, duration: clock(duration) }, "linkPastEndFix") });
         }
       }
     }
@@ -713,28 +982,33 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
   });
 
   await run("latex", async (add) => {
-    const { references, incomplete, unresolved } = await latexDependencies(notebook, visible.files);
+    const { builds, incomplete, unresolved } = await latexDependencies(notebook, visible.files);
     const what = { include: "includes", bibliography: "uses the bibliography", graphics: "shows" } as const;
     let unchecked = 0;
-    for (const [file, written] of references) {
+    // Each main file's build is checked on its own: a chapter two mains share names its files relative to each.
+    for (const [file, written] of builds) {
       if (!budget.allows()) break;
       for (const reference of written) {
         await disk.check(reference.candidates);
         if (reference.candidates.some(disk.exists)) continue;
-        // A file the tree does not list (.sty, .cls, an image type it does not show) may still be on disk.
+        // A file the tree does not list (.sty, .cls, an image type it does not show) may still be on disk; TeX needs a readable file, so a folder or a dangling link is not one.
         let state: "present" | "absent" | "unknown" = "absent";
         for (const candidate of reference.candidates) {
           const [owner, ...parts] = candidate.split("/");
-          const found = await probe(path.join(notebookPath(owner), ...parts));
+          const found = await probeFileOnce(path.join(notebookPath(owner), ...parts));
           if (found === "present") { state = "present"; break; }
           if (found === "unknown") state = "unknown";
         }
         if (state === "unknown") unchecked += 1;
-        if (state === "absent") add({ severity: "error", path: file, message: `${what[reference.kind]} "${reference.written}", which is not found.`, fix: "Add the file, or correct the path (paths are read from the main file's folder).", ...say("latexMissing", { kind: reference.kind, written: reference.written }, "latexMissingFix") });
+        if (state === "absent" && reference.main === file) add({ severity: "error", path: file, message: `${what[reference.kind]} "${reference.written}", which is not found.`, fix: "Add the file, or correct the path (paths are read from the main file's folder).", ...say("latexMissing", { kind: reference.kind, written: reference.written }, "latexMissingFix") });
+        // A chapter is built from its main file: the one that loses the file is named.
+        else if (state === "absent") add({ severity: "error", path: file, message: `${what[reference.kind]} "${reference.written}", which is not found when building ${reference.main}.`, fix: "Add the file, or correct the path (paths are read from the main file's folder).", ...say("latexMissingInBuild", { part: reference.kind, written: reference.written, main: reference.main }, "latexMissingFix") });
       }
     }
     const notes = [
       incomplete || visible.truncated ? said("latexPartlyRead", "Large LaTeX projects are only partly read.") : null,
+      // A project in a folder that could not be listed is not seen at all.
+      visible.unreadable.length ? unreadableFolders : null,
       unchecked ? said("latexUnchecked", `${unchecked} LaTeX references could not be checked.`, { count: unchecked }) : null,
       unresolved ? said("latexMacroUnresolved", `${plural(unresolved, "LaTeX reference")} use${unresolved === 1 ? "s" : ""} a macro (\\name or #1), so ${unresolved === 1 ? "its file" : "their files"} can't be told without running TeX and ${unresolved === 1 ? "was" : "were"} not checked.`, { count: unresolved }) : null,
     ].filter((item): item is Said => item !== null);
@@ -745,7 +1019,8 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     const { metadata, damaged } = await inspectWorkspaceMetadata();
     if (damaged) add({ severity: "error", path: notebook, message: `The file that keeps stars, tags and notebook groups can't be read (${damaged}), so none are shown and none can be checked.`, fix: "Restore .libera-workspace.json from your sync service's version history before starring or tagging anything, which would replace it.", ...say("starsDamaged", { reason: damaged }, "starsDamagedFix") });
     // A file that could not be checked is never reported as missing.
-    const missing = async (libraryPath: string) => { await disk.check([libraryPath]); return !disk.exists(libraryPath) && !disk.unknown(libraryPath); };
+    const unknownPaths = new Set<string>();
+    const missing = async (libraryPath: string) => { await disk.check([libraryPath]); if (disk.unknown(libraryPath)) unknownPaths.add(libraryPath); return !disk.exists(libraryPath) && !disk.unknown(libraryPath); };
     for (const starred of metadata.starredFilePaths) {
       if (under(starred, notebook) && await missing(starred)) add({ severity: "warning", path: starred, message: "Starred, but the file is missing.", fix: "Unstar it, or put the file back.", clear: [{ type: "star", path: starred, gone: starred }], ...say("starredFileMissing", undefined, "starredFileMissingFix") });
     }
@@ -755,16 +1030,22 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     // Read without migrating older review storage (readReviewKeys would).
     const reviews = await inspectReviewKeys(getStateRoot());
     if (reviews.damaged) add({ severity: "error", path: notebook, message: `The review comments' index can't be read (${reviews.damaged}).`, fix: "Restore .libera/reviews/index.json from your sync service's version history.", ...say("reviewIndexDamaged", { reason: reviews.damaged }, "reviewIndexDamagedFix") });
-    if (reviews.legacy) add({ severity: "info", path: notebook, message: "Older review storage is waiting to be converted; it is the next time review comments load.", ...say("reviewLegacy") });
-    // An index entry whose document is not on disk: not synced yet, or lost. Its file is never offered for removal.
+    // The older single-file database is read as it is, never converted: its keys are checked like the index's.
+    const legacy = reviews.legacy ? await inspectLegacyReviewKeys(getStateRoot()) : { keys: [] as string[], damaged: undefined };
+    if (legacy.damaged) add({ severity: "warning", path: notebook, message: `The older review storage can't be read (${legacy.damaged}).`, fix: "Restore .libera/markdown-reviews.json from your sync service's version history.", ...say("reviewLegacyUnreadable", { reason: legacy.damaged }, "reviewLegacyUnreadableFix") });
+    else if (reviews.legacy) add({ severity: "info", path: notebook, message: "Older review storage is waiting to be converted; it is the next time review comments load.", ...say("reviewLegacy") });
+    // An index entry whose document is not on disk (not synced yet, or lost) or can't be read (corrupt, truncated): its comments are
+    // people's work, so neither is ever offered for removal, whether or not the note is still there.
     const undelivered = new Set<string>();
-    for (const { id, key } of await inspectMissingReviewDocuments(getStateRoot())) {
-      if (!under(key, notebook)) continue;
+    for (const { id, key, problem, reason } of await inspectReviewDocumentProblems(getStateRoot(), (key) => under(key, notebook))) {
       undelivered.add(key);
+      if (problem === "unreadable") { add({ severity: "warning", path: key, message: `The review comments of ${key} can't be read (${reason}); they are kept as they are.`, fix: `Restore .libera/reviews/${id}.json from your sync service's version history.`, ...say("reviewDocumentUnreadable", { path: key, reason: reason ?? "", id }, "reviewDocumentUnreadableFix") }); continue; }
       add({ severity: "warning", path: key, message: `The review comments of ${key} are not on this computer: they may not have synced yet, or are lost.`, fix: `Wait for your sync service to finish; if they don't arrive, restore .libera/reviews/${id}.json from its version history.`, ...say("reviewsNotOnComputer", { path: key }, "reviewsNotOnComputerFix") });
     }
-    for (const key of new Set(reviews.keys)) {
-      if (under(key, notebook) && !undelivered.has(key) && await missing(key)) add({ severity: "info", path: key, message: "Review comments are kept for this file, which is missing.", clear: [{ type: "review", path: key, gone: key }], ...say("reviewFileMissing") });
+    // A key only the older database holds is reported but not offered for removal: converting it is the app's step.
+    const indexed = new Set(reviews.keys);
+    for (const key of new Set([...reviews.keys, ...legacy.keys])) {
+      if (under(key, notebook) && !undelivered.has(key) && await missing(key)) add({ severity: "info", path: key, message: "Review comments are kept for this file, which is missing.", ...(indexed.has(key) ? { clear: [{ type: "review" as const, path: key, gone: key }] } : {}), ...say("reviewFileMissing") });
     }
     const pending = await listReviewEntryPaths();
     if (pending.unreadable) add({ severity: "warning", path: notebook, message: `${pending.unreadable} pending agent ${pending.unreadable === 1 ? "review can't" : "reviews can't"} be read (in any notebook).`, ...say("pendingAgentReviewsUnreadable", { count: pending.unreadable }) });
@@ -794,7 +1075,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     };
     for (const starred of metadata.starredFilePaths) keep("stars", starred);
     for (const tagged of Object.keys(metadata.fileTags)) keep("tags", tagged);
-    for (const key of new Set(reviews.keys)) keep("reviews", key);
+    for (const key of new Set([...reviews.keys, ...legacy.keys])) keep("reviews", key);
     for (const reviewed of pending.paths) keep("pending", reviewed);
     for (const file of runs.files) if (!file.shared && !file.reverted) keep("history", file.path);
     for (const [name, entry] of vanished) {
@@ -810,17 +1091,23 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
       const params = { name, stars: entry.stars, tags: entry.tags, reviews: entry.reviews, pending: entry.pending, history: entry.history, renamed };
       add({ severity: "warning", path: name, message: `Records are kept for a notebook named ${name}, which is not in the library any more (stars: ${entry.stars}, tags: ${entry.tags}, review comments: ${entry.reviews}, pending agent reviews: ${entry.pending}, undo history: ${entry.history}).${renamed === "none" ? "" : ` ${renamed} has files at the same paths: it may be the same notebook, renamed outside the app.`}`, fix: `Rename the folder back to ${name} to bring them back; nothing was changed.`, ...say("vanishedNotebookRecords", params, "vanishedNotebookRecordsFix") });
     }
+    // A record whose file could not be checked is neither reported nor passed.
+    if (unknownPaths.size) return filesUnchecked(unknownPaths.size);
   });
 
   let ownLibrary = null as ReferenceLibrary | null;
   await run("references", async (add) => {
+    /** Inputs that could not be read or probed: another library's attachments into this notebook, a linked attachment, the tether's target. */
+    let unchecked = 0;
     for (const library of await libraryNotebookNames()) {
       let inspected;
-      try { inspected = await inspectReferenceLibrary(library); } catch { continue; }
+      try { inspected = await inspectReferenceLibrary(library); } catch { unchecked += 1; continue; }
       if (library === notebook && !("damaged" in inspected)) ownLibrary = inspected.library ?? null;
       if ("damaged" in inspected) {
         // The app sets a damaged library aside when it next opens it; until then, its attachments count for nothing.
         if (library === notebook) add({ severity: "error", path: notebook, message: `The notebook's reference library can't be read (${inspected.damaged})`, fix: "Restore .libera/references/library.json from a backup or your sync service's version history before opening References, which would set the damaged file aside and start an empty library.", ...say("referenceLibraryDamaged", { reason: inspected.damaged }, "referenceLibraryDamagedFix") });
+        // Another notebook's damaged library may attach files of this one: they can't be seen.
+        else unchecked += 1;
         continue;
       }
       for (const entry of Object.values(inspected.library?.entries ?? {})) {
@@ -828,6 +1115,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
           if (attachment.kind === "url") continue;
           if (library !== notebook && !under(attachment.path, notebook)) continue;
           await disk.check([attachment.path]);
+          if (disk.unknown(attachment.path)) unchecked += 1;
           if (!disk.exists(attachment.path) && !disk.unknown(attachment.path)) {
             add({ severity: "warning", path: attachment.path, message: `Attached to the reference "${entry.key}" in ${library}'s library, but missing.`, fix: "Put the file back (it is re-attached when found), or detach it in References.", clear: [{ type: "attachment", library, entry: entry.id, path: attachment.path, gone: attachment.path }], ...say("referenceAttachmentMissing", { key: entry.key, library }, "referenceAttachmentMissingFix") });
           }
@@ -839,12 +1127,20 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
       add({ severity: "warning", path: notebook, message: `The .bib tether's settings can't be read (${tether.damaged}).`, fix: "Choose the tethered file again in References.", ...say("tetherSettingsDamaged", { reason: tether.damaged }, "tetherSettingsDamagedFix") });
     } else if (tether && "libraryPath" in tether) {
       await disk.check([tether.libraryPath]);
+      if (disk.unknown(tether.libraryPath)) unchecked += 1;
       if (!disk.exists(tether.libraryPath) && !disk.unknown(tether.libraryPath)) add({ severity: "warning", path: tether.libraryPath, message: "The library is tethered to this .bib file, which is missing.", fix: "Put the file back, or choose the tethered file again in References.", clear: [{ type: "tether", target: tether.libraryPath, gone: tether.libraryPath }], ...say("tetherFileMissing", undefined, "tetherFileMissingFix") });
-    } else if (tether && await probe(tether.absolutePath) === "absent") {
+    } else if (tether) {
+      const state = await probe(tether.absolutePath);
       // A folder that is gone too may be a drive that is unplugged: not for Acknowledge to forget.
-      if (await probe(path.dirname(tether.absolutePath)) === "absent") add({ severity: "warning", path: notebook, message: `The library is tethered to ${tether.absolutePath}, which is not found, nor is its folder: it may be on a drive that is not connected.`, fix: "Reconnect the drive, or choose the tethered file again in References.", ...say("tetherDriveNotFound", { path: tether.absolutePath }, "tetherDriveNotFoundFix") });
-      else add({ severity: "warning", path: notebook, message: `The library is tethered to ${tether.absolutePath}, which is missing.`, fix: "Put the file back, or choose the tethered file again in References.", clear: [{ type: "tether", target: tether.absolutePath }], ...say("tetherFileMissingAt", { path: tether.absolutePath }, "tetherFileMissingAtFix") });
+      if (state === "unknown") unchecked += 1;
+      else if (state === "absent") {
+        const folder = await probe(path.dirname(tether.absolutePath));
+        if (folder === "unknown") unchecked += 1;
+        else if (folder === "absent") add({ severity: "warning", path: notebook, message: `The library is tethered to ${tether.absolutePath}, which is not found, nor is its folder: it may be on a drive that is not connected.`, fix: "Reconnect the drive, or choose the tethered file again in References.", ...say("tetherDriveNotFound", { path: tether.absolutePath }, "tetherDriveNotFoundFix") });
+        else add({ severity: "warning", path: notebook, message: `The library is tethered to ${tether.absolutePath}, which is missing.`, fix: "Put the file back, or choose the tethered file again in References.", clear: [{ type: "tether", target: tether.absolutePath }], ...say("tetherFileMissingAt", { path: tether.absolutePath }, "tetherFileMissingAtFix") });
+      }
     }
+    if (unchecked) return filesUnchecked(unchecked);
   });
 
   await run("indexes", async (add) => {
@@ -861,7 +1157,8 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
       if (!note.content.includes("\uFFFD")) continue;
       hashes.delete(note.documentPath);
       if (!budget.allows()) continue;
-      try { const bytes = await readFile(absoluteOf(note.documentPath)); budget.read(bytes.length); hashes.set(note.documentPath, sha(bytes)); } catch { /* Not judged. */ }
+      const bytes = await readWithin(budget, absoluteOf(note.documentPath));
+      if (bytes) hashes.set(note.documentPath, sha(bytes));
     }
     /** The citation index covers LaTeX sources as well, hashed here (against the byte budget) for that comparison only. */
     const citationHashes = async () => {
@@ -869,7 +1166,8 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
       for (const file of visible.files) {
         if (!isLatexCitingPath(file) || all.has(file)) continue;
         if (!budget.allows()) break;
-        try { const bytes = await readFile(absoluteOf(file)); budget.read(bytes.length); all.set(file, sha(bytes)); } catch { /* Not judged. */ }
+        const bytes = await readWithin(budget, absoluteOf(file));
+        if (bytes) all.set(file, sha(bytes));
       }
       return all;
     };
@@ -907,21 +1205,48 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     }
     // Global Search, read without opening the index for writing; skipped when that can't be done.
     const searchFile = searchIndexFile();
-    const indexed = readIndexedLibraryPaths(searchFile, notebook);
+    const indexed = readIndexedLibraryRows(searchFile, notebook);
     const skipped: Said[] = [];
     // An index not built yet has nothing to compare; one that is there but can't be read safely is a check that did not run: the report is partial.
     if (!indexed && await probe(searchFile) !== "absent") skipped.push(said("globalSearchSkipped", "Global Search was not compared with the notebook: its index could not be read without opening it for writing."));
     if (indexed) {
       const listed = new Set(visible.files);
-      let gone = 0;
-      for (const file of indexed) {
-        if (listed.has(file) || !under(file, notebook)) continue;
+      // A row spelled differently from a listed file (a case-only rename the volume still opens under both names) is obsolete, though its path "exists".
+      const spelling = foldedFileName;
+      const listedSpellings = new Set(visible.files.map(spelling));
+      const rows = new Map(indexed.map((row) => [row.path, row]));
+      let gone = 0, changed = 0, missing = 0;
+      for (const { path: file, signature, status } of indexed) {
+        if (!under(file, notebook)) continue;
+        if (listed.has(file)) {
+          // A row at a path that now holds another file (moved away and replaced) carries the old file's signature. A PDF's or recording's signature has extra parts after "|".
+          if (status !== "ok" || !budget.allows()) continue;
+          budget.probe();
+          try { if (await readFileSignature(filePathFromParts(notebook, file.split("/").slice(1))) !== signature.split("|")[0]) changed += 1; } catch { /* Not judged. */ }
+          continue;
+        }
         if (!budget.allows()) break;
+        if (listedSpellings.has(spelling(file))) { gone += 1; continue; }
         budget.probe();
         await disk.check([file]);
         if (!disk.exists(file) && !disk.unknown(file)) gone += 1;
       }
+      // Files Search would index but has no row for (a move's destination). Not before the index holds this notebook at all, and not from a walk cut short.
+      if (indexed.length && !visible.truncated) {
+        const indexImages = getSearchPreferences().indexImages;
+        const isBuildProduct = latexBuildProductFilter();
+        const root = notebookPath(notebook);
+        for (const file of visible.files) {
+          if (rows.has(file) || (!indexImages && getFileType(file) === "image")) continue;
+          if (!budget.allows()) break;
+          budget.probe();
+          try { if (await isBuildProduct(filePathFromParts(notebook, file.split("/").slice(1)), root)) continue; } catch { continue; }
+          missing += 1;
+        }
+      }
       if (gone) add({ severity: "info", path: notebook, message: `Global Search still lists ${plural(gone, "file")} no longer in the notebook; it catches up the next time it runs.`, ...say("globalSearchStale", { count: gone }) });
+      if (changed) add({ severity: "info", path: notebook, message: `Global Search holds the text of an earlier file for ${plural(changed, "path")}; it catches up the next time it runs.`, ...say("globalSearchChanged", { count: changed }) });
+      if (missing) add({ severity: "info", path: notebook, message: `Global Search has no entry yet for ${plural(missing, "file")}; it catches up the next time it runs.`, ...say("globalSearchMissing", { count: missing }) });
     }
     if (skipped.length) return skipped;
   });
