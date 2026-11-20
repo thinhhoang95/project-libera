@@ -4,6 +4,7 @@ import { getNotebookNode, getTree, toStorageError } from "@/lib/storage";
 import { attachSharedFileIds } from "@/lib/collab/tree-file-ids";
 import { listSharedEntries } from "@/lib/collab/shared-writes";
 import { sharedNotebookMarker } from "@/lib/collab/shared-notebook";
+import { applyPendingRootTransitions } from "@/lib/storage/root-transitions";
 
 export const runtime = "nodejs";
 
@@ -25,6 +26,8 @@ export async function GET(request: NextRequest) {
       if (notebook) await attachSharedFileIds([notebook], listSharedEntries, isShared);
       return NextResponse.json({ notebook });
     }
+    // A shared notebook the host rebound to a renamed folder: its records follow before the tree is read.
+    await applyPendingRootTransitions().catch(() => undefined);
     const tree = await getTree({
       includeArchive,
       maintenance: request.nextUrl.searchParams.get("maintenance") === "throttled" ? "throttled" : "always",

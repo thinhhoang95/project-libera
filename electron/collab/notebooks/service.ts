@@ -10,6 +10,7 @@ import { promises as fs, type Dirent } from "node:fs";
 import path from "node:path";
 import { readNotebookBinding, readNotebookLifecycle, recordNotebookBinding, recordNotebookLifecycle, sameNotebookIdentity } from "../../../src/lib/collab/local-notebook-state";
 import { reserveLifecycle, ReservationConflictError, type Reservation } from "../../../src/lib/collab/lifecycle-reservation";
+import { recordRootTransition } from "../../../src/lib/collab/root-transitions";
 import { readReviewDocuments } from "../../../src/lib/storage/review-files";
 import { recordReviewFileIds, type ReviewFileMap } from "../control/review-migration";
 
@@ -756,6 +757,12 @@ export class NotebookServiceImpl implements NotebookService {
     if (row) this.deps.host.store.upsertProject({ ...row, localRoot: moved });
     this.projects.delete(handle.projectId);
     this.unjoined.delete(moved);
+    // Stars, tags, review keys, agent history, attachments and saved workspaces name the notebook by its folder:
+    // the rename is recorded once, durably, for Next to apply (it was applied by no one while the host only rebound).
+    if (path.dirname(handle.root) === path.dirname(moved)) {
+      try { recordRootTransition(this.lifecycleDirectory, { projectId: handle.projectId, from: path.basename(handle.root), to: path.basename(moved) }); }
+      catch (error) { this.logger.warn(`Shared notebook ${handle.name}: the folder rename could not be recorded for its stars, tags and other records.`, error); }
+    }
     this.logger.warn(`Shared notebook ${handle.name}: its folder moved to ${path.basename(moved)}; it continues there.`);
     this.deps.emit({ t: "project-changed", projectId: handle.projectId });
     this.deps.statusChanged?.();
