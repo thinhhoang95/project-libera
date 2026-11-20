@@ -93,6 +93,9 @@ import { diffManifestPaths, type RecordedPath } from "./transition-log";
 /** Scans a pairing of a missing file with a new one is held back for an uncertain absence before the usual restore-and-import applies. */
 const MAX_RENAME_DEFERRALS = 8;
 
+/** Entries remembered as spelled by a remote normalization-only rename. */
+const MAX_REMOTE_RESPELLS = 200;
+
 /** Where a notebook keeps its files' ink (INK_DIR in src/lib/storage/constants.ts). */
 const INK_DIRECTORY = "_ink";
 
@@ -385,6 +388,10 @@ export class SharedProject {
   private readonly scanFairness = new ScanFairness();
   /** The disk spelling of a known name that another program changed (case, Unicode form), until it is seen at two scans in a row (S39). */
   private readonly respellSeen = new Map<string, string>();
+  /** Entries already logged as keeping a remote normalization spelling (S39). */
+  private readonly respellLogged = new Set<string>();
+  /** Entries this host's own scan respelled in the manifest: not a remote rename when they come back through the manifest. */
+  private readonly ownRespells = new Set<string>();
   /** Scans a missing file's pairing with a new file was held back because its absence was uncertain (S41). */
   private readonly renameDeferrals = new Map<string, number>();
   private readonly refusedLogged = new Set<string>();
@@ -2558,6 +2565,15 @@ export class SharedProject {
         this.respellSeen.delete(fileId);
         return;
       }
+      // A normalization-only difference (no case change) in an entry another device spelled that way: this disk or sync client keeps the other form, and renaming it back would start a rename back and forth between devices.
+      if (to.normalize("NFC") === record.path.normalize("NFC") && this.state.remoteRespells?.[fileId]?.path === record.path) {
+        if (!this.respellLogged.has(fileId)) {
+          this.respellLogged.add(fileId);
+          this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: ${record.path} is spelled differently on this computer's disk (Unicode form). The shared name stays as another device set it.`);
+        }
+        this.respellSeen.delete(fileId);
+        return;
+      }
       // A rename in progress, or the volume's own spelling of a name Libera just wrote, settles by the next scan (the usual cadence; no timer of its own).
       if (this.respellSeen.get(fileId) !== to) {
         this.respellSeen.set(fileId, to);
@@ -2769,6 +2785,7 @@ export class SharedProject {
       const from = record.path;
       const folder = record.kind === "folder";
       this.respellSeen.delete(fileId);
+      this.ownRespells.add(fileId);
       touched.add(from).add(to);
       operations.push((map, doc) => {
         const current = readManifest(doc).get(fileId);
@@ -3044,7 +3061,7 @@ export class SharedProject {
         }
         destination = where;
       }
-      if (!destination || !directories.has(destination) || known.has(manifestPathKey(destination))) continue;
+      if (!destination || !directories.has(destination) || Object.values(this.state.layout).some((other) => other.kind === "folder" && manifestPathKey(other.path) === manifestPathKey(destination as string))) continue;
       const target = destination;
       const moved: Array<{ id: string; record: LayoutRecord; to: string }> = [{ id: fileId, record, to: target }];
       for (const [otherId, other] of Object.entries(this.state.layout)) {
@@ -4104,6 +4121,32 @@ export class SharedProject {
    * not removals. Called before the tree event, so a window that reacts to it
    * finds the transition in the log.
    */
+  /**
+   * Remembers the entries a remote device renamed only in Unicode form (S39),
+   * and forgets one once its path changes again. At most MAX_REMOTE_RESPELLS
+   * are kept (the oldest go first).
+   */
+  private noteRemoteRespells(next: Map<string, RecordedPath>): void {
+    let changed = false;
+    const marks = this.state.remoteRespells ?? {};
+    for (const [fileId, now] of next) {
+      const before = this.recordedPaths.get(fileId);
+      if (!before || before.path === now.path) continue;
+      const own = this.ownRespells.delete(fileId);
+      if (!own && before.path.normalize("NFC") === now.path.normalize("NFC")) {
+        marks[fileId] = { path: now.path, at: Date.now() };
+        changed = true;
+      } else if (marks[fileId]) {
+        delete marks[fileId];
+        changed = true;
+      }
+    }
+    if (!changed) return;
+    const keep = Object.entries(marks).sort((a, b) => b[1].at - a[1].at).slice(0, MAX_REMOTE_RESPELLS);
+    this.state.remoteRespells = Object.fromEntries(keep);
+    this.saveSoon();
+  }
+
   private recordTransitions(layout: { paths: Map<string, string>; refused: Array<{ fileId: string }> }): void {
     if (this.info.album) return;
     try {
@@ -4113,6 +4156,7 @@ export class SharedProject {
         const before = this.recordedPaths.get(fileId);
         if (before && !next.has(fileId)) next.set(fileId, before);
       }
+      this.noteRemoteRespells(next);
       const diff = diffManifestPaths(this.recordedPaths, next, Date.now());
       if (diff.upserts.length === 0 && diff.removals.length === 0) return;
       this.ctx.host.store.commitManifestPaths(this.info.projectId, diff);
