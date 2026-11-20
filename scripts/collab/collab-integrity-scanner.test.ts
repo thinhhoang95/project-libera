@@ -126,6 +126,7 @@ test("S39 to S44 through the host: outside renames keep identities and hold what
     // S43: a whole folder moved outside is one folder rename, the folder entry's ID kept.
     renameSync(path.join(root, "Folder"), path.join(root, "Moved"));
     await until(() => entryAt(peer!, projectId, "Moved/f1.bin")?.fileId === f1Id, "the files keep their IDs");
+    await until(() => entryAt(peer!, projectId, "Moved/f2.bin") !== undefined && entryAt(peer!, projectId, "Moved")?.kind === "folder", "the folder entry follows its files");
     await project.whenIdle();
     const folders = manifestEntries(peer, projectId).filter((entry) => entry.kind === "folder" && (entry.path === "Folder" || entry.path === "Moved"));
     assert.equal(folders.length, 1, `one folder identity, not two: ${JSON.stringify(manifestEntries(peer, projectId).map((entry) => [entry.kind, entry.path]))}`);
