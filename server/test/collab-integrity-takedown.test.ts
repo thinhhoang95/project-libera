@@ -19,7 +19,7 @@ const sha = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 
 async function upload(bytes: Buffer, token: string) {
   const response = await fetch(`${env.server.url}${project()}/blobs/${sha(bytes)}`, {
-    method: "PUT", headers: { authorization: `Bearer ${token}`, "content-type": "application/octet-stream" }, body: bytes,
+    method: "PUT", headers: { authorization: `Bearer ${token}`, "content-type": "application/octet-stream" }, body: new Uint8Array(bytes),
   });
   assert.ok(response.status === 200 || response.status === 201, `upload ${response.status}`);
 }
