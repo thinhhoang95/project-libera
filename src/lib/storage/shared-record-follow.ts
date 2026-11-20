@@ -495,3 +495,18 @@ export async function followCommittedChange(notebook: string, committed: Array<S
     held: mine.flatMap((outcome) => outcome.held),
   };
 }
+
+/**
+ * Before Check Notebook, Try to fix or Acknowledge make their plan (their routes call this): applies the host's
+ * pending record moves for a shared notebook, so they judge what this computer holds once the moves it already knows
+ * of are followed, not a state the next tree load changes. The check itself stays read-only. Never throws; does
+ * nothing for a local notebook, and costs one host call when nothing is pending.
+ */
+export async function settleSharedRecordsBeforeCheck(notebook: string): Promise<void> {
+  try {
+    if (typeof notebook !== "string" || !notebook || !sharedNotebookMarker(notebook)) return;
+  } catch {
+    return;
+  }
+  await drainSharedRecordTransitions(notebook).catch(() => undefined);
+}

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/api";
 import { toStorageError } from "@/lib/storage";
 import { applyNotebookRepair, planNotebookRepair } from "@/lib/storage/repair";
+import { settleSharedRecordsBeforeCheck } from "@/lib/storage/shared-record-follow";
 
 export const runtime = "nodejs";
 
@@ -13,7 +14,10 @@ export async function GET(request: NextRequest) {
   const authError = requireAuth(request);
   if (authError) return authError;
   try {
-    return NextResponse.json(await planNotebookRepair(request.nextUrl.searchParams.get("notebook") ?? ""));
+    const notebook = request.nextUrl.searchParams.get("notebook") ?? "";
+    // A shared notebook's pending record moves are applied before the plan (the apply re-plans and compares).
+    await settleSharedRecordsBeforeCheck(notebook);
+    return NextResponse.json(await planNotebookRepair(notebook));
   } catch (error) {
     const storageError = toStorageError(error);
     return NextResponse.json({ error: storageError.message }, { status: storageError.status });

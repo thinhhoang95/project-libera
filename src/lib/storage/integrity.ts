@@ -496,7 +496,7 @@ async function readNotes(notebook: string, budget: IntegrityBudget, byteLimit: n
  * Findings say what is wrong and how to set it right.
  */
 export function verifyNotebook(name: string, options: VerifyOptions = {}): Promise<IntegrityReport> {
-  // TODO(B1): drainSharedRecordTransitions(notebook) for a shared notebook, here and not inside withReadOnlyStorage: the drain writes this computer's records, and the check itself stays read only.
+  // A shared notebook's pending record moves are applied by the verify route before this (settleSharedRecordsBeforeCheck): the check itself only reads.
   return withReadOnlyStorage(() => checkNotebook(name, options));
 }
 

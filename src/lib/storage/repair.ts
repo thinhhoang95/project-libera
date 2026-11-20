@@ -294,7 +294,7 @@ async function plan(name: string): Promise<{ plan: RepairPlan; asides: Map<strin
   const notebook = assertRepairable(name);
   if (!(await lstat(notebookPath(notebook)).catch(() => null))?.isDirectory()) throw new StorageError("Notebook not found.", 404);
   const shared = isSharedNotebookPath(notebook);
-  // TODO(B1): drainSharedRecordTransitions(notebook) here, for a shared notebook, before the records are read.
+  // A shared notebook's pending record moves were applied by the repair route before this plan (settleSharedRecordsBeforeCheck).
   // A shared notebook's files are the host's manifest: fail closed when it can't be had.
   let manifest: Extract<ManifestView, { state: "ok" }> | null = null;
   if (shared) {

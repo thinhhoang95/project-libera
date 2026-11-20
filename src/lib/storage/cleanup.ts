@@ -390,7 +390,7 @@ async function entriesOf(notebook: string, action: CleanupAction): Promise<Clean
 export function planNotebookCleanup(name: string, options: CleanupOptions = {}): Promise<CleanupPlan> {
   return withReadOnlyStorage(async () => {
     const notebook = assertRepairable(name);
-    // TODO(B1): drainSharedRecordTransitions(notebook) here, for a shared notebook, before the plan is made.
+    // A shared notebook's pending record moves were applied by the cleanup route before this plan (settleSharedRecordsBeforeCheck).
     const { clearable, token, remaining, notes } = await collect(notebook, await assertNothingToMove(notebook), options);
     return {
       notebook,
