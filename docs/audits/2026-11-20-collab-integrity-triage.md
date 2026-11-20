@@ -1,0 +1,43 @@
+# Shared notebook integrity: triage and fix plan (2026-11-20)
+
+Source: a static Codex review (gpt-6.2-sol, xhigh) of `main` at `b3f6269`. It covers shared notebooks: in-app moves through the collaboration host, moves made by a collaborator, outside moves in the working folder, the host's SQLite and the server's sync, deadlocks, Check Notebook, Try to fix, Acknowledge and lifecycle transitions. It has 74 findings (S1–S74), reproduced verbatim in [2026-11-20-codex-collab-integrity-review.md](2026-11-20-codex-collab-integrity-review.md). This round follows the local-notebook round ([2026-11-20-move-integrity-triage.md](2026-11-20-move-integrity-triage.md)).
+
+## Rules for the round
+
+- Every finding is treated as real until the fixing agent shows otherwise from the code.
+- **Check Notebook is the oracle.** Every in-app move, fix or automatic upkeep step, in a shared notebook too, must leave a state whose findings the verifier agrees with, unless the user acknowledged them. No module keeps a rule of its own where the verifier has one. Tests assert `assertNotebookSound` (or the verifier's findings) after the operation where the harness allows it.
+- **Try to fix stays name-based.** Do not use fingerprints, stamps, retention or merge layers. The collaboration layer's own identities (manifest file IDs, document IDs, blob SHA-256) are the sync design and may be used to bind operations and records.
+- **Shared text changes only through the host** (`writeSharedText`, `applyEdits`, the host's file ops). Never write a shared file's text on disk directly.
+- Migrations keep refusing shared notebooks.
+- **Destructive steps fail closed.** If a check cannot establish that something is stale, free, unique or owned, the step is refused or held, and the report says so.
+- **Once the host has committed a change, it cannot be taken back.** Every follow-up step runs, and anything that stays behind is reported as `SharedOperationUnfinishedError` (`src/lib/collab/shared-outcomes.ts`), which carries the committed mapping.
+- Tests: run the package's own test files once, then `npx tsc --noEmit -p .` once (and `-p server` when server code changed), and eslint on the changed files once. No full suites, fuzz or soak loops.
+
+## Decisions taken in triage
+
+- **Records follow every manifest move, durably (S4, S31, S35).** The host keeps a durable per-project log of manifest transitions, keyed by file ID: moves and removals, local or remote. Next applies the log to the records it keeps on this computer, idempotently and with ownership checks, then acknowledges it. The shared wrappers apply their own transition at once, so the response reports the outcome. The log makes sure a crash, a lost response or a remote move still gets applied later.
+- **Links follow shared moves (S21, S22).** This reverses "a move inside a shared notebook rewrites nothing". Rewrites go through the host with a text precondition. Anything not rewritten is reported, as for a local move.
+- **Try to fix and Acknowledge on a shared notebook (S66, S67).** The report says which actions are possible. Try to fix may pair *this computer's* records (stars, tags, local sidecars, reviews, attachments) under the name rule, but only to a file the host's manifest lists at commit, and only when the old path is gone from the manifest. Acknowledge may remove local-only records under the same check. Anything the host owns stays refused.
+- **Check Notebook asks the host (S63, S64).** On a shared notebook it compares the disk with a read-only manifest view and with the live PDF document. When the host cannot answer, those checks are reported as partial.
+- **Ambiguous outside renames are not guessed (S40, S41, S44).** When the evidence is uncertain (bytes differ, the absence is uncertain, the late-copy evidence is missing), the host holds the case for the user through its existing reconciliation, and both inputs are kept.
+
+## Packages
+
+Agents: Sonnet, one worktree each, branched from `fix/collab-integrity-audit`. Ownership is by function inside shared files (`electron/collab/notebooks/project.ts`, `src/lib/collab/shared-writes.ts`, `src/components/libera/use-libera-workspace.ts`). Wave 2 starts after B1 is merged.
+
+| Package | Findings | Owns |
+|---|---|---|
+| T1 shared tree identity | 1, 2, 32, 33, 34 | `tree.ts` shared file-ID stamping and `getFileNode` for shared notebooks; `src/lib/collab/tree-file-ids.ts`; `src/lib/tree-merge.ts`; `src/lib/collab/ui/tree-changes.ts`; in `use-libera-workspace.ts`, host tree events, remote-move retargeting and incremental refresh; `use-saved-workspaces.ts`; `getSharedFileNode`; the shared file-ID requirement in `src/app/api/files/route.ts` |
+| B1 record follow-up | 4, 5, 18 (single operations), 31, 35 | new `src/lib/storage/shared-record-follow.ts`; in `shared-writes.ts`, everything in `moveSharedFile`, `deleteSharedFile`, `renameSharedFolder` and `deleteSharedFolder` after the host call, plus `moveSharedLocalRecords`; mapping of shared errors in the files route; the renderer's error path for single operations; host `project.ts` `treeChanged` and a durable transition log (store table, control route, `host-client.ts` call); `forward-search-changes.ts` |
+| C1 copy, create, upload, save | 23, 24, 25, 26, 27, 28, 29, 30 | in `shared-writes.ts`: `copyFileIntoSharedDirectory`, uploads, image assets, `createShared*`, `saveSharedFileText`, `writeSharedBlob` and blob reads; the shared copy branch in `files.ts`; `shared-source.ts`; host `project.ts` `readBlob`, `publishCreated`, and the create and write-blob branches of `fileOp` |
+| L1 links on shared moves | 21, 22 | `move-links.ts`, `move-rewrites.ts`, `latex/path-occurrences.ts`; one call site each in `moveSharedFile` and `renameSharedFolder`; `docs/features/move-link-refactor.md` |
+| BT shared batch | 17, 18 (batch), 19, 20 | `batch-files.ts`, `src/app/api/files/batch/route.ts`, the renderer's batch functions, `file-selection.ts`, `docs/features/multi-file-selection.md` |
+| H1 host file ops | 3, 13, 14, 16, 45 | host `project.ts` `fileOp` rename, delete and folder branches; companion planners (`inkCompanionMoves`, `transcriptCompanionMoves`, `pythonCompanionMoves`, `pythonCompanion`, `assertRenameKeepsRecords`); companion save preconditions in `ink.ts` and `transcripts.ts` |
+| H2 host scanner | 39, 40, 41, 42, 43, 44, 49, 74 | host `project.ts` `scan`, `retirePath`, `isLateCopy`, retirement in `followManifest`, `compatibleKind`; the scan logic of `scan-reads.ts`; `docs/features/notebook-sync.md` |
+| H3 materialization and core durability | 46, 47, 48, 50, 52, 53, 54, 55 | host `project.ts` `applyManifest`, `holdsOwnBytes`, `archive`, move recovery in `open`, `isMaterialized`, `start`, `noteCaughtUp`, `manifestCaughtUp`, `writeManifest`, `takeExternalEdit`; `move-journal.ts`; join status in `service.ts`; `core/doc-hub.ts`, `core/sync-client.ts`, `core/outbound.ts` |
+| H4 host locks and queues | 51, 56, 57 | `core/store.ts` owner lock; `core/host.ts`; `core/pending-commands.ts`; deadlines in `scan-reads.ts`; `project.ts` `takeStaged` and the waits after uploads; call deadlines in `src/lib/collab/host-client.ts`; the record lock in `ink.ts` |
+| SV server | 58, 59, 60, 61, 62 | `server/src/api/commands.ts`, `documents.ts`, `projects.ts` (lock order, orphaned blobs), `server/src/sync/validate.ts`, `server.ts`, `store.ts`, `server/src/auth/access.ts`, `server/src/blobs/gc.ts`; host `project.ts` `ensureDoc` |
+| PL live PDF and transcripts | 36, 37, 38 | `electron/collab/notebooks/pdf-marks.ts`; the internals of `followSharedPdfChanges` and upkeep in `pdf-sidecars.ts`; the pending-transcript and `followSharedAudioChanges` internals in `transcripts.ts` |
+| V verifier, Try to fix, Acknowledge | 63, 64, 65, 66, 67 | `integrity.ts`, `repair.ts`, `cleanup.ts`, `notebook-integrity-dialog.tsx`, the verify, repair and cleanup routes, `docs/features/notebook-integrity.md` |
+| LC lifecycle | 68, 69, 70, 71, 72, 73 | host `service.ts` share, join, rebind and takedown; `transcript-conversion.ts`; `control/review-migration.ts`, `routes-threads.ts`; `project.ts` `prepareLocalConversion`, `catchUpWithFence`, `preserveBinariesAfterTakedown`; `migration-fence.ts` lifecycle reservation; server takedown and blob recovery; `storage/paths.ts` |
+| B2 record stores (wave 2) | 6, 7, 8, 9, 10, 11, 12, 15, 16 (Next) | the record-store helpers that B1's follow-up calls: pending agent reviews, agent undo history, review transfer, attachments and tether outcomes, exclusive publication of local sidecars, case-only aliases, type-change preflight, Next's delete cleanup limited to local stores |
