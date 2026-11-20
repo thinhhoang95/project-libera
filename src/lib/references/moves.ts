@@ -6,7 +6,7 @@ import { citedKeys, rewriteCitationKeys } from "@/lib/references/citation-syntax
 import { duplicateScore } from "@/lib/references/dedupe";
 import { entryForKey, libraryEntriesByKey } from "@/lib/references/format";
 import { generateCitationKey, takenCitationKeys } from "@/lib/references/keys";
-import { absoluteNotebookFile, writeTextAtomically } from "@/lib/references/rewrite";
+import { absoluteNotebookFile, hashText, writeTextAtomically } from "@/lib/references/rewrite";
 import type { ReferenceEntry, ReferenceLibrary, ReferenceLibraryOp } from "@/lib/references/types";
 import { getFileType } from "@/lib/storage/file-types";
 import { refreshNotebookCitations } from "@/lib/storage/reference-citations";
@@ -33,7 +33,8 @@ import { itemPath, splitDirectoryPath } from "@/lib/storage/paths";
 //   remapped those of the moved file itself before this runs.
 // - Rewrites are written to the moved files on disk and reported, with the
 //   per-file key map, so the client can apply the same change to an open
-//   draft. A failure here never fails the move: it is logged and returned as
+//   draft. They are planned first (key map and text hashes, handed to
+//   `onPlan`) and written after, so a crash between the two can be finished. A failure here never fails the move: it is logged and returned as
 //   `error`.
 
 export type MovedMarkdownFile = { from: string; to: string };
@@ -51,6 +52,19 @@ export type ReferenceMoveResult = {
   destinationRevision: number | null;
   /** Set when copying failed. The files were moved regardless. */
   error?: string;
+};
+
+/**
+ * One note's planned citation rewrite: the key map and the hashes of the text
+ * before and after it. A migration saves these before the first rewritten text
+ * is published, so a crash in between is resumed with the right map. Further
+ * rewrite kinds (links) get a list of their own next to it.
+ */
+export type PlannedCitationRewrite = { path: string; map: Record<string, string>; before: string; after: string };
+
+export type CopyReferencesOptions = {
+  /** Called once the plan is known and before any note is rewritten (a migration saves it in its journal). */
+  onPlan?: (result: ReferenceMoveResult, rewrites: PlannedCitationRewrite[]) => Promise<void>;
 };
 
 export function emptyReferenceMoveResult(): ReferenceMoveResult {
@@ -159,7 +173,7 @@ function errorMessage(error: unknown) {
 }
 
 /** Fills `result` as it goes, so a late failure still reports what was done. */
-async function copyReferences(sourceNotebook: string, destinationNotebook: string, files: MovedMarkdownFile[], result: ReferenceMoveResult) {
+async function copyReferences(sourceNotebook: string, destinationNotebook: string, files: MovedMarkdownFile[], result: ReferenceMoveResult, options: CopyReferencesOptions) {
   const texts = new Map<string, string>();
   const keys = new Set<string>();
   for (const { to } of files) {
@@ -194,29 +208,61 @@ async function copyReferences(sourceNotebook: string, destinationNotebook: strin
   result.reused = plan.reused;
 
   const renamed = new Map<string, { from: string; to: string; files: string[] }>();
-  const rewritten: string[] = [];
+  const rewrites: PlannedCitationRewrite[] = [];
   for (const [file, text] of texts) {
     const cited = new Set(citedKeys(text, { allNarrative: true }));
     const map = new Map([...plan.keyMap].filter(([from]) => cited.has(from)));
     if (!map.size) continue;
     const next = rewriteCitationKeys(text, map);
     if (!next.count) continue;
-    await writeTextAtomically(absoluteNotebookFile(file).absolutePath, next.text);
-    rewritten.push(file);
+    rewrites.push({ path: file, map: Object.fromEntries(map), before: hashText(text), after: hashText(next.text) });
     result.drafts.push({ path: file, map: Object.fromEntries(map) });
     for (const [from, to] of map) {
       const entry = renamed.get(from) ?? { from, to, files: [] };
       entry.files.push(file);
       renamed.set(from, entry);
     }
-    result.renamed = [...renamed.values()];
   }
-  if (!rewritten.length) return;
-  notifySearchChanges(rewritten);
-  // The index is keyed by mtime and size and would heal on its next request; refreshing now keeps it current.
-  await refreshNotebookCitations(destinationNotebook).catch((error) => {
-    console.error(`[references] Could not update the citation index of ${destinationNotebook}:`, error);
-  });
+  result.renamed = [...renamed.values()];
+  if (!rewrites.length) return;
+  await options.onPlan?.(result, rewrites);
+  await applyCitationRewrites(rewrites);
+}
+
+/**
+ * Write planned citation rewrites. Safe to repeat: a note already at its
+ * rewritten text is left alone (rewriting again could chain one key into
+ * another), one still at the text planned from is rewritten, and any other
+ * text is not touched. Every note is tried; failures are thrown at the end.
+ */
+export async function applyCitationRewrites(rewrites: PlannedCitationRewrite[]) {
+  const rewritten: string[] = [];
+  const failures: string[] = [];
+  for (const rewrite of rewrites) {
+    try {
+      const target = absoluteNotebookFile(rewrite.path).absolutePath;
+      const text = await readFile(target, "utf8");
+      const hash = hashText(text);
+      if (hash === rewrite.after) continue;
+      if (hash !== rewrite.before) { failures.push(`${rewrite.path} changed while its citations were being rewritten.`); continue; }
+      const next = rewriteCitationKeys(text, new Map(Object.entries(rewrite.map)));
+      if (hashText(next.text) !== rewrite.after) { failures.push(`${rewrite.path} could not be rewritten as planned.`); continue; }
+      await writeTextAtomically(target, next.text);
+      rewritten.push(rewrite.path);
+    } catch (error) {
+      failures.push(`${rewrite.path}: ${errorMessage(error)}`);
+    }
+  }
+  if (rewritten.length) {
+    notifySearchChanges(rewritten);
+    // The index is keyed by mtime and size and would heal on its next request; refreshing now keeps it current.
+    for (const notebook of new Set(rewritten.map((file) => file.split("/")[0]))) {
+      await refreshNotebookCitations(notebook).catch((error) => {
+        console.error(`[references] Could not update the citation index of ${notebook}:`, error);
+      });
+    }
+  }
+  if (failures.length) throw new Error(failures.join(" "));
 }
 
 /**
@@ -224,13 +270,13 @@ async function copyReferences(sourceNotebook: string, destinationNotebook: strin
  * another (`files` are library-relative, `to` paths already on disk). Never
  * throws: a failure is logged and returned in `error`.
  */
-export async function copyReferencesOnMove(sourceNotebook: string, destinationNotebook: string, files: MovedMarkdownFile[]): Promise<ReferenceMoveResult> {
+export async function copyReferencesOnMove(sourceNotebook: string, destinationNotebook: string, files: MovedMarkdownFile[], options: CopyReferencesOptions = {}): Promise<ReferenceMoveResult> {
   if (sourceNotebook === destinationNotebook) return emptyReferenceMoveResult();
   const markdown = files.filter(({ to }) => getFileType(to.split("/").at(-1) ?? "") === "markdown");
   if (!markdown.length) return emptyReferenceMoveResult();
   const result = emptyReferenceMoveResult();
   try {
-    await copyReferences(sourceNotebook, destinationNotebook, markdown, result);
+    await copyReferences(sourceNotebook, destinationNotebook, markdown, result, options);
     return result;
   } catch (error) {
     console.error(`[references] Could not copy the references cited by files moved from ${sourceNotebook} to ${destinationNotebook}:`, error);
