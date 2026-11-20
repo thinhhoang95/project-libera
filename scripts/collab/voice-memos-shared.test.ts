@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -45,6 +45,19 @@ class FakeHost {
           response.writeHead(status, { "content-type": "application/json" });
           response.end(JSON.stringify(payload));
         };
+        // The manifest's file list, which the host serves: here, the working copy's files.
+        if (request.headers.authorization === `Bearer ${this.token}` && /\/projects\/[^/]+\/file-entries$/.test(request.url ?? "")) {
+          const listed: { fileId: string; path: string; kind: "blob"; updatedAt: number }[] = [];
+          const walk = (directory: string, prefix: string) => {
+            for (const entry of readdirSync(directory, { withFileTypes: true })) {
+              if (entry.name.startsWith(".")) continue;
+              if (entry.isDirectory()) walk(path.join(directory, entry.name), `${prefix}${entry.name}/`);
+              else listed.push({ fileId: `fil_${prefix}${entry.name}`, path: `${prefix}${entry.name}`, kind: "blob", updatedAt: 1 });
+            }
+          };
+          walk(this.notebookRoot, "");
+          return send(200, { entries: listed });
+        }
         if (request.headers.authorization !== `Bearer ${this.token}` || !/\/projects\/[^/]+\/files$/.test(request.url ?? "")) return send(404, { error: { code: "not-found", message: "No route." } });
         const op = JSON.parse(body) as FileOpRequest;
         this.ops.push(op);
@@ -63,7 +76,7 @@ class FakeHost {
           if (op.createOnly && existsSync(target)) return send(409, { error: { code: "conflict", message: "Exists." } });
           mkdirSync(path.dirname(target), { recursive: true });
           writeFileSync(target, bytes);
-          return send(200, { paths: [`Shared/${op.path}`] });
+          return send(200, { paths: [`Shared/${op.path}`], fileId: `fil_${op.path}` });
         }
         if (op.op === "rename") {
           if (!existsSync(target)) return send(404, { error: { code: "not-found", message: "Not found." } });
