@@ -304,6 +304,7 @@ test("deleting a folder whose notes can't all be read deletes nothing, and a ful
   await deleteFolder("Nb/Gone");
   assert.ok(!(await exists(disk("Nb/Gone"))));
   assert.ok(!(await exists(pythonCode("Nb/Gone/sub/b.md"))), "its code went with it");
+}));
 
 // ---- Copy (findings 9, 10, 11)
 
