@@ -57,14 +57,15 @@ export async function collectOrphanedBlobs(context: ServerContext, { olderThanMs
     // upload also holds from before it writes the object until its row commits.
     await db.transaction().execute(async (trx) => {
       await lockBlobHash(trx, hash);
-      const referenced = await trx.selectFrom("blobs").select("hash").where("hash", "=", hash).executeTakeFirst()
-        ?? await trx.selectFrom("takedown_recovery_blobs").select("hash").where("hash", "=", hash).executeTakeFirst();
-      if (!referenced && store.delete) {
+      const referenced = await trx.selectFrom("blobs").select("hash").where("hash", "=", hash).executeTakeFirst();
+      // Held only for a taken-down project's recovery: kept, and still an orphan, so it goes once the recovery expires.
+      const held = referenced ? undefined : await trx.selectFrom("takedown_recovery_blobs").select("hash").where("hash", "=", hash).executeTakeFirst();
+      if (!referenced && !held && store.delete) {
         await store.delete(hash);
         removed += 1;
       }
       // Referenced again, or deleted: either way nothing is left to collect.
-      if (referenced || store.delete) await trx.deleteFrom("blob_orphans").where("hash", "=", hash).execute();
+      if (referenced || (!held && store.delete)) await trx.deleteFrom("blob_orphans").where("hash", "=", hash).execute();
     });
   }
   return removed;

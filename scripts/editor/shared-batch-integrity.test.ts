@@ -268,6 +268,8 @@ test("S20: a batch delete reads no tree per file and the wrapper skips its own w
   const body = await response.json();
   assert.deepEqual(body.deleted, ["Shared/b.md", "Shared/c.md"]);
   assert.deepEqual(host.ops.map((op) => op.op), ["delete", "delete", "delete"]);
-  // The file list is the host's authoritative read; deleting asks it for nothing (one tree read per file is what the wrapper used to add).
-  assert.equal(host.listings, 0);
+  // No tree read and no disk wait per file (what the wrapper used to add). The host's file list is read at most twice per
+  // deleted file: for its ID when the request has none, and by the records follow-up (shared-record-follow.ts) to judge
+  // ownership after the delete. Both are in-memory host reads, never a walk of the disk.
+  assert.ok(host.listings <= 2 * host.ops.length, `${host.listings} file-list reads for ${host.ops.length} deletes`);
 }));

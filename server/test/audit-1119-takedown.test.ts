@@ -149,9 +149,12 @@ describe("audit 1119: a takedown fence lapses", () => {
       const stale = await json(other.server.url, base, { method: "DELETE", token: other.owner.token, body: {} });
       assert.equal(stale.status, 409, "the export may have missed writes accepted after the lapse");
 
-      // A retried takedown raises the fence again, and its delete goes through.
+      // A retried takedown raises the fence again, and its delete goes through once its export accounts for the comment
+      // written after the lapse (a fenced delete of a project with comments carries its recovery report: takedown-recovery.ts).
       assert.equal((await json(other.server.url, `${base}/closing`, { method: "POST", token: other.owner.token, body: {} })).status, 200);
-      assert.equal((await json(other.server.url, base, { method: "DELETE", token: other.owner.token, body: {} })).status, 204);
+      assert.equal((await json(other.server.url, base, { method: "DELETE", token: other.owner.token, body: {} })).status, 409, "no recovery report: the comment could be lost");
+      const recovery = { threads: 1, messages: 1, suggestions: 0, reviews: 0 };
+      assert.equal((await json(other.server.url, base, { method: "DELETE", token: other.owner.token, body: { recovery } })).status, 204);
     } finally { await other.close(); }
   });
 });
