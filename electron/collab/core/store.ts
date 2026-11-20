@@ -354,14 +354,16 @@ const MIGRATIONS: string[] = [
   -- since, per installation (outside the synced folder). Next applies them to
   -- the records it keeps on this computer, then acknowledges them: a restart,
   -- a lost response or a remote move is still applied later.
-  CREATE TABLE manifest_paths (
+  -- IF NOT EXISTS: a database whose user_version was set back (a legacy
+  -- database re-migrated) already has these tables.
+  CREATE TABLE IF NOT EXISTS manifest_paths (
     project_id TEXT NOT NULL,
     file_id TEXT NOT NULL,
     path TEXT NOT NULL,
     kind TEXT NOT NULL,
     PRIMARY KEY (project_id, file_id)
   );
-  CREATE TABLE manifest_transitions (
+  CREATE TABLE IF NOT EXISTS manifest_transitions (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id TEXT NOT NULL,
     file_id TEXT NOT NULL,
@@ -370,7 +372,7 @@ const MIGRATIONS: string[] = [
     to_path TEXT,
     at INTEGER NOT NULL
   );
-  CREATE INDEX manifest_transitions_by_project ON manifest_transitions (project_id, seq);
+  CREATE INDEX IF NOT EXISTS manifest_transitions_by_project ON manifest_transitions (project_id, seq);
   `,
 ];
 
