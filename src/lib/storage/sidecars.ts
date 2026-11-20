@@ -211,15 +211,43 @@ export async function removeFileSidecars(notebook: string, pathParts: string[], 
  * A folder moved inside its notebook (rename, archive): the sidecar folders of
  * everything inside follow. Python sidecars are per note (markdown-assets.ts)
  * and stay with the caller.
+ *
+ * All or nothing, like moveFileSidecars: each completed transfer is recorded,
+ * and a failure takes back exactly those (never a kind that did not move, whose
+ * destination may hold records of its own). On success the result takes them
+ * all back. A take-back that cannot finish throws and names what is stuck.
  */
-export async function moveFolderSidecars(fromNotebook: string, fromParts: string[], toNotebook: string, toParts: string[]) {
-  for (const kind of SIDECAR_KINDS) {
-    const from = kind.directoryPath(fromNotebook, fromParts);
-    const to = kind.directoryPath(toNotebook, toParts);
-    // A cache is made again and may replace one; anything else never replaces what is there.
-    if (kind.cache) await moveKind(kind, from, to);
-    else await moveWithoutReplacing(from, to);
+export async function moveFolderSidecars(fromNotebook: string, fromParts: string[], toNotebook: string, toParts: string[]): Promise<() => Promise<void>> {
+  const moved: { from: string; to: string; cache: boolean }[] = [];
+  const undo = async () => {
+    const stuck: string[] = [];
+    for (const entry of [...moved].reverse()) {
+      // A cache is made again, so one that can't go back is not a loss.
+      if (entry.cache) { await moveFileIfExists(entry.to, entry.from).catch(() => undefined); continue; }
+      try { await moveWithoutReplacing(entry.to, entry.from); }
+      catch { stuck.push(`${entry.from} is now at ${entry.to}`); }
+    }
+    moved.length = 0;
+    if (stuck.length) throw new StorageError(`Could not put the records of ${fromNotebook}/${fromParts.join("/")} back: ${stuck.join("; ")}.`, 500);
+  };
+  try {
+    for (const kind of SIDECAR_KINDS) {
+      const from = kind.directoryPath(fromNotebook, fromParts);
+      const to = kind.directoryPath(toNotebook, toParts);
+      const present = from !== to && await pathExists(from);
+      // A cache is made again and may replace one; anything else never replaces what is there.
+      if (kind.cache) await moveKind(kind, from, to);
+      else await moveWithoutReplacing(from, to);
+      if (present && (!kind.cache || await pathExists(to))) moved.push({ from, to, cache: !!kind.cache });
+    }
+  } catch (error) {
+    // The original error stays the one thrown unless the take-back also failed.
+    const cause = error instanceof Error ? error.message : String(error);
+    try { await undo(); }
+    catch (stuck) { throw new StorageError(`${cause} ${(stuck as Error).message}`, 500); }
+    throw error;
   }
+  return undo;
 }
 
 /** A folder was deleted: remove the sidecar folders of everything inside. */
