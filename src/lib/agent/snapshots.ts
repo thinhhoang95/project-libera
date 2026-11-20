@@ -239,7 +239,15 @@ async function undoFiles(runId: string, manifest: Manifest, targets: string[]): 
     try { absolutePath = (await resolveLibraryPath(diskPath)).absolutePath; }
     catch (error) { results.push({ path: filePath, ...moved, status: "missing", message: error instanceof Error ? error.message : "The file's notebook is unavailable." }); continue; }
     if (isSharedNotebookPath(diskPath)) {
-      // The notebook was shared after the run; undoing would bypass the collab host.
+      // The notebook was shared after the run, and the file may have been renamed since (the host moves it; its history follows: shared-record-follow.ts).
+      // Restoring text goes through the host, as for a run made after sharing, and only while the document still holds what the agent wrote.
+      if (file.existed) {
+        const result = await undoSharedFile(runId, diskPath, file);
+        results.push({ ...result, path: filePath, ...moved });
+        if (result.status === "restored") file.reverted = true;
+        continue;
+      }
+      // Deleting a file the agent created would bypass the collab host.
       results.push({ path: filePath, ...moved, status: "conflict", message: `${diskPath} is in a shared notebook now, so it was not undone.` });
       continue;
     }

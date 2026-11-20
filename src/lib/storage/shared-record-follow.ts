@@ -24,24 +24,23 @@
 // stayed behind. The log makes sure a lost response, a crash or a move made by a
 // collaborator is still applied later (drainSharedRecordTransitions).
 
-import { stat } from "node:fs/promises";
-
 import { acknowledgeManifestTransitions, collabHostConfig, listProjectEntries, readManifestTransitions, type HostClientConfig } from "@/lib/collab/host-client";
 import type { ManifestTransition } from "@/lib/collab/local-api";
 import type { SharedCommittedChange } from "@/lib/collab/shared-outcomes";
 import { sharedNotebookMarker } from "@/lib/collab/shared-notebook";
 import { getFileType } from "@/lib/storage/file-types";
-import { copyFileIfExists, pathExists } from "@/lib/storage/fs-utils";
-import { movePathDerivedRecords } from "@/lib/storage/files";
-import { deleteReviewPath } from "@/lib/storage/markdown-reviews";
+import { discardReviewsAt, hasReviewEntry, moveReviewEntryAfterMove } from "@/lib/agent/review-store";
+import { moveTetheredFilesBatch } from "@/lib/references/bib-tether";
+import { copyFileIfExists, isCaseOnlyRename, pathExists, renameCaseAlias, retireIfUnchanged, snapshotFile, withPathLocks } from "@/lib/storage/fs-utils";
+import { deleteReviewPath, moveReviewPaths } from "@/lib/storage/markdown-reviews";
 import { followSharedPdfChanges } from "@/lib/storage/pdf-sidecars";
 import { filePathFromParts, splitFilePath } from "@/lib/storage/paths";
-import { detachReferenceAttachments } from "@/lib/storage/references";
+import { detachReferenceAttachmentsChecked, moveReferenceAttachmentsChecked } from "@/lib/storage/references";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
-import { removeFileSidecars, SIDECAR_KINDS } from "@/lib/storage/sidecars";
+import { HOST_OWNED_SIDECARS, removeLocalSidecars, SIDECAR_KINDS } from "@/lib/storage/sidecars";
+import { isTextFileType } from "@/lib/types";
 import { followSharedAudioChanges } from "@/lib/storage/transcripts";
 import { removeFileMetadataPath, removeNotebookPanelExpandedPathPrefix, renameFileMetadataPath, renameNotebookPanelExpandedPathPrefix } from "@/lib/storage/workspace-metadata";
-import { rm } from "node:fs/promises";
 
 /** A record written this long after a transition is not the one the transition was about. */
 const WRITTEN_AFTER_SLACK_MS = 2_000;
@@ -49,7 +48,10 @@ const WRITTEN_AFTER_SLACK_MS = 2_000;
 const WAITING_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 
 /** One move (`to` is the new Libera path) or removal (`to` is null) to apply. From the host's log it has a seq, file ID and time; the shared wrappers make their own without a seq. */
-export type FollowTransition = { seq?: number; fileId?: string; kind?: "file" | "folder"; from: string; to: string | null; at?: number };
+export type FollowTransition = { seq?: number; fileId?: string; kind?: "file" | "folder"; from: string; to: string | null; at?: number; explicit?: boolean };
+
+/** The host's synthetic file ID for a local-only file it archived because an incoming entry claimed its path (electron/collab/notebooks/project.ts displacedPath). */
+const DISPLACED_PREFIX = "displaced-";
 
 export interface TransitionOutcome {
   seq?: number;
@@ -67,6 +69,8 @@ export interface TransitionOutcome {
   held: string[];
   /** Steps that failed, one plain phrase each. */
   unfinished: string[];
+  /** Records that cannot be updated until something is connected (a reference library in an unconnected linked folder), one plain phrase each; retried later like `waiting`. */
+  pending?: string[];
 }
 
 export interface DrainResult {
@@ -89,6 +93,8 @@ export interface DrainResult {
 export interface FollowOptions {
   /** The host's address; undefined: this launch's, null: none. */
   config?: HostClientConfig | null;
+  /** Changes this user's own wrapper has just had the host commit: transitions in the log that match them are this user's explicit moves (a PDF's legacy notes follow them), the rest are not. */
+  own?: ReadonlyArray<SharedCommittedChange>;
 }
 
 type Manifest = { byPath: Map<string, string>; fileIds: Set<string> };
@@ -121,16 +127,19 @@ function exclusive<T>(notebook: string, work: () => Promise<T>): Promise<T> {
 // The steps. Each is a small named call; a step that fails throws and is reported.
 // ---------------------------------------------------------------------------
 
-/** Records of a file that SIDECAR_KINDS lists and that something else already moves in a shared notebook: the host (ink and transcripts are manifest entries), the PDF reconciliation, or nothing (a waveform cache is made again). */
-const SIDECARS_MOVED_ELSEWHERE = new Set(["ink", "transcript", "audio-peaks", "pdf-annotations", "pdf-outline", "pdf-text"]);
+/** Records of a file that SIDECAR_KINDS lists and that something else already moves in a shared notebook: the host, the PDF reconciliation, or nothing (a waveform cache is made again). */
+const SIDECARS_MOVED_ELSEWHERE = HOST_OWNED_SIDECARS;
 
 /**
  * The records of a renamed shared file that live only on this computer (image
  * annotations, definitions of a note or LaTeX file, and any kind added to
  * SIDECAR_KINDS later), moved with it as a local rename does. Never replaces a
  * record already at the destination. `held`: left where they are (the
- * destination has one, or the record was written after `since`); `failed`: could
- * not move (retried).
+ * destination has one, or the record was written after `since`, or a newer
+ * version was saved at the old place while it was copied, or the new type cannot
+ * keep it); `failed`: could not move (retried). The copy is published exclusively
+ * and only the version that was copied is retired, under the record's path locks;
+ * a case-only rename (both spellings are the same slot) goes through a temporary name.
  */
 export async function moveSharedLocalRecords(from: string, to: string, since?: number): Promise<{ held: string[]; failed: string[] }> {
   const result = { held: [] as string[], failed: [] as string[] };
@@ -142,22 +151,31 @@ export async function moveSharedLocalRecords(from: string, to: string, since?: n
   if (!fromType || !toType) return result;
   for (const kind of SIDECAR_KINDS) {
     if (SIDECARS_MOVED_ELSEWHERE.has(kind.id) || (kind.id === "definitions" && fromType === "pdf")) continue;
-    if (!kind.appliesTo(fromType) || !kind.appliesTo(toType)) continue;
+    if (!kind.appliesTo(fromType)) continue;
     const old = kind.filePath(source.notebook, source.pathParts);
     const next = kind.filePath(target.notebook, target.pathParts);
+    if (!kind.appliesTo(toType)) {
+      // A type change made elsewhere (a collaborator's): the record stays and is reported, never dropped.
+      if (!kind.cache && kind.layout !== "folder" && old !== next && await pathExists(old)) result.held.push(`${kind.id} of ${from} (a ${toType} file cannot keep it)`);
+      continue;
+    }
     if (old === next || !(await pathExists(old))) continue;
     try {
       if (kind.layout === "folder") continue;
-      if (since !== undefined) {
-        const written = await stat(old).then((info) => info.mtimeMs, () => 0);
-        if (written > since + WRITTEN_AFTER_SLACK_MS) {
+      await withPathLocks([old, next], async () => {
+        const seen = await snapshotFile(old);
+        if (!seen) return;
+        if (since !== undefined && Number(seen.mtimeNs / BigInt(1_000_000)) > since + WRITTEN_AFTER_SLACK_MS) {
           result.held.push(`${kind.id} of ${from} (written after the file moved, so it may belong to a file now at that path)`);
-          continue;
+          return;
         }
-      }
-      // Created exclusively, like the Python sidecar's move: a record saved there meanwhile is never replaced.
-      await copyFileIfExists(old, next, { exclusive: true });
-      await rm(old, { force: true });
+        // A letter-case change on a volume that treats both spellings as one slot: the record itself occupies the destination.
+        if (await isCaseOnlyRename(old, next)) { await renameCaseAlias(old, next); return; }
+        // Created exclusively, like the Python sidecar's move: a record saved there meanwhile is never replaced.
+        await copyFileIfExists(old, next, { exclusive: true });
+        // Only the version that was copied goes: one saved at the old place meanwhile stays, and both are recoverable.
+        if (await retireIfUnchanged(old, seen) === "newer") result.held.push(`${kind.id} of ${from} (a newer version was saved there while it moved, so it was kept; ${to} has the earlier one)`);
+      });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "EEXIST") result.held.push(`${kind.id} of ${from} (${to} already has one)`);
       else {
@@ -171,7 +189,8 @@ export async function moveSharedLocalRecords(from: string, to: string, since?: n
 
 /** A PDF's local side-cars (annotations, outline, definitions, text cache), the way its own follower does. */
 async function followPdf(t: FollowTransition) {
-  if (t.to !== null) await followSharedPdfChanges([{ from: t.from, to: t.to }], []);
+  // This user's own move through the host is explicit: their legacy (hash-less) notes follow it. A collaborator's, or one replayed from the log, is decided by the collaborator rule.
+  if (t.to !== null) await followSharedPdfChanges([{ from: t.from, to: t.to, ...(t.fileId ? { fileId: t.fileId } : {}) }], [], t.explicit ? { explicit: true } : {});
   else await followSharedPdfChanges([], [t.from]);
 }
 
@@ -181,8 +200,60 @@ async function followAudio(t: FollowTransition) {
   else await followSharedAudioChanges([], [t.from]);
 }
 
-/** Review comments, reference attachments, stars and tags of a file that moved. */
-const moveDerivedRecords = (from: string, to: string) => movePathDerivedRecords(from, to);
+/**
+ * The records a file has at a path of their own, beside its sidecars, for a file the host moved: review comments, the pending agent review,
+ * reference attachments, a tethered .bib file, stars and tags. Each is tried whatever the one before did. `held`: left alone on purpose
+ * (the destination has records of its own); `pending`: waiting for something to be connected. Returns the stores that could not be
+ * updated (after the rest ran), so the move stays in the log and is retried.
+ */
+async function moveDerivedRecords(from: string, to: string, report: { held: string[]; pending: string[] }): Promise<string[]> {
+  const failed: string[] = [];
+  const attempt = async (what: string, work: () => Promise<unknown>) => {
+    try { await work(); } catch (error) {
+      console.error(`[shared-record-follow] Could not move the ${what} of ${from} to ${to}:`, error);
+      failed.push(what);
+    }
+  };
+  const fromType = getFileType(from);
+  const toType = getFileType(to);
+  await attempt("review comments", async () => {
+    // A destination that gained comments meanwhile keeps them, and the review moving there stays where it was.
+    const stayed = await moveReviewPaths(new Map([[from, to]]), { replaceEmpty: true });
+    if (stayed.includes(from)) report.held.push(`review comments of ${from} (${to} has comments of its own)`);
+  });
+  await attempt("pending agent changes", async () => {
+    // A review follows only a text file; the committed pair is the one the host moved, so a note never gets two review documents.
+    if (!isTextFileType(fromType ?? undefined)) return;
+    if (!isTextFileType(toType ?? undefined)) {
+      if (await hasReviewEntry(from)) report.held.push(`pending agent changes of ${from} (a ${toType} file cannot keep them)`);
+      return;
+    }
+    if (await moveReviewEntryAfterMove(from, to) === "held") report.held.push(`pending agent changes of ${from} (${to} has a pending review of its own)`);
+  });
+  await attempt("reference attachments", async () => {
+    const { failures, offline } = await moveReferenceAttachmentsChecked(from, to);
+    if (offline.length) report.pending.push(`reference attachments in ${offline.join(", ")} (not connected, so they still point at ${from})`);
+    if (failures.length) throw new Error(failures.map((failure) => failure.notebook || "the libraries").join(", "));
+  });
+  await attempt("tethered .bib file", async () => {
+    const failures = await moveTetheredFilesBatch(new Map([[from, to]]));
+    if (failures.length) throw new Error(failures.map((failure) => failure.notebook).join(", "));
+  });
+  await attempt("stars and tags", () => renameFileMetadataPath(from, to));
+  return failed;
+}
+
+/** Undo history of the agent runs that changed files before they were shared follows their moves (one pass over the runs for the whole batch; shared runs carry document IDs and are skipped). */
+async function followRunHistory(moves: Array<{ from: string; to: string }>) {
+  const composed = new Map<string, string>();
+  for (const { from, to } of moves) {
+    const earlier = [...composed].find(([, destination]) => destination === from);
+    if (earlier) composed.set(earlier[0], to); else composed.set(from, to);
+  }
+  // Imported here: snapshots reaches back into storage through shared-writes.
+  const { recordMovedRunFiles } = await import("@/lib/agent/snapshots");
+  await recordMovedRunFiles(new Map([...composed].map(([from, to]) => [from, { to }])));
+}
 
 /** Whether the file a move brought to `to` is on this computer yet (a PDF or recording a cloud folder delivers late). */
 async function arrived(to: string): Promise<boolean> {
@@ -201,6 +272,8 @@ function judge(t: FollowTransition, manifest: Manifest | null): Verdict {
   // The shared wrappers pass no seq: the host has just answered that it committed this change for the file they asked about, which is what they know without the list.
   // A change from the log is never judged without the list (drain waits for it).
   if (!manifest) return t.seq === undefined ? { kind: "own" } : { kind: "hold", why: "the notebook's file list could not be read, so the owner of its records cannot be established" };
+  // A local-only file the host archived because an incoming entry claimed its path: the claimant is at `from` by design, and the records there are the archived file's.
+  if (t.fileId?.startsWith(DISPLACED_PREFIX)) return { kind: "own" };
   const occupant = manifest.byPath.get(t.from);
   if (occupant !== undefined && t.fileId === undefined) return { kind: "hold", why: "another file is at that path now and this change does not say which file it was" };
   if (occupant !== undefined && occupant !== t.fileId) return { kind: "hold", why: "another file is at that path now, so its records may be that file's" };
@@ -213,8 +286,8 @@ function judge(t: FollowTransition, manifest: Manifest | null): Verdict {
 const isFolder = (t: FollowTransition) => t.kind === "folder";
 
 /** Every step for one transition. Returns what was left alone and what failed. */
-async function applyOne(t: FollowTransition, verdict: Verdict): Promise<TransitionOutcome> {
-  const outcome: TransitionOutcome = { ...(t.seq === undefined ? {} : { seq: t.seq }), ...(t.fileId === undefined ? {} : { fileId: t.fileId }), from: t.from, to: t.to, state: "applied", held: [], unfinished: [] };
+async function applyOne(t: FollowTransition, verdict: Verdict, history: FollowTransition[]): Promise<TransitionOutcome> {
+  const outcome: TransitionOutcome = { ...(t.seq === undefined ? {} : { seq: t.seq }), ...(t.fileId === undefined ? {} : { fileId: t.fileId }), from: t.from, to: t.to, state: "applied", held: [], unfinished: [], pending: [] };
   if (verdict.kind === "obsolete") return { ...outcome, state: "obsolete" };
   if (verdict.kind === "hold") {
     const what = t.to === null ? `records of ${t.from}` : `records of ${t.from}`;
@@ -247,7 +320,9 @@ async function applyOne(t: FollowTransition, verdict: Verdict): Promise<Transiti
       outcome.held.push(...moved.held);
       if (moved.failed.length) throw new Error(moved.failed.join("; "));
     });
-    await attempt("review comments, reference attachments or tags", () => moveDerivedRecords(t.from, to));
+    await attempt("local stores", async () => { outcome.unfinished.push(...await moveDerivedRecords(t.from, to, { held: outcome.held, pending: outcome.pending as string[] })); });
+    // Undo history of earlier agent runs follows, once for the whole batch (applyTransitions).
+    if (isTextFileType(type ?? undefined)) history.push(t);
     // A recording or PDF still on its way keeps its transition until it is there; its notes are copied only to bytes that match.
     if ((type === "audio" || type === "pdf") && toType === type && !(await arrived(to))) waiting = true;
   } else {
@@ -255,14 +330,21 @@ async function applyOne(t: FollowTransition, verdict: Verdict): Promise<Transiti
     if (type === "audio") await attempt("recording sidecars", () => followAudio(t));
     // This user's, or a collaborator's, deletion: notes on it go too, as in a local notebook.
     if (type === "pdf") await attempt("PDF notes", () => followPdf(t));
-    if (type) await attempt("local records", () => removeFileSidecars(parts.notebook, parts.pathParts, type));
+    // Only the records Next keeps itself: ink, transcripts and a note's Python code are manifest entries the host removes, never unlinked from here.
+    if (type) await attempt("local records", () => removeLocalSidecars(parts.notebook, parts.pathParts, type, HOST_OWNED_SIDECARS));
     await attempt("review comments", () => deleteReviewPath(t.from));
-    await attempt("reference attachments", () => detachReferenceAttachments(t.from));
+    // The file is gone, so its pending agent review no longer describes anything and would block the path (a deliberate discard, as for a local delete).
+    await attempt("pending agent changes", () => discardReviewsAt(t.from));
+    await attempt("reference attachments", async () => {
+      const { failures, offline } = await detachReferenceAttachmentsChecked(t.from);
+      if (offline.length) (outcome.pending as string[]).push(`reference attachments in ${offline.join(", ")} (not connected, so they still point at ${t.from})`);
+      if (failures.length) throw new Error(failures.map((failure) => failure.notebook || "the libraries").join(", "));
+    });
     await attempt("stars and tags", () => removeFileMetadataPath(t.from));
   }
   notifySearchChanges(t.to === null ? [t.from] : [t.from, t.to]);
   if (outcome.unfinished.length) return { ...outcome, state: "unfinished" };
-  if (waiting && !(t.at !== undefined && Date.now() - t.at > WAITING_TTL_MS)) return { ...outcome, state: "waiting" };
+  if ((waiting || outcome.pending?.length) && !(t.at !== undefined && Date.now() - t.at > WAITING_TTL_MS)) return { ...outcome, state: "waiting" };
   return { ...outcome, state: outcome.held.length ? "held" : "applied" };
 }
 
@@ -307,6 +389,7 @@ async function applyTransitions(notebook: string, projectId: string | null, tran
     }
     const { ordered, circular } = orderTransitions(pending);
     const failedFiles = new Set<string>();
+    const history: FollowTransition[] = [];
     for (const t of circular) {
       results.set(t, { ...(t.seq === undefined ? {} : { seq: t.seq }), ...(t.fileId === undefined ? {} : { fileId: t.fileId }), from: t.from, to: t.to, state: "held", held: [`records of ${t.from} (files swapped names, so which records belong to which cannot be established)`], unfinished: [] });
     }
@@ -317,7 +400,7 @@ async function applyTransitions(notebook: string, projectId: string | null, tran
         continue;
       }
       let outcome: TransitionOutcome;
-      try { outcome = await applyOne(t, judge(t, manifest)); }
+      try { outcome = await applyOne(t, judge(t, manifest), history); }
       catch (error) {
         console.error(`[shared-record-follow] ${t.from}:`, error);
         outcome = { ...(t.seq === undefined ? {} : { seq: t.seq }), ...(t.fileId === undefined ? {} : { fileId: t.fileId }), from: t.from, to: t.to, state: "unfinished", held: [], unfinished: [`records of ${t.from}`] };
@@ -325,6 +408,17 @@ async function applyTransitions(notebook: string, projectId: string | null, tran
       if (outcome.state === "unfinished" && t.fileId !== undefined) failedFiles.add(t.fileId);
       if (isFinal(outcome) && t.seq !== undefined && projectId) followState.applied.set(`${projectId}:${t.seq}`, outcome);
       results.set(t, outcome);
+    }
+    if (history.length) {
+      try { await followRunHistory(history.map((t) => ({ from: t.from, to: t.to as string }))); }
+      catch (error) {
+        console.error("[shared-record-follow] Could not move the undo history of the agent runs:", error);
+        for (const t of history) {
+          const done = results.get(t) as TransitionOutcome;
+          results.set(t, { ...done, state: "unfinished", unfinished: [...done.unfinished, "agent undo history"] });
+          if (t.seq !== undefined && projectId) followState.applied.delete(`${projectId}:${t.seq}`);
+        }
+      }
     }
     return transitions.map((t) => results.get(t) as TransitionOutcome);
   });
@@ -357,7 +451,7 @@ function summarize(notebook: string, outcomes: TransitionOutcome[], extra: Parti
     outcomes,
     applied: outcomes.filter((outcome) => outcome.state === "applied" || outcome.state === "obsolete").length,
     held: outcomes.flatMap((outcome) => outcome.held),
-    unfinished: outcomes.flatMap((outcome) => outcome.unfinished),
+    unfinished: outcomes.flatMap((outcome) => [...outcome.unfinished, ...outcome.pending ?? []]),
     waiting: outcomes.filter((outcome) => outcome.state === "waiting").length,
     ...extra,
   });
@@ -398,7 +492,10 @@ async function drain(notebook: string, options: FollowOptions): Promise<DrainRes
   const manifest = await readManifest(notebook, marker.projectId, config);
   // Nothing from the log is applied without knowing who owns the paths now: it stays in the log for the next run.
   if (!manifest) return blank(notebook, { error: "The notebook's file list could not be read, so the owner of its records cannot be established. The changes stay in the host's log." });
-  const outcomes = await applyTransitions(notebook, marker.projectId, transitions, manifest);
+  // This user's own wrapper's changes are explicit moves; the rest of the log (a collaborator's, or one replayed after a crash) is not.
+  const own = options.own ?? [];
+  const marked: FollowTransition[] = transitions.map((t) => own.some((change) => change.from === t.from && change.to === t.to && (change.fileId === undefined || change.fileId === t.fileId)) ? { ...t, explicit: true } : t);
+  const outcomes = await applyTransitions(notebook, marker.projectId, marked, manifest);
   const done = outcomes.filter(isFinal).map((outcome) => outcome.seq).filter((seq): seq is number => seq !== undefined);
   let error: string | undefined;
   if (done.length) {
@@ -475,14 +572,14 @@ export interface FollowedChange {
  * every step runs, and what stayed behind is returned, never thrown.
  */
 export async function followCommittedChange(notebook: string, committed: Array<SharedCommittedChange & { kind?: "file" | "folder" }>, options: FollowOptions = {}): Promise<FollowedChange> {
-  const drained = await drainSharedRecordTransitions(notebook, options);
+  const drained = await drainSharedRecordTransitions(notebook, { ...options, own: committed });
   const covered = (change: SharedCommittedChange, outcome: TransitionOutcome) => outcome.from === change.from && outcome.to === change.to;
   const mine: TransitionOutcome[] = [];
   const uncovered: Array<FollowTransition> = [];
   for (const change of committed) {
     const hits = drained.outcomes.filter((outcome) => covered(change, outcome));
     if (hits.length) mine.push(...hits);
-    else uncovered.push({ ...(change.fileId ? { fileId: change.fileId } : {}), ...(change.kind ? { kind: change.kind } : {}), from: change.from, to: change.to });
+    else uncovered.push({ ...(change.fileId ? { fileId: change.fileId } : {}), ...(change.kind ? { kind: change.kind } : {}), from: change.from, to: change.to, explicit: true });
   }
   if (uncovered.length) {
     const marker = sharedNotebookMarker(notebook);
@@ -491,7 +588,7 @@ export async function followCommittedChange(notebook: string, committed: Array<S
     mine.push(...await applyTransitions(notebook, null, uncovered, manifest));
   }
   return {
-    unfinished: mine.flatMap((outcome) => [...outcome.unfinished, ...outcome.held]),
+    unfinished: mine.flatMap((outcome) => [...outcome.unfinished, ...outcome.pending ?? [], ...outcome.held]),
     held: mine.flatMap((outcome) => outcome.held),
   };
 }

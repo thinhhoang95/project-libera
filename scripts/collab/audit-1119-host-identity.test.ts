@@ -124,13 +124,13 @@ test("13: a shared rename moves the records kept on this computer, never over an
   assert.equal(existsSync(imageRecord), false, "the image annotations left the old path");
   assert.equal(readFileSync(imageAnnotationsPath("Shared", ["pics", "photo2.png"]), "utf8"), '{"annotations":[]}');
 
-  // A record already at the destination is kept; the source stays where it is.
+  // A record already at the destination is kept, and the move is refused before the host moves anything (assertNoLeftoverRecords, finding 96 of the earlier round); the source stays where it is.
   const occupied = definitionsPath("Shared", ["taken.md"]);
   writeFileSync(occupied, '{"entries":["mine"]}');
-  await moveSharedFile("Shared/note.md", "Shared", "taken.md");
+  await assert.rejects(() => moveSharedFile("Shared/note.md", "Shared", "taken.md"), /still has the definitions of a file that was there before/);
   assert.equal(readFileSync(occupied, "utf8"), '{"entries":["mine"]}');
   assert.equal(readFileSync(definitions, "utf8"), '{"entries":[]}');
-  assert.equal(host.ops.filter((op) => op.op === "rename").length, 2);
+  assert.equal(host.ops.filter((op) => op.op === "rename").length, 1, "the host was not asked to rename");
 }));
 
 test("25: a create returns the path the host's layout gave the file", () => withShared(async ({ host }) => {

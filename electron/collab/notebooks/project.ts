@@ -1590,6 +1590,14 @@ export class SharedProject {
     const fileId = `displaced-${sha256(new TextEncoder().encode(archived)).slice(0, 24)}`;
     this.state.displaced = [...(this.state.displaced ?? []), { fileId, from: relative, to: archived, at: Date.now() }].slice(-100);
     this.saveSoon();
+    // Also in the durable transition log, before the tree event (as recordTransitions does): Next moves this computer's records at the claimed path to the archived file on the next drain, and a crash or a lost event does not lose it.
+    if (!this.info.album) {
+      try {
+        this.ctx.host.store.commitManifestPaths(this.info.projectId, { upserts: [], removals: [], transitions: [{ fileId, kind: "file", from: relative, to: archived, at: Date.now() }] });
+      } catch (error) {
+        this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: could not record the move of the displaced file ${relative}`, error);
+      }
+    }
     this.ctx.emit({
       t: "tree-changed", projectId: this.info.projectId, notebook: this.info.notebook,
       added: [], moves: [{ from: this.liberaPath(relative), to: this.liberaPath(archived), fileId }], removed: [],

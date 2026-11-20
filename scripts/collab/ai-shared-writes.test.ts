@@ -983,6 +983,7 @@ test("folder rename and deletion operate on shared descendants, with validation 
     await FOLDERS_POST(authed("/api/folders", { json: { parentPath: "Shared/folder", name: "nested" } }));
     await FILES_POST(authed("/api/files", { json: { parentPath: "Shared/folder/nested", name: "note", content: "nested" } }));
     const docId = host.doc("Shared/folder/nested/note.md").docId;
+    const noteFileId = host.doc("Shared/folder/nested/note.md").fileId;
     const rename = (name: string) => FOLDERS_PATCH(authed("/api/folders", { method: "PATCH", json: { path: "Shared/folder", name } }));
     const remove = (folder: string) => FOLDERS_DELETE(authed(`/api/folders?path=${encodeURIComponent(folder)}`, { method: "DELETE" }));
     assert.equal((await rename("../invalid")).status, 400);
@@ -995,12 +996,12 @@ test("folder rename and deletion operate on shared descendants, with validation 
     host.canModifyFiles = true;
     const renamed = await rename("renamed");
     assert.equal(renamed.status, 200);
-    assert.deepEqual(host.fileOps.at(-1), { op: "rename", path: "folder", to: "renamed" });
+    assert.deepEqual(host.fileOps.at(-1), { op: "rename", path: "folder", to: "renamed", expectedDescendantIds: [noteFileId] });
     assert.equal(host.doc("Shared/renamed/nested/note.md").docId, docId);
     assert.equal(disk("Shared/renamed/nested/note.md"), "nested");
     assert.ok(!existsSync(path.join(root, "Shared", "folder")));
     assert.equal((await remove("Shared/renamed")).status, 200);
-    assert.deepEqual(host.fileOps.at(-1), { op: "delete", path: "renamed" });
+    assert.deepEqual(host.fileOps.at(-1), { op: "delete", path: "renamed", expectedDescendantIds: [noteFileId] });
     assert.ok(!host.docs.has("Shared/renamed/nested/note.md"));
     assert.ok(!existsSync(path.join(root, "Shared", "renamed")));
     assert.equal((await remove("Shared")).status, 400, "root deletion must not become a manifest operation");

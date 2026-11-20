@@ -55,7 +55,8 @@ import { MARKDOWN_ASSETS_DIR } from "@/lib/storage/constants";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { copyReviewPath } from "@/lib/storage/markdown-reviews";
 import { getFileNode, getTree } from "@/lib/storage/tree";
-import { assertCopyKeepsType, assertNoLeftoverFolderRecords, assertNoLeftoverRecords, readLiberaFile } from "@/lib/storage/files";
+import { assertCopyKeepsType, assertNoLeftoverFolderRecords, assertNoLeftoverRecords, assertTypeChangeLosesNothing, readLiberaFile } from "@/lib/storage/files";
+import { HOST_OWNED_SIDECARS } from "@/lib/storage/sidecars";
 import { readSharedAuthorityBytes, readSharedSourceSnapshot, sharedSourceGone } from "@/lib/storage/shared-source";
 import { getMarkdownImageAssetBySource, markdownAssetSourceTarget, markdownImageSources, migratePythonSidecar } from "@/lib/storage/markdown-assets";
 import type { ReferenceMoveResult } from "@/lib/references/moves";
@@ -735,6 +736,9 @@ export async function moveSharedFile(relativePath: string, destinationDirectory:
   }
   // A slot free in the manifest can still hold records of an earlier file on this computer: refused before the host moves anything, as a local move is.
   if (sourcePath !== nextPath && !own) await assertNoLeftoverRecords(destination.notebook, nextParts, assertSupportedFileName(safeName));
+  // A change of file type never drops a record kept on this computer (annotations, definitions, reviews, pending agent changes): refused before the host moves anything.
+  // What the host owns (ink, transcripts, a PDF's notes) is checked by the host and by the live PDF's reconciliation.
+  if (sourcePath !== nextPath) await assertTypeChangeLosesNothing(current.notebook, current.pathParts, sourcePath, assertSupportedFileName(current.name), assertSupportedFileName(safeName), HOST_OWNED_SIDECARS);
   const config = hostConfig(sourcePath, options);
   // The manifest's file ID, before the host moves it: it ties this computer's records to the file, not to a path another file may take.
   const fileId = options.expectedFileId ?? await manifestFileIdAt(current.notebook, sourcePath, options);
