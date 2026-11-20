@@ -497,7 +497,8 @@ export class PdfMarksRuntime {
 
   private async writeCurrentCopy(doc: PdfDoc, options: CopyOptions): Promise<void> {
     const stopped = () => this.stopped && !options.final;
-    if ((!options.local && (stopped() || !this.ctx.canWriteDisk())) || doc.hub.isClosed) return;
+    // A terminal local export (revocation, takedown) is written from the document's last state even if its hub closed first.
+    if (!options.local && (stopped() || !this.ctx.canWriteDisk() || doc.hub.isClosed)) return;
     const relative = doc.path;
     const target = this.sidecarPath(relative);
     if (!options.local) await this.importSidecar(doc);
