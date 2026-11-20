@@ -11,6 +11,7 @@ import { inspectAudioPeaksCache } from "@/lib/transcription/peaks";
 import { pythonSidecarPath } from "@/lib/python/sidecar";
 import { INK_DIR } from "@/lib/storage/constants";
 import { getFileType } from "@/lib/storage/file-types";
+import { foldedFileName } from "@/lib/storage/file-names";
 import { fileExistence } from "@/lib/storage/library-links";
 import { StorageError } from "@/lib/storage/errors";
 import { moveFileIfExists, moveWithoutReplacing, pathExists } from "@/lib/storage/fs-utils";
@@ -297,9 +298,9 @@ export async function legacyAnnotationSidecars(notebook: string, parts: string[]
   const kind = fileType === "pdf" || fileType === "image" ? fileType : null;
   const name = parts.at(-1);
   if (!kind || !name) return [];
-  if (moving && moving.at(-1)?.toLowerCase() === name.toLowerCase()) return [];
+  if (moving && foldedFileName(moving.at(-1) ?? "") === foldedFileName(name)) return [];
   const { files, namesakes } = await inspectLegacyAnnotations(notebook, parts, kind);
-  const rivals = namesakes?.filter((file) => !moving || file.join("/").toLowerCase() !== moving.join("/").toLowerCase());
+  const rivals = namesakes?.filter((file) => !moving || foldedFileName(file.join("/")) !== foldedFileName(moving.join("/")));
   if (rivals?.length) return [];
   return files.map((file) => ({ kind: `${kind}-annotations`, path: file }));
 }

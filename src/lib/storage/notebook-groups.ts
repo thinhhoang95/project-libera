@@ -12,8 +12,7 @@ import {
 import { getTree, LINKED_FOLDER_METADATA_DEFAULTS } from "@/lib/storage/tree";
 import {
   normalizeNotebookViewOptions,
-  readWorkspaceMetadata,
-  writeWorkspaceMetadata,
+  updateWorkspaceMetadata,
 } from "@/lib/storage/workspace-metadata";
 import type {
   LiberaNotebookGroup,
@@ -150,12 +149,10 @@ async function unassignDeletedGroup(groupId: string) {
 export async function createNotebookGroup(input: NotebookGroupInput) {
   await ensureAdminRoot();
 
-  const metadata = await readWorkspaceMetadata();
   const title = normalizeGroupTitle(input.title);
   const notebookNames = normalizeNotebookNames(input.notebookNames);
   const now = new Date().toISOString();
 
-  assertUniqueGroupTitle(metadata.notebookGroups, title);
   assertNotebookNamesExist(notebookNames, new Set(await listNotebookNames()));
 
   const group: LiberaNotebookGroup = {
@@ -166,9 +163,10 @@ export async function createNotebookGroup(input: NotebookGroupInput) {
     updatedAt: now,
   };
 
-  await writeWorkspaceMetadata({
-    ...metadata,
-    notebookGroups: [...metadata.notebookGroups, group],
+  // Through the settings queue, so a star or a move's rekey saved at the same time is not erased.
+  await updateWorkspaceMetadata((metadata) => {
+    assertUniqueGroupTitle(metadata.notebookGroups, title);
+    return { ...metadata, notebookGroups: [...metadata.notebookGroups, group] };
   });
   await assignNotebooksToGroup(group.id, notebookNames);
 
@@ -181,31 +179,29 @@ export async function updateNotebookGroup(
 ) {
   await ensureAdminRoot();
 
-  const metadata = await readWorkspaceMetadata();
-  const existingGroup = metadata.notebookGroups.find((group) => group.id === id);
-
-  if (!existingGroup) {
-    throw new StorageError("Group was not found.", 404);
-  }
-
   const title = normalizeGroupTitle(input.title);
   const notebookNames = normalizeNotebookNames(input.notebookNames);
 
-  assertUniqueGroupTitle(metadata.notebookGroups, title, id);
   assertNotebookNamesExist(notebookNames, new Set(await listNotebookNames()));
 
-  await writeWorkspaceMetadata({
-    ...metadata,
-    notebookGroups: metadata.notebookGroups.map((group) =>
-      group.id === id
-        ? {
-            ...group,
-            title,
-            description: normalizeGroupDescription(input.description),
-            updatedAt: new Date().toISOString(),
-          }
-        : group,
-    ),
+  await updateWorkspaceMetadata((metadata) => {
+    if (!metadata.notebookGroups.some((group) => group.id === id)) {
+      throw new StorageError("Group was not found.", 404);
+    }
+    assertUniqueGroupTitle(metadata.notebookGroups, title, id);
+    return {
+      ...metadata,
+      notebookGroups: metadata.notebookGroups.map((group) =>
+        group.id === id
+          ? {
+              ...group,
+              title,
+              description: normalizeGroupDescription(input.description),
+              updatedAt: new Date().toISOString(),
+            }
+          : group,
+      ),
+    };
   });
   await assignNotebooksToGroup(id, notebookNames);
 
@@ -215,24 +211,22 @@ export async function updateNotebookGroup(
 export async function deleteNotebookGroup(id: string) {
   await ensureAdminRoot();
 
-  const metadata = await readWorkspaceMetadata();
-  const existingGroup = metadata.notebookGroups.find((group) => group.id === id);
-
-  if (!existingGroup) {
-    throw new StorageError("Group was not found.", 404);
-  }
-
-  await writeWorkspaceMetadata({
-    ...metadata,
-    notebookGroups: metadata.notebookGroups.filter((group) => group.id !== id),
-    notebookViewOptions: {
-      hiddenGroupIds: metadata.notebookViewOptions.hiddenGroupIds.filter(
-        (groupId) => groupId !== id,
-      ),
-      hiddenNotebookNames: metadata.notebookViewOptions.hiddenNotebookNames,
-      showArchive: metadata.notebookViewOptions.showArchive,
-      showFileDetails: metadata.notebookViewOptions.showFileDetails,
-    },
+  await updateWorkspaceMetadata((metadata) => {
+    if (!metadata.notebookGroups.some((group) => group.id === id)) {
+      throw new StorageError("Group was not found.", 404);
+    }
+    return {
+      ...metadata,
+      notebookGroups: metadata.notebookGroups.filter((group) => group.id !== id),
+      notebookViewOptions: {
+        hiddenGroupIds: metadata.notebookViewOptions.hiddenGroupIds.filter(
+          (groupId) => groupId !== id,
+        ),
+        hiddenNotebookNames: metadata.notebookViewOptions.hiddenNotebookNames,
+        showArchive: metadata.notebookViewOptions.showArchive,
+        showFileDetails: metadata.notebookViewOptions.showFileDetails,
+      },
+    };
   });
   await unassignDeletedGroup(id);
 
@@ -244,16 +238,13 @@ export async function updateNotebookViewOptions(
 ) {
   await ensureAdminRoot();
 
-  const metadata = await readWorkspaceMetadata();
-  const notebookViewOptions = normalizeNotebookViewOptions({
-    ...metadata.notebookViewOptions,
-    ...input,
-  });
-
-  await writeWorkspaceMetadata({
+  await updateWorkspaceMetadata((metadata) => ({
     ...metadata,
-    notebookViewOptions,
-  });
+    notebookViewOptions: normalizeNotebookViewOptions({
+      ...metadata.notebookViewOptions,
+      ...input,
+    }),
+  }));
 
   return getTree();
 }

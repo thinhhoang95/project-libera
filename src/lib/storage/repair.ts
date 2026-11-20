@@ -21,7 +21,7 @@ import { isEmptyReview, type ReviewDocument } from "@/lib/markdown-review";
 import { inspectReviewDocuments, inspectReviewKeys } from "@/lib/storage/review-files";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { listSidecars, SIDECAR_KINDS } from "@/lib/storage/sidecars";
-import { listVisibleNotebookFiles } from "@/lib/storage/tree";
+import { inventoryComplete, listNotebookInventory } from "@/lib/storage/integrity";
 import { readWorkspaceMetadata, renameFileMetadataPaths } from "@/lib/storage/workspace-metadata";
 import { StorageError } from "@/lib/storage/errors";
 import { withNotebookOperation } from "@/lib/storage/migration-fence";
@@ -286,10 +286,10 @@ async function plan(name: string): Promise<{ plan: RepairPlan; asides: Map<strin
   const notebook = assertRepairable(name);
   if (!(await lstat(notebookPath(notebook)).catch(() => null))?.isDirectory()) throw new StorageError("Notebook not found.", 404);
   // The archive counts: a file moved there in Finder is a candidate, and a second file of its name there makes "several".
-  const visible = await listVisibleNotebookFiles(notebook, { includeArchive: true });
+  const visible = await listNotebookInventory(notebook);
   // A name is unique only if every file was seen.
-  if (visible.truncated) throw new StorageError(`${notebook} has too many files to match moved files by name.`, 413);
-  if (visible.unreadable.length) throw new StorageError(`${plural(visible.unreadable.length, "folder")} of ${notebook} could not be read (${visible.unreadable.slice(0, 3).join(", ")}${visible.unreadable.length > 3 ? ", ..." : ""}), so a file's name can't be known to be the only one. Fix its permissions or reconnect the drive, then try again.`, 409);
+  if (!inventoryComplete(visible) && visible.truncated) throw new StorageError(`${notebook} has too many files to match moved files by name.`, 413);
+  if (!inventoryComplete(visible)) throw new StorageError(`${plural(visible.unreadable.length, "folder")} of ${notebook} could not be read (${visible.unreadable.slice(0, 3).join(", ")}${visible.unreadable.length > 3 ? ", ..." : ""}), so a file's name can't be known to be the only one. Fix its permissions or reconnect the drive, then try again.`, 409);
 
   /** Stores of records that could not be read in full: a pair whose uniqueness or ownership may depend on what is hidden in them is not made. */
   const unread = new Set<string>();

@@ -32,6 +32,7 @@ import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { normalizePdfHighlightQuote } from "@/lib/pdf-highlight-quote";
 import { normalizePdfCommentThreads } from "@/lib/pdf-comments";
 import { normalizeSpaceLayout, reconcilePdfSpaces } from "@/lib/pdf-space";
+import { foldedFileName } from "@/lib/storage/file-names";
 import { assertNotMigrating } from "@/lib/storage/migration-fence";
 import type { SidecarInspection } from "@/lib/storage/sidecars";
 import type {
@@ -427,7 +428,7 @@ async function migrateLegacyAnnotations(notebook: string, parts: string[], kind:
     ? [legacyFlatPdfAnnotationsPath(notebook, name), legacyPdfAnnotationsPath(notebook, name)]
     : [legacyFlatImageAnnotationsPath(notebook, name), legacyImageAnnotationsPath(notebook, name)];
   if (!(await pathExists(legacy[0])) && !(await pathExists(legacy[1]))) return;
-  const matches = (await annotationFilePaths(notebook, [], kind)).filter((file) => file.at(-1)?.toLowerCase() === name.toLowerCase());
+  const matches = (await annotationFilePaths(notebook, [], kind)).filter((file) => foldedFileName(file.at(-1) ?? "") === foldedFileName(name));
   if (matches.length !== 1 || matches[0].join("/") !== parts.join("/")) {
     // Quarantine ambiguous notes so a later deletion cannot make their owner
     // appear unambiguous and attach them to an unrelated surviving file.
@@ -464,8 +465,8 @@ export async function inspectLegacyAnnotations(notebook: string, parts: string[]
   }
   if (!files.length) return { files, namesakes: [] };
   try {
-    const own = parts.join("/").toLowerCase();
-    return { files, namesakes: (await annotationFilePaths(notebook, [], kind)).filter((file) => file.at(-1)?.toLowerCase() === name.toLowerCase() && file.join("/").toLowerCase() !== own) };
+    const own = foldedFileName(parts.join("/"));
+    return { files, namesakes: (await annotationFilePaths(notebook, [], kind)).filter((file) => foldedFileName(file.at(-1) ?? "") === foldedFileName(name) && foldedFileName(file.join("/")) !== own) };
   } catch {
     return { files, namesakes: null };
   }
@@ -517,7 +518,7 @@ export async function listLegacyAnnotations(notebook: string): Promise<{ legacy:
     let files: string[][] = [];
     try { files = await annotationFilePaths(notebook, [], kind); } catch { unreadable = true; }
     for (const entry of found.values()) {
-      if (entry.kind === kind) entry.owners = files.filter((file) => file.at(-1)?.toLowerCase() === entry.name.toLowerCase());
+      if (entry.kind === kind) entry.owners = files.filter((file) => foldedFileName(file.at(-1) ?? "") === foldedFileName(entry.name));
     }
   }
   return { legacy: [...found.values()], unreadable };
@@ -557,7 +558,7 @@ async function pdfSidecarForRead(notebook: string, name: string, pathParts: stri
     if (!["EACCES", "EPERM", "EROFS"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
     // Without claiming that their migration or a write succeeded.
     if (!(await pathExists(annotationsPath))) {
-      const matches = (await annotationFilePaths(notebook)).filter((file) => file.at(-1)?.toLowerCase() === name.toLowerCase());
+      const matches = (await annotationFilePaths(notebook)).filter((file) => foldedFileName(file.at(-1) ?? "") === foldedFileName(name));
       if (matches.length === 1 && matches[0].join("/") === pathParts.join("/")) {
         const flat = legacyFlatPdfAnnotationsPath(notebook, name);
         return await pathExists(flat) ? flat : legacyPdfAnnotationsPath(notebook, name);
@@ -765,7 +766,7 @@ export async function readImageAnnotations(
   catch (error) {
     if (!["EACCES", "EPERM", "EROFS"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
     if (!(await pathExists(annotationsPath))) {
-      const matches = (await annotationFilePaths(notebook, [], "image")).filter((file) => file.at(-1)?.toLowerCase() === name.toLowerCase());
+      const matches = (await annotationFilePaths(notebook, [], "image")).filter((file) => foldedFileName(file.at(-1) ?? "") === foldedFileName(name));
       if (matches.length === 1 && matches[0].join("/") === pathParts.join("/")) {
         const flat = legacyFlatImageAnnotationsPath(notebook, name);
         annotationsPath = await pathExists(flat) ? flat : legacyImageAnnotationsPath(notebook, name);

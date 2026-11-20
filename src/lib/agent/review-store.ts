@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { assertNotSharedPath, isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { LIBERA_SYSTEM_DIR } from "@/lib/storage/constants";
@@ -10,6 +10,7 @@ import { isTextFileType } from "@/lib/types";
 import { writeJsonState } from "@/lib/storage/json-state";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { isPathMigrating } from "@/lib/storage/migration-fence";
+import { fileExistence } from "@/lib/storage/library-links";
 import { listNotebookNames, resolveLibraryPath } from "./library";
 import type { AgentReviewFile, AgentReviewRevertResult } from "./types";
 
@@ -102,7 +103,10 @@ async function resolveReviewPath(filePath: string) {
 async function readDisk(filePath: string): Promise<string | null> {
   try {
     const resolved = await resolveReviewPath(filePath);
-    if (!(await stat(resolved.absolutePath)).isFile()) return null;
+    // Gone is Check Notebook's own test (an exact name in its folder's listing, a file); a file that can't be looked at is not called gone.
+    const present = await fileExistence().isFile(filePath);
+    if (present === false) return null;
+    if (present === null) throw new StorageError("The file can't be checked right now (no permission, or a drive is offline).", 503);
     const text = await readFile(resolved.absolutePath, "utf8");
     if (text.includes("\0")) return null;
     return text;

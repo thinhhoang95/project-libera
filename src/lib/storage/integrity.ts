@@ -28,7 +28,7 @@ import { assertSafeSegment, audioPeaksPath, getLinkedFolder, withReadOnlyStorage
 import { inspectReferenceLibrary } from "@/lib/storage/references";
 import { inspectLegacyReviewKeys, inspectReviewDocumentProblems, inspectReviewKeys } from "@/lib/storage/review-files";
 import { existingSidecars, listSidecars, findOrphanedSidecars, SIDECAR_KINDS, type SidecarInspection } from "@/lib/storage/sidecars";
-import { matchByIdentity, readOrphans } from "@/lib/storage/pdf-sidecars";
+import { matchByIdentity, mayBeBack, readOrphans, slotTakenBy } from "@/lib/storage/pdf-sidecars";
 import { getFileType } from "@/lib/storage/file-types";
 import { pythonSidecarDocumentPath, pythonSidecarPath } from "@/lib/python/sidecar";
 import { foldedFileName } from "@/lib/storage/file-names";
@@ -723,7 +723,17 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
       return sized.get(fileType)!;
     };
     const hashes = new Map<string, Promise<string | null>>();
-    const taken = (kind: string) => new Set(sidecars.filter((sidecar) => sidecar.kind === kind && !orphaned.has(sidecar.path)).map((sidecar) => sidecar.filePath.toLowerCase()));
+    /** Whether a file's slot for this kind of side file is taken: the upkeep's own test (the file system's case rules), not a lower-cased guess. */
+    const slotTaken = (kind: string) => slotTakenBy(SIDECAR_KINDS.find((candidate) => candidate.id === kind)!.filePath);
+    /** Hashes the same-size candidates one by one within the budget (matchByIdentity would hash them outside it); one not compared is counted as such. */
+    const hashSameSize = async (sameSize: { path: string; size: number }[]) => {
+      for (const candidate of sameSize) {
+        if (hashes.has(candidate.path)) continue;
+        const hash = await hashOf(candidate.path.split("/").slice(1), candidate.size);
+        if (typeof hash !== "string") notCompared.add(candidate.path);
+        hashes.set(candidate.path, Promise.resolve(typeof hash === "string" ? hash : null));
+      }
+    };
     /**
      * Where the file a side file was made for went: its path; null when no
      * file has its bytes; "unknown" when a file of its size could not be
@@ -734,15 +744,11 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     const owner = async (kind: string, fileType: string | null, identity: { size: number; contentHash: string } | undefined): Promise<string | null | "unknown"> => {
       if (!identity || !follows(kind, fileType)) return null;
       const candidates = kind === "ink" ? [...await filesOfType("pdf"), ...await filesOfType("image")] : await filesOfType(fileType!);
-      const free = taken(kind);
-      const sameSize = candidates.filter((candidate) => candidate.size === identity.size && !free.has(candidate.path.toLowerCase()));
-      for (const candidate of sameSize) {
-        if (hashes.has(candidate.path)) continue;
-        const hash = await hashOf(candidate.path.split("/").slice(1), candidate.size);
-        if (typeof hash !== "string") notCompared.add(candidate.path);
-        hashes.set(candidate.path, Promise.resolve(typeof hash === "string" ? hash : null));
-      }
-      const found = await matchByIdentity(identity, candidates, free, hashes);
+      const taken = slotTaken(kind);
+      const sameSize: { path: string; size: number }[] = [];
+      for (const candidate of candidates) if (candidate.size === identity.size && !(await taken(candidate.path))) sameSize.push(candidate);
+      await hashSameSize(sameSize);
+      const found = await matchByIdentity(identity, candidates, taken, hashes);
       if (found) return found;
       for (const candidate of sameSize) if (await hashes.get(candidate.path) === null) return "unknown";
       return null;
@@ -779,9 +785,18 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     // (pdf-sidecars.ts reconcilePdfSidecars, ink.ts reconcileInkFolders): the
     // same bytes, or, with none recorded, the file back under its old path
     // without side files of that kind. They are never stale.
-    const listed = new Set(visible.files);
     const comesBack = async (kind: string, fileType: string | null, originalPath: string, identity: { size: number; contentHash: string } | null) =>
-      identity ? owner(kind, fileType, identity) : listed.has(originalPath) && !taken(kind).has(originalPath.toLowerCase()) ? originalPath : null;
+      identity ? owner(kind, fileType, identity) : (await disk.isFile(originalPath)) === true && !(await slotTaken(kind)(originalPath)) ? originalPath : null;
+    /**
+     * Whether the owner of a set-aside record may be back though nothing is
+     * reattached (its slot is taken, or its bytes match several files): the
+     * upkeep's expiry rule (`mayBeBack`), so such work is kept, never offered.
+     */
+    const mayReturn = async (kind: string, fileType: string | null, originalPath: string, identity: { size: number; contentHash: string } | null) => {
+      const candidates = identity && follows(kind, fileType) ? (kind === "ink" ? [...await filesOfType("pdf"), ...await filesOfType("image")] : await filesOfType(fileType!)) : [];
+      if (identity) await hashSameSize(candidates.filter((candidate) => candidate.size === identity.size));
+      return mayBeBack({ originalPath, source: identity }, candidates, hashes, (libraryPath) => disk.isFile(libraryPath));
+    };
     /** Set-aside records whose fate is unknown (a candidate could not be hashed): kept, never offered for removal. */
     const unsettled: string[] = [];
     const returning: string[] = [];
@@ -789,7 +804,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     for (const { file, record } of await readOrphans(notebook)) {
       if (!budget.allows()) break;
       const moved = await comesBack(kinds[record.kind], "pdf", record.originalPath, record.source ?? null);
-      if (moved === "unknown") unsettled.push(file);
+      if (moved === "unknown" || (moved === null && await mayReturn(kinds[record.kind], "pdf", record.originalPath, record.source ?? null))) unsettled.push(file);
       else if (moved) { returning.push(file); add({ severity: "info", path: moved, message: `Saved ${name(kinds[record.kind])} set aside when ${record.originalPath} left the notebook belong to ${moved}${record.source ? ", the same file" : ""}. They go to it the next time the notebook is opened.`, ...say("sideSetAside", { kind: kinds[record.kind], originalPath: record.originalPath, path: moved, sameFile: record.source ? "yes" : "no" }) }); }
     }
     const setAsideInk = orphanedSidecarsDirectoryPath(notebook, "ink");
@@ -801,7 +816,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
       if (typeof record?.originalPath !== "string") continue;
       const source = record.source && typeof record.source.size === "number" && typeof record.source.sha256 === "string" ? { size: record.source.size, contentHash: record.source.sha256 } : null;
       const moved = await comesBack("ink", getFileType(record.originalPath), record.originalPath, source);
-      if (moved === "unknown") unsettled.push(directory);
+      if (moved === "unknown" || (moved === null && await mayReturn("ink", getFileType(record.originalPath), record.originalPath, source))) unsettled.push(directory);
       else if (moved) { returning.push(directory); add({ severity: "info", path: moved, message: `Ink set aside when ${record.originalPath} left the notebook belongs to ${moved}. It goes to it the next time the notebook is opened.`, ...say("inkSetAside", { originalPath: record.originalPath, path: moved }) }); }
     }
     returning.push(...unsettled);
@@ -1197,7 +1212,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     if (indexed) {
       const listed = new Set(visible.files);
       // A row spelled differently from a listed file (a case-only rename the volume still opens under both names) is obsolete, though its path "exists".
-      const spelling = (file: string) => file.normalize("NFC").toLowerCase();
+      const spelling = foldedFileName;
       const listedSpellings = new Set(visible.files.map(spelling));
       const rows = new Map(indexed.map((row) => [row.path, row]));
       let gone = 0, changed = 0, missing = 0;

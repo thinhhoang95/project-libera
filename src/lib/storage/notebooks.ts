@@ -23,11 +23,10 @@ import {
 import { getTree, LINKED_FOLDER_METADATA_DEFAULTS } from "@/lib/storage/tree";
 import {
   removeNotebookPanelExpandedPathPrefix,
-  readWorkspaceMetadata,
   removeFileMetadataPathPrefix,
   renameNotebookPanelExpandedPathPrefix,
   renameFileMetadataPathPrefix,
-  writeWorkspaceMetadata,
+  updateWorkspaceMetadata,
 } from "@/lib/storage/workspace-metadata";
 import type { LiberaNotebookMetadata } from "@/lib/types";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
@@ -189,37 +188,32 @@ async function renameNotebookViewOption(currentName: string, nextName: string) {
     return;
   }
 
-  const workspaceMetadata = await readWorkspaceMetadata();
-
-  if (!workspaceMetadata.notebookViewOptions.hiddenNotebookNames.includes(currentName)) {
-    return;
-  }
-
-  await writeWorkspaceMetadata({
-    ...workspaceMetadata,
-    notebookViewOptions: {
-      ...workspaceMetadata.notebookViewOptions,
-      hiddenNotebookNames: workspaceMetadata.notebookViewOptions.hiddenNotebookNames.map(
-        (notebookName) => (notebookName === currentName ? nextName : notebookName),
-      ),
-    },
+  // Through the settings queue, so a star or a move's rekey saved at the same time is not erased.
+  await updateWorkspaceMetadata((workspaceMetadata) => {
+    if (!workspaceMetadata.notebookViewOptions.hiddenNotebookNames.includes(currentName)) return null;
+    return {
+      ...workspaceMetadata,
+      notebookViewOptions: {
+        ...workspaceMetadata.notebookViewOptions,
+        hiddenNotebookNames: workspaceMetadata.notebookViewOptions.hiddenNotebookNames.map(
+          (notebookName) => (notebookName === currentName ? nextName : notebookName),
+        ),
+      },
+    };
   });
 }
 
 async function removeNotebookViewOption(name: string) {
-  const workspaceMetadata = await readWorkspaceMetadata();
-
-  if (!workspaceMetadata.notebookViewOptions.hiddenNotebookNames.includes(name)) {
-    return;
-  }
-
-  await writeWorkspaceMetadata({
-    ...workspaceMetadata,
-    notebookViewOptions: {
-      ...workspaceMetadata.notebookViewOptions,
-      hiddenNotebookNames: workspaceMetadata.notebookViewOptions.hiddenNotebookNames.filter(
-        (notebookName) => notebookName !== name,
-      ),
-    },
+  await updateWorkspaceMetadata((workspaceMetadata) => {
+    if (!workspaceMetadata.notebookViewOptions.hiddenNotebookNames.includes(name)) return null;
+    return {
+      ...workspaceMetadata,
+      notebookViewOptions: {
+        ...workspaceMetadata.notebookViewOptions,
+        hiddenNotebookNames: workspaceMetadata.notebookViewOptions.hiddenNotebookNames.filter(
+          (notebookName) => notebookName !== name,
+        ),
+      },
+    };
   });
 }

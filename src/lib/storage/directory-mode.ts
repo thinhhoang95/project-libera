@@ -27,8 +27,7 @@ import {
 } from "@/lib/storage/paths";
 import {
   normalizeWorkspaceMetadata,
-  readWorkspaceMetadata,
-  writeWorkspaceMetadata,
+  updateWorkspaceMetadata,
 } from "@/lib/storage/workspace-metadata";
 import type { ReviewDocument } from "@/lib/markdown-review";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
@@ -92,21 +91,23 @@ export async function mergeLegacyFolderState(folder: LinkedFolder) {
   if (await pathExists(metadataPath)) {
     try {
       const legacy = normalizeWorkspaceMetadata(JSON.parse(await readFile(metadataPath, "utf8")));
-      const current = await readWorkspaceMetadata();
-      const fileTags = { ...current.fileTags };
+      // Read and written as one step through the settings queue, so a star saved at the same time is not erased.
+      await updateWorkspaceMetadata((current) => {
+        const fileTags = { ...current.fileTags };
 
-      for (const [filePath, tags] of Object.entries(legacy.fileTags)) {
-        const target = remap(filePath);
-        fileTags[target] = [...new Set([...(fileTags[target] ?? []), ...tags])];
-      }
+        for (const [filePath, tags] of Object.entries(legacy.fileTags)) {
+          const target = remap(filePath);
+          fileTags[target] = [...new Set([...(fileTags[target] ?? []), ...tags])];
+        }
 
-      await writeWorkspaceMetadata({
-        ...current,
-        notebookPanelExpandedPaths: current.notebookPanelExpandedPaths === null
-          ? null
-          : [...new Set([...current.notebookPanelExpandedPaths, ...(legacy.notebookPanelExpandedPaths ?? []).map(remap)])],
-        starredFilePaths: [...new Set([...current.starredFilePaths, ...legacy.starredFilePaths.map(remap)])],
-        fileTags,
+        return {
+          ...current,
+          notebookPanelExpandedPaths: current.notebookPanelExpandedPaths === null
+            ? null
+            : [...new Set([...current.notebookPanelExpandedPaths, ...(legacy.notebookPanelExpandedPaths ?? []).map(remap)])],
+          starredFilePaths: [...new Set([...current.starredFilePaths, ...legacy.starredFilePaths.map(remap)])],
+          fileTags,
+        };
       });
     } catch {
       // Unreadable legacy state is left in place; the folder still links.

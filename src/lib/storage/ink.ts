@@ -15,7 +15,7 @@ import { getFileType } from "@/lib/storage/file-types";
 import { moveFileIfExists, pathExists, writeJsonAtomically } from "@/lib/storage/fs-utils";
 import { fileExistence } from "@/lib/storage/library-links";
 import { cachedPdfIdentity } from "@/lib/storage/pdf-identity";
-import { matchByIdentity, mayBeBack, moveToFreeSlot, ORPHAN_GRACE_MS, ORPHAN_RETENTION_MS } from "@/lib/storage/pdf-sidecars";
+import { matchByIdentity, mayBeBack, moveToFreeSlot, ORPHAN_GRACE_MS, ORPHAN_RETENTION_MS, slotTakenBy } from "@/lib/storage/pdf-sidecars";
 import { assertNotMigrating } from "@/lib/storage/migration-fence";
 import {
   ensureAdminRoot,
@@ -579,11 +579,8 @@ export async function reconcileInkFolders(notebook: string, files: Array<{ path:
   }
 
   const hashes = new Map<string, Promise<string | null>>();
-  // A slot is taken by the file system's own rules (case included), as it is for PDF side-cars.
-  const slotTaken = (libraryPath: string) => {
-    const { notebook: owner, pathParts } = splitFilePath(libraryPath);
-    return pathExists(inkFolderPath(owner, pathParts));
-  };
+  // A slot is taken by the file system's own rules (case included), as it is for PDF side-cars and in the check.
+  const slotTaken = slotTakenBy(inkFolderPath);
   const match = (source: InkSource) => matchByIdentity({ size: source.size, contentHash: source.sha256 }, files, slotTaken, hashes);
 
   let reattached = 0;
