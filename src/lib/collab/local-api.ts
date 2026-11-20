@@ -446,6 +446,34 @@ export interface FileListResponse {
   entries: FileListEntry[];
 }
 
+/**
+ * One manifest move or removal the host has seen, from its durable per-project
+ * log (GET ControlRoutes.transitions). Paths are Libera paths. `to` is null when the
+ * entry left the manifest. Keyed by the manifest file ID, so a path reused by
+ * another file is a different transition.
+ */
+export interface ManifestTransition {
+  seq: number;
+  projectId: string;
+  fileId: string;
+  kind: "file" | "folder";
+  from: string;
+  to: string | null;
+  at: number;
+}
+
+export interface TransitionsResponse {
+  transitions: ManifestTransition[];
+  /** More than `limit` were pending: ask again after the last seq. */
+  more: boolean;
+}
+
+/** POST ControlRoutes.transitionsAck: drop the transitions Next has applied (the listed seqs and/or all up to `upTo`). */
+export interface AcknowledgeTransitionsRequest {
+  seqs?: number[];
+  upTo?: number;
+}
+
 export interface FileOpRequest {
   /**
    * `write-blob` adds a binary file (an upload, a pasted image, an edited
@@ -747,6 +775,10 @@ export const ControlRoutes = {
   docSuggestions: (docId: string) => `/docs/${encodeURIComponent(docId)}/suggestions`,
   fileBlob: (projectId: string) => `/projects/${encodeURIComponent(projectId)}/file-blob`,
   fileEntries: (projectId: string) => `/projects/${encodeURIComponent(projectId)}/file-entries`,
+  /** GET ?after=&limit= → TransitionsResponse: the manifest moves and removals not yet acknowledged. */
+  transitions: (projectId: string) => `/projects/${encodeURIComponent(projectId)}/transitions`,
+  /** POST AcknowledgeTransitionsRequest → { removed }: trims the log. */
+  transitionsAck: (projectId: string) => `/projects/${encodeURIComponent(projectId)}/transitions/ack`,
   files: (projectId: string) => `/projects/${encodeURIComponent(projectId)}/files`,
   reconciliations: "/reconciliations",
   reconciliation: (id: string) => `/reconciliations/${encodeURIComponent(id)}`,

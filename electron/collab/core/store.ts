@@ -130,6 +130,18 @@ export interface BlobCacheRow {
   size: number;
 }
 
+/** A manifest move or removal of one entry, as the host saw it (paths relative to the notebook root). */
+export interface ManifestTransitionRow {
+  seq: number;
+  projectId: string;
+  fileId: string;
+  kind: "file" | "folder";
+  from: string;
+  /** Null: the entry left the manifest. */
+  to: string | null;
+  at: number;
+}
+
 export interface RejectedEditRow {
   docId: string;
   subdoc: Subdoc;
@@ -336,6 +348,29 @@ const MIGRATIONS: string[] = [
     error TEXT NOT NULL,
     failed_at INTEGER NOT NULL
   );
+  `,
+  `
+  -- Where each manifest entry was last seen, and the moves and removals seen
+  -- since, per installation (outside the synced folder). Next applies them to
+  -- the records it keeps on this computer, then acknowledges them: a restart,
+  -- a lost response or a remote move is still applied later.
+  CREATE TABLE manifest_paths (
+    project_id TEXT NOT NULL,
+    file_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    PRIMARY KEY (project_id, file_id)
+  );
+  CREATE TABLE manifest_transitions (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL,
+    file_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    from_path TEXT NOT NULL,
+    to_path TEXT,
+    at INTEGER NOT NULL
+  );
+  CREATE INDEX manifest_transitions_by_project ON manifest_transitions (project_id, seq);
   `,
 ];
 
@@ -1318,8 +1353,81 @@ export class HostStore {
     );
   }
 
+  /** Where each entry of the project's manifest was last recorded. */
+  manifestPaths(projectId: string): Map<string, { path: string; kind: "file" | "folder" }> {
+    const result = new Map<string, { path: string; kind: "file" | "folder" }>();
+    for (const row of this.all(`SELECT file_id, path, kind FROM manifest_paths WHERE project_id = ?`, projectId)) {
+      result.set(String(row.file_id), { path: String(row.path), kind: row.kind === "folder" ? "folder" : "file" });
+    }
+    return result;
+  }
+
+  /**
+   * Records what the manifest now holds: the last-seen paths are replaced and
+   * one transition appended per move or removal, in one transaction. An entry
+   * seen for the first time is only remembered. Returns the appended rows.
+   */
+  commitManifestPaths(
+    projectId: string,
+    changes: { upserts: Array<{ fileId: string; path: string; kind: "file" | "folder" }>; removals: string[]; transitions: Array<Omit<ManifestTransitionRow, "seq" | "projectId">> },
+  ): ManifestTransitionRow[] {
+    return this.transaction(() => {
+      for (const entry of changes.upserts) {
+        this.run(
+          `INSERT INTO manifest_paths (project_id, file_id, path, kind) VALUES (?, ?, ?, ?)
+           ON CONFLICT (project_id, file_id) DO UPDATE SET path = excluded.path, kind = excluded.kind`,
+          projectId, entry.fileId, entry.path, entry.kind,
+        );
+      }
+      for (const fileId of changes.removals) this.run(`DELETE FROM manifest_paths WHERE project_id = ? AND file_id = ?`, projectId, fileId);
+      const rows: ManifestTransitionRow[] = [];
+      for (const transition of changes.transitions) {
+        const inserted = this.get(
+          `INSERT INTO manifest_transitions (project_id, file_id, kind, from_path, to_path, at) VALUES (?, ?, ?, ?, ?, ?) RETURNING seq`,
+          projectId, transition.fileId, transition.kind, transition.from, transition.to, transition.at,
+        );
+        rows.push({ ...transition, projectId, seq: asNumber(inserted?.seq) });
+      }
+      return rows;
+    });
+  }
+
+  /** The project's transitions not yet acknowledged, oldest first, after `after`. */
+  transitionsAfter(projectId: string, after = 0, limit = 500): ManifestTransitionRow[] {
+    return this.all(
+      `SELECT seq, file_id, kind, from_path, to_path, at FROM manifest_transitions WHERE project_id = ? AND seq > ? ORDER BY seq LIMIT ?`,
+      projectId, after, limit,
+    ).map((row) => ({
+      seq: asNumber(row.seq),
+      projectId,
+      fileId: String(row.file_id),
+      kind: row.kind === "folder" ? "folder" : "file",
+      from: String(row.from_path),
+      to: asNullableString(row.to_path),
+      at: asNumber(row.at),
+    }));
+  }
+
+  /** Drops the transitions Next has applied: those listed in `seqs` and/or all up to `upTo`. Returns how many. */
+  acknowledgeTransitions(projectId: string, ack: { seqs?: number[]; upTo?: number }): number {
+    return this.transaction(() => {
+      let removed = 0;
+      if (ack.upTo !== undefined) removed += asNumber(this.get(`SELECT COUNT(*) AS n FROM manifest_transitions WHERE project_id = ? AND seq <= ?`, projectId, ack.upTo)?.n);
+      if (ack.upTo !== undefined) this.run(`DELETE FROM manifest_transitions WHERE project_id = ? AND seq <= ?`, projectId, ack.upTo);
+      for (const seq of ack.seqs ?? []) {
+        if (this.get(`SELECT seq FROM manifest_transitions WHERE project_id = ? AND seq = ?`, projectId, seq)) {
+          this.run(`DELETE FROM manifest_transitions WHERE project_id = ? AND seq = ?`, projectId, seq);
+          removed += 1;
+        }
+      }
+      return removed;
+    });
+  }
+
   deleteProject(projectId: string): void {
     this.transaction(() => {
+      this.run(`DELETE FROM manifest_paths WHERE project_id = ?`, projectId);
+      this.run(`DELETE FROM manifest_transitions WHERE project_id = ?`, projectId);
       this.run(`DELETE FROM docs WHERE project_id = ?`, projectId);
       this.run(`DELETE FROM projects WHERE project_id = ?`, projectId);
     });

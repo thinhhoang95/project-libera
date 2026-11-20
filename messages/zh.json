@@ -7772,7 +7772,8 @@
       "metadata": "星标和标签",
       "references": "引用的参考文献",
       "history": "撤销历史",
-      "links": "链接"
+      "links": "链接",
+      "records": "保存在此电脑上的记录"
     },
     "noNoteQuoteNotice": "没有打开的笔记：引文和引用已复制到剪贴板。",
     "noSnipTextError": "截图中未找到文本。",

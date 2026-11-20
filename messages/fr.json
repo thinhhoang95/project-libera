@@ -7772,7 +7772,8 @@
       "metadata": "étoiles et étiquettes",
       "references": "références citées",
       "history": "historique d’annulation",
-      "links": "liens"
+      "links": "liens",
+      "records": "enregistrements gardés sur cet ordinateur"
     },
     "noNoteQuoteNotice": "Aucune note n’est ouverte : la citation et la référence ont été copiées dans le presse-papiers.",
     "noSnipTextError": "Aucun texte n’a été trouvé dans la capture.",

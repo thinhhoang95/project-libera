@@ -267,7 +267,7 @@ export type LiberaFilePayload = {
  * finish: `failed` threw (`message` says what), `held` was left at the old
  * path on purpose (a review whose destination already has comments).
  */
-export type LiberaMoveStep = { step: "images" | "reviews" | "attachments" | "metadata" | "references" | "history" | "links"; status: "failed" | "held"; message: string };
+export type LiberaMoveStep = { step: "images" | "reviews" | "attachments" | "metadata" | "references" | "history" | "links" | "records"; status: "failed" | "held"; message: string };
 
 /**
  * Why a path that pointed at a moved file, or that a moved note wrote, was

@@ -7772,7 +7772,8 @@
       "metadata": "stars and tags",
       "references": "cited references",
       "history": "undo history",
-      "links": "links"
+      "links": "links",
+      "records": "records kept on this computer"
     },
     "noNoteQuoteNotice": "No note is open: the quote and citation were copied to the clipboard.",
     "noSnipTextError": "No text was found in the snip.",
