@@ -7748,8 +7748,9 @@
     "saveChangesError": "Không thể lưu thay đổi.",
     "saveFailedError": "Lưu không thành công.",
     "fileChangedUnderYouError": "Tệp này đã thay đổi kể từ khi danh sách được tải. Danh sách đã được làm mới; hãy kiểm tra và thử lại.",
-    "fileChangedOnDiskError": "Tệp này đã thay đổi trên ổ đĩa. Các thay đổi của bạn vẫn được giữ ở đây; lưu lại sẽ thay thế phiên bản trên ổ đĩa.",
+    "fileChangedOnDiskError": "Tệp này đã thay đổi trên ổ đĩa. Các thay đổi của bạn vẫn được giữ ở đây; lưu lại sẽ hỏi trước khi thay thế phiên bản trên ổ đĩa.",
     "fileGoneOnDiskError": "Tệp này đã bị di chuyển hoặc xóa trên ổ đĩa. Các thay đổi của bạn vẫn được giữ ở đây.",
+    "fileMovedOntoOpenTabError": "Tệp này đã được chuyển tới {path}, nơi đã mở trong một thẻ khác với nội dung khác. Cả hai đều được giữ: hãy sao chép những gì bạn cần rồi đóng thẻ này.",
     "saveNamedFileError": "Không thể lưu {name}: {message}",
     "savePanelExpansionError": "Không thể lưu trạng thái mở rộng bảng sổ tay.",
     "saveTagsError": "Không thể lưu thẻ.",
@@ -7857,6 +7858,9 @@
     "removeFolderConfirm": "Gỡ mà không lưu",
     "removeFolderDescription": "{dirtyTabCount, plural, one {# thẻ đang mở có} other {# thẻ đang mở có}} chỉnh sửa chưa lưu trong {notebook}. Thư mục và các tệp của nó vẫn còn trên đĩa.",
     "removeFolderTitle": "Gỡ thư mục khỏi Libera",
+    "replaceDiskConfirm": "Thay thế phiên bản trên ổ đĩa",
+    "replaceDiskDescription": "{name} đã thay đổi trên ổ đĩa kể từ khi bạn mở. Thay thế phiên bản đó bằng văn bản của bạn?",
+    "replaceDiskTitle": "Thay thế phiên bản trên ổ đĩa",
     "working": "Đang xử lý"
   },
   "workspaceInputDialog": {
