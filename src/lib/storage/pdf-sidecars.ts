@@ -5,7 +5,8 @@ import path from "node:path";
 import { recordPdfAnnotationsSource } from "@/lib/storage/annotations";
 import { sharedNotebookMarker } from "@/lib/collab/shared-notebook";
 import { getFileType } from "@/lib/storage/file-types";
-import { moveFileIfExists, pathExists, writeJsonAtomically } from "@/lib/storage/fs-utils";
+import { pathExists, writeJsonAtomically } from "@/lib/storage/fs-utils";
+import { DestinationTakenError, movePathExclusive, writeFileExclusive } from "../../../electron/collab/notebooks/fs-ops";
 import { cachedPdfIdentity, parsePdfIdentity, type PdfIdentity } from "@/lib/storage/pdf-identity";
 import {
   definitionsDirectoryPath,
@@ -57,7 +58,13 @@ const KINDS: KindStore[] = [
 
 /** A side-car whose PDF went missing is set aside only after this long, so an in-progress move is not mistaken for one. */
 export const ORPHAN_GRACE_MS = 30_000;
-/** Set-aside side-cars are kept this long for their PDF to come back. */
+/**
+ * Set-aside side-cars are kept this long for their PDF to come back. Past it
+ * they are deleted only when nothing of their PDF is left to come back to
+ * (mayBeBack): a file with their bytes, or with none recorded any file at the
+ * old path, keeps them for the user even when its slot is taken or the match
+ * is ambiguous. Check Notebook lists what is kept.
+ */
 export const ORPHAN_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 /** Set-aside side-cars are matched against the notebook at most this often when nothing new went missing. */
 const STORED_ORPHAN_SCAN_MS = 60_000;
@@ -70,6 +77,21 @@ type OrphanRecord = {
   source: PdfIdentity | null;
   sidecar: unknown;
 };
+
+/**
+ * Moves a side file or folder into a slot that must be free, never replacing
+ * what a save put there meanwhile; the source stays until the move has
+ * published it. False when the slot is taken or the source is gone.
+ */
+export async function moveToFreeSlot(from: string, to: string): Promise<boolean> {
+  try { await movePathExclusive(from, to); return true; }
+  catch (error) {
+    if (error instanceof DestinationTakenError || (error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    // Windows refuses to rename a folder onto a folder with its own error: a slot that is now taken, with the source still here, is that.
+    if (await pathExists(to) && await pathExists(from)) return false;
+    throw error;
+  }
+}
 
 const isPdfSidecarName = (name: string) => /\.pdf\.json$/i.test(name);
 
@@ -276,7 +298,6 @@ export async function readOrphans(notebook: string) {
  * side-car; PDFs are hashed only when their size matches a missing PDF's.
  */
 export async function reconcilePdfSidecars(notebook: string, pdfFiles: Array<{ path: string; size: number }>, { now = Date.now() }: { now?: number } = {}) {
-  const withSidecar = new Map<PdfSidecarKind, Set<string>>(KINDS.map((store) => [store.kind, new Set<string>()]));
   const missing: Found[] = [];
   const lacksIdentity: string[] = [];
   for (const store of KINDS) {
@@ -284,7 +305,6 @@ export async function reconcilePdfSidecars(notebook: string, pdfFiles: Array<{ p
       const exists = await pdfExists(found.libraryPath);
       if (exists === false) missing.push(found);
       else {
-        withSidecar.get(store.kind)!.add(found.libraryPath.toLowerCase());
         if (exists && store.kind === "annotations" && !backfilled.has(notebook)) lacksIdentity.push(found.libraryPath);
       }
     }
@@ -308,8 +328,13 @@ export async function reconcilePdfSidecars(notebook: string, pdfFiles: Array<{ p
   if (!missing.length && !stored.length) return { reattached: 0, setAside: 0 };
 
   const hashes = new Map<string, Promise<string | null>>();
+  /** Whether a PDF's slot for this kind is taken by the file system's own rules: `Foo.pdf` and `foo.pdf` are one slot on a case-insensitive disk and two on a case-sensitive one. */
+  const slotTaken = (store: KindStore, libraryPath: string) => {
+    const { notebook: owner, pathParts } = splitFilePath(libraryPath);
+    return pathExists(store.path(owner, pathParts));
+  };
   /** The one PDF without this kind of side-car whose bytes are `identity`; null when none or several. */
-  const match = (kind: PdfSidecarKind, identity: PdfIdentity) => matchByIdentity(identity, pdfFiles, withSidecar.get(kind)!, hashes);
+  const match = (store: KindStore, identity: PdfIdentity) => matchByIdentity(identity, pdfFiles, (candidate) => slotTaken(store, candidate), hashes);
 
   let reattached = 0;
   let setAsideCount = 0;
@@ -321,13 +346,11 @@ export async function reconcilePdfSidecars(notebook: string, pdfFiles: Array<{ p
   if (shared) reattached += await replayPendingPdfMoves(notebook);
   for (const found of shared ? [] : missing) {
     const identity = sidecarIdentity(await readJson(found.sidecarPath));
-    const target = identity ? await match(found.store.kind, identity) : null;
+    const target = identity ? await match(found.store, identity) : null;
     if (target) {
       const { notebook: owner, pathParts } = splitFilePath(target);
-      const destination = found.store.path(owner, pathParts);
-      if (!(await pathExists(destination))) {
-        await moveFileIfExists(found.sidecarPath, destination);
-        withSidecar.get(found.store.kind)!.add(target.toLowerCase());
+      // Exclusive: an annotation saved there since the check above is kept, and the source stays until the move has published it.
+      if (await moveToFreeSlot(found.sidecarPath, found.store.path(owner, pathParts))) {
         missingSince.delete(found.sidecarPath);
         reattached += 1;
         continue;
@@ -349,44 +372,69 @@ export async function reconcilePdfSidecars(notebook: string, pdfFiles: Array<{ p
       // Only back under its old path, and only as the same bytes.
       const original = splitFilePath(record.originalPath);
       const current = record.source && await pdfExists(record.originalPath) ? await cachedPdfIdentity(filePathFromParts(original.notebook, original.pathParts)).catch(() => null) : null;
-      if (current && record.source && current.contentHash === record.source.contentHash && !withSidecar.get(record.kind)!.has(record.originalPath.toLowerCase())) target = record.originalPath;
-    } else if (record.source) target = await match(record.kind, record.source);
+      if (current && record.source && current.contentHash === record.source.contentHash && !(await slotTaken(store, record.originalPath))) target = record.originalPath;
+    } else if (record.source) target = await match(store, record.source);
     // Without a recorded identity, only the PDF coming back under its old path is its own.
-    else if (await pdfExists(record.originalPath) && !withSidecar.get(record.kind)!.has(record.originalPath.toLowerCase())) target = record.originalPath;
+    else if (await pdfExists(record.originalPath) && !(await slotTaken(store, record.originalPath))) target = record.originalPath;
     if (target) {
       const { notebook: owner, pathParts } = splitFilePath(target);
       const destination = store.path(owner, pathParts);
-      if (!(await pathExists(destination))) {
-        await writeJsonAtomically(destination, record.sidecar);
+      const bytes = Buffer.from(`${JSON.stringify(record.sidecar, null, 2)}\n`);
+      // Exclusive, and the record is dropped only once the destination reads back as what was set aside.
+      const published = await writeFileExclusive(destination, bytes).then(() => true, (error) => { if (error instanceof DestinationTakenError) return false; throw error; });
+      if (published && (await readFile(destination).catch(() => null))?.equals(bytes)) {
         await rm(file, { force: true });
-        withSidecar.get(record.kind)!.add(target.toLowerCase());
         reattached += 1;
         continue;
       }
     }
-    if (!shared && now - Date.parse(record.orphanedAt) > ORPHAN_RETENTION_MS) await rm(file, { force: true });
+    if (!shared && now - Date.parse(record.orphanedAt) > ORPHAN_RETENTION_MS && !(await mayBeBack(record, pdfFiles, hashes, pdfExists))) await rm(file, { force: true });
   }
   return { reattached, setAside: setAsideCount };
 }
 
 /**
  * The one file among `candidates` whose bytes are `identity` (its size, then
- * its SHA-256), leaving out those `taken` (lower-cased library paths); null
- * when none or several. Only files of that size are hashed, each once per
- * `hashes`. The rule by which side files follow a file moved outside Libera,
- * here and in ink.ts; the notebook check (storage/integrity.ts) reports it.
+ * its SHA-256), leaving out those `taken`; null when none or several. `taken`
+ * is a set of lower-cased library paths, or a test of the file system's own
+ * slot, which follows its case rules. Only files of that size are hashed, each
+ * once per `hashes`. The rule by which side files follow a file moved outside
+ * Libera, here and in ink.ts; the notebook check (storage/integrity.ts) reports it.
  */
-export async function matchByIdentity(identity: { size: number; contentHash: string }, candidates: Array<{ path: string; size: number }>, taken: ReadonlySet<string>, hashes: Map<string, Promise<string | null>>) {
+export async function matchByIdentity(identity: { size: number; contentHash: string }, candidates: Array<{ path: string; size: number }>, taken: ReadonlySet<string> | ((libraryPath: string) => Promise<boolean>), hashes: Map<string, Promise<string | null>>) {
   const matches: string[] = [];
   for (const candidate of candidates) {
-    if (candidate.size !== identity.size || taken.has(candidate.path.toLowerCase())) continue;
-    if (!hashes.has(candidate.path)) {
-      const { notebook, pathParts } = splitFilePath(candidate.path);
-      hashes.set(candidate.path, cachedPdfIdentity(filePathFromParts(notebook, pathParts)).then((found) => found.contentHash, () => null));
-    }
-    if (await hashes.get(candidate.path) === identity.contentHash) matches.push(candidate.path);
+    if (candidate.size !== identity.size) continue;
+    if (typeof taken === "function" ? await taken(candidate.path) : taken.has(candidate.path.toLowerCase())) continue;
+    if (await hashOf(candidate.path, hashes) === identity.contentHash) matches.push(candidate.path);
   }
   return matches.length === 1 ? matches[0] : null;
+}
+
+function hashOf(libraryPath: string, hashes: Map<string, Promise<string | null>>) {
+  if (!hashes.has(libraryPath)) {
+    const { notebook, pathParts } = splitFilePath(libraryPath);
+    hashes.set(libraryPath, cachedPdfIdentity(filePathFromParts(notebook, pathParts)).then((found) => found.contentHash, () => null));
+  }
+  return hashes.get(libraryPath)!;
+}
+
+/**
+ * Whether the file a set-aside record was made for may still come back, so its
+ * work outlives the retention: a file with its bytes exists, whatever its slot
+ * or the ambiguity (one that cannot be read counts), or, with no bytes
+ * recorded, a file is at the old path or cannot be told to be gone. `exists`
+ * is the owner's presence test (null: cannot be told).
+ */
+export async function mayBeBack(record: { originalPath: string; source: { size: number; contentHash: string } | null }, candidates: Array<{ path: string; size: number }>, hashes: Map<string, Promise<string | null>>, exists: (libraryPath: string) => Promise<boolean | null>) {
+  const source = record.source;
+  if (!source) return (await exists(record.originalPath)) !== false;
+  for (const candidate of candidates) {
+    if (candidate.size !== source.size) continue;
+    const hash = await hashOf(candidate.path, hashes);
+    if (hash === null || hash === source.contentHash) return true;
+  }
+  return false;
 }
 
 function notebookPrefix(notebook: string) {
