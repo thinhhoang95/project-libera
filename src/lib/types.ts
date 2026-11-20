@@ -259,7 +259,18 @@ export type LiberaFilePayload = {
 /** A link in a moved note: `was` is the file it opened, `now` the file it opens from the new place (null: none). */
 export type LiberaMovedLink = { href: string; was: string; now: string | null };
 
+/**
+ * A step after the file itself moved (its records following it) that did not
+ * finish: `failed` threw (`message` says what), `held` was left at the old
+ * path on purpose (a review whose destination already has comments).
+ */
+export type LiberaMoveStep = { step: "images" | "reviews" | "attachments" | "metadata" | "references" | "history"; status: "failed" | "held"; message: string };
+
 export type LiberaFileMovePayload =LiberaFilePayload & {
+  /** Set with `unfinished`: the move that did happen, for a caller that retargets what it has open. */
+  moved?: { from: string; to: string };
+  /** What did not finish after the file moved; absent when everything did. Check Notebook, then Try to fix, completes it. */
+  unfinished?: LiberaMoveStep[];
   references?: ReferenceMoveResult;
   /** Relative links of a moved Markdown note that open another file (or none) from its new place. */
   changedLinks?: LiberaMovedLink[];
