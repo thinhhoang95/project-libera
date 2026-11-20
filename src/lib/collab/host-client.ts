@@ -235,6 +235,16 @@ export function listProjectEntries(projectId: string, config?: HostClientConfig 
   return hostJson(ControlRoutes.fileEntries(projectId), { config });
 }
 
+/** The shared notebook's manifest moves and removals not yet acknowledged (the host's durable log), after `after`. */
+export function readManifestTransitions(projectId: string, after = 0, limit = 500, config?: HostClientConfig | null): Promise<import("./local-api").TransitionsResponse> {
+  return hostJson(`${ControlRoutes.transitions(projectId)}?after=${after}&limit=${limit}`, { config });
+}
+
+/** Tells the host which transitions Next has applied to its records, so it trims them. */
+export function acknowledgeManifestTransitions(projectId: string, request: import("./local-api").AcknowledgeTransitionsRequest, config?: HostClientConfig | null): Promise<{ removed: number }> {
+  return hostJson(ControlRoutes.transitionsAck(projectId), { method: "POST", body: request, config });
+}
+
 export function fileOp(projectId: string, request: FileOpRequest, config?: HostClientConfig | null): Promise<import("./local-api").FileOpResult> {
   return hostJson(ControlRoutes.files(projectId), { method: "POST", body: request, config });
 }

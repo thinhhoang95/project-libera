@@ -8,8 +8,6 @@ import { subscribeHostEvents } from "@/lib/collab/ui/bridge";
 // edits until its next full scan. Forward the host's files-changed paths to the
 // indexer, batched: the host already coalesces writes, and the indexer dedupes.
 const FORWARD_DELAY_MS = 1_000;
-const AUDIO_PATH = /\.(m4a|mp3|wav|aac|ogg|oga|opus|flac|webm)$/i;
-const PDF_PATH = /\.pdf$/i;
 
 /** The sidecar endpoints reject a request with more changes than this. */
 export const SIDECAR_CHUNK = 500;
@@ -55,10 +53,24 @@ export async function postSidecarChanges(url: string, changes: SidecarChanges, d
   return allSent;
 }
 
+/** Tells Next a shared notebook's records may have moves to follow; the host's log carries them, this carries nothing. Failures cost nothing: the next nudge, operation or Check Notebook drains it. */
+function nudgeRecords(body: { notebook: string } | { all: true }): void {
+  void fetch("/api/shared-records", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).catch(() => undefined);
+}
+
 export function useForwardSharedFileChanges(): void {
   useEffect(() => {
     const pending = new Set<string>();
+    const nudged = new Set<string>();
+    let nudgeTimer: ReturnType<typeof setTimeout> | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    // A window opened: moves made while none was are in the log.
+    nudgeRecords({ all: true });
+    const flushNudges = () => {
+      nudgeTimer = null;
+      for (const notebook of nudged) nudgeRecords({ notebook });
+      nudged.clear();
+    };
     const flush = () => {
       timer = null;
       const paths = [...pending].slice(0, 500);
@@ -74,19 +86,10 @@ export function useForwardSharedFileChanges(): void {
     };
     const stop = subscribeHostEvents((event) => {
       if (event.t !== "files-changed" && event.t !== "tree-changed") return;
-      // Recordings' local sidecars (waveform, unshared transcript) follow renames and deletions.
-      if (event.t === "tree-changed") {
-        const moves = event.moves.filter((move) => AUDIO_PATH.test(move.from));
-        const removed = event.removed.filter((path) => AUDIO_PATH.test(path));
-        if (moves.length || removed.length) {
-          void postSidecarChanges("/api/transcripts/sidecars", { moves, removed });
-        }
-        // PDFs' local side-cars (annotations, outline, definitions) too.
-        const pdfMoves = event.moves.filter((move) => PDF_PATH.test(move.from));
-        const pdfRemoved = event.removed.filter((path) => PDF_PATH.test(path));
-        if (pdfMoves.length || pdfRemoved.length) {
-          void postSidecarChanges("/api/pdf-sidecars", { moves: pdfMoves, removed: pdfRemoved });
-        }
+      // Every record kept for a moved or removed file follows through the host's durable log: the event only says Next should read it, once per burst.
+      if (event.t === "tree-changed" && (event.moves.length || event.removed.length)) {
+        nudged.add(event.notebook);
+        nudgeTimer ??= setTimeout(flushNudges, FORWARD_DELAY_MS);
       }
       const paths = event.t === "files-changed" ? event.paths : [...event.added, ...event.moves.flatMap((move) => [move.from, move.to]), ...event.removed];
       for (const path of paths) pending.add(path);
@@ -95,6 +98,7 @@ export function useForwardSharedFileChanges(): void {
     return () => {
       stop();
       if (timer) clearTimeout(timer);
+      if (nudgeTimer) clearTimeout(nudgeTimer);
     };
   }, []);
 }

@@ -4,10 +4,16 @@ import { getNotebookNode, getTree, toStorageError } from "@/lib/storage";
 import { attachSharedFileIds } from "@/lib/collab/tree-file-ids";
 import { listSharedEntries } from "@/lib/collab/shared-writes";
 import { sharedNotebookMarker } from "@/lib/collab/shared-notebook";
+import { drainSharedRecordTransitionsIfPending } from "@/lib/storage/shared-record-follow";
 
 export const runtime = "nodejs";
 
 const isShared = (notebook: string) => Boolean(sharedNotebookMarker(notebook)?.projectId);
+
+/** A shared notebook's tree loaded: apply moves its records have not followed yet. Asks the host only when something may be pending, and never delays the tree. */
+const followRecordsInBackground = (names: string[]) => {
+  for (const name of names) if (isShared(name)) void drainSharedRecordTransitionsIfPending(name).catch(() => undefined);
+};
 
 export async function GET(request: NextRequest) {
   const authError = requireAuth(request);
@@ -23,6 +29,7 @@ export async function GET(request: NextRequest) {
     if (notebookName) {
       const notebook = await getNotebookNode(notebookName, { includeArchive });
       if (notebook) await attachSharedFileIds([notebook], listSharedEntries, isShared);
+      followRecordsInBackground([notebookName]);
       return NextResponse.json({ notebook });
     }
     const tree = await getTree({
@@ -30,6 +37,7 @@ export async function GET(request: NextRequest) {
       maintenance: request.nextUrl.searchParams.get("maintenance") === "throttled" ? "throttled" : "always",
     });
     await attachSharedFileIds(tree.notebooks, listSharedEntries, isShared);
+    followRecordsInBackground(tree.notebooks.map((notebook) => notebook.name));
     return NextResponse.json(tree);
   } catch (error) {
     const storageError = toStorageError(error);

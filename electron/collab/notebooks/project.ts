@@ -87,6 +87,7 @@ import { PDF_LIVE_SETTING } from "../../../src/lib/collab/protocol/pdf";
 import { emptyState, isStaleCopy, isUncertainCopy, readBase, readMarker, readState, setMaterialized, writeBase, writeMarker, writeState, deleteBase, type LayoutRecord, type ProjectState } from "./state";
 import { diffText } from "./text-diff";
 import { chunkTextEdits } from "./text-edit-chunks";
+import { diffManifestPaths, type RecordedPath } from "./transition-log";
 
 /** Where a notebook keeps its files' ink (INK_DIR in src/lib/storage/constants.ts). */
 const INK_DIRECTORY = "_ink";
@@ -392,6 +393,8 @@ export class SharedProject {
   private readonly verified = new Map<string, { ctimeMs: number | undefined; at: number; pending?: boolean }>();
   /** Retired path keys, each with the content hashes known for it. */
   private readonly retired: Map<string, Set<string>>;
+  /** Where each manifest entry was last recorded in the host's transition log (a restart reads it back from the store). */
+  private recordedPaths: Map<string, RecordedPath>;
   private observedEntries = new Map<string, ManifestEntry>();
   /** Field changes this host made to entries until the server has them: a concurrent whole-entry write must not undo them (see manifest-intents.ts). */
   private readonly manifestIntents = new ManifestIntents();
@@ -403,6 +406,7 @@ export class SharedProject {
     this.info = info;
     this.state = state;
     this.retired = ctx.host.store.retiredPaths(info.projectId);
+    this.recordedPaths = ctx.host.store.manifestPaths(info.projectId);
     this.pdfs = new PdfMarksRuntime({
       host: ctx.host,
       logger: ctx.logger,
@@ -914,6 +918,7 @@ export class SharedProject {
     }
     this.entries = this.readEntries();
     const layout = computeLayout(this.entries.values());
+    this.recordTransitions(layout);
     for (const refused of layout.refused) {
       if (this.refusedLogged.has(refused.fileId)) continue;
       this.refusedLogged.add(refused.fileId);
@@ -1126,6 +1131,7 @@ export class SharedProject {
   private followManifest(): void {
     this.entries = this.readEntries();
     const layout = computeLayout(this.entries.values());
+    this.recordTransitions(layout);
     const previous = this.state.layout;
     const next: Record<string, LayoutRecord> = {};
     for (const [fileId, desired] of layout.paths) {
@@ -3512,6 +3518,34 @@ export class SharedProject {
     }
     if (moves.length === 0 && removed.length === 0 && added.length === 0) return;
     this.ctx.emit({ t: "tree-changed", projectId: this.info.projectId, notebook: this.info.notebook, added, moves, removed });
+  }
+
+  /**
+   * Appends the manifest's moves and removals to the host's durable transition
+   * log (see transition-log.ts), on a writer and on a follower alike. The paths
+   * are the manifest's, by file ID, compared with what was last recorded: not
+   * the layout in memory, which a restart rebuilds. Entries the layout refuses
+   * (a path a shared notebook cannot hold) keep their recorded place: they are
+   * not removals. Called before the tree event, so a window that reacts to it
+   * finds the transition in the log.
+   */
+  private recordTransitions(layout: { paths: Map<string, string>; refused: Array<{ fileId: string }> }): void {
+    if (this.info.album) return;
+    try {
+      const next = new Map<string, RecordedPath>();
+      for (const [fileId, path] of layout.paths) next.set(fileId, { path, kind: this.entries.get(fileId)?.kind === "folder" ? "folder" : "file" });
+      for (const { fileId } of layout.refused) {
+        const before = this.recordedPaths.get(fileId);
+        if (before && !next.has(fileId)) next.set(fileId, before);
+      }
+      const diff = diffManifestPaths(this.recordedPaths, next, Date.now());
+      if (diff.upserts.length === 0 && diff.removals.length === 0) return;
+      this.ctx.host.store.commitManifestPaths(this.info.projectId, diff);
+      this.recordedPaths = next;
+    } catch (error) {
+      // Recorded again from the same comparison at the next pass.
+      this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: could not record the manifest's moves`, error);
+    }
   }
 
   private filesChanged(paths: string[]): void {

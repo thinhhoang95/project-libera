@@ -2258,6 +2258,36 @@ export class NotebookServiceImpl implements NotebookService {
     router.add("GET", decodeURIComponent(ControlRoutes.fileEntries(":projectId")), wrap(async (request) => ({
       body: await this.runningProject(request.params.projectId).listEntries(),
     })));
+    // The manifest moves and removals Next has not yet applied to the records kept on this computer (durable, per installation).
+    router.add("GET", decodeURIComponent(ControlRoutes.transitions(":projectId")), wrap(async (request) => {
+      const after = Number(request.query.get("after") ?? 0);
+      const limitText = request.query.get("limit");
+      const limit = limitText === null ? 500 : Number(limitText);
+      if (!Number.isInteger(after) || after < 0) throw new ControlError(400, "bad-request", "after must be a non-negative integer.");
+      if (!Number.isInteger(limit) || limit < 1 || limit > 2000) throw new ControlError(400, "bad-request", "limit must be an integer from 1 to 2000.");
+      const handle = this.projects.get(request.params.projectId);
+      if (!handle || handle.kind !== "notebook") throw new ControlError(404, "not-joined", "This notebook is not joined in this Libera.");
+      const rows = this.deps.host.store.transitionsAfter(handle.projectId, after, limit + 1);
+      const liberaPath = (relative: string) => `${handle.notebook}/${relative}`;
+      return {
+        body: {
+          transitions: rows.slice(0, limit).map((row) => ({ ...row, from: liberaPath(row.from), to: row.to === null ? null : liberaPath(row.to) })),
+          more: rows.length > limit,
+        },
+      };
+    }));
+    router.add("POST", decodeURIComponent(ControlRoutes.transitionsAck(":projectId")), wrap(async (request) => {
+      const body = (request.body ?? {}) as { upTo?: unknown; seqs?: unknown };
+      const { upTo, seqs } = body;
+      if (upTo !== undefined && (!Number.isInteger(upTo) || (upTo as number) < 0)) throw new ControlError(400, "bad-request", "upTo must be a non-negative integer.");
+      if (seqs !== undefined && (!Array.isArray(seqs) || seqs.length > 5000 || !seqs.every((seq) => Number.isInteger(seq) && seq >= 0))) throw new ControlError(400, "bad-request", "seqs must be a list of integers.");
+      if (upTo === undefined && seqs === undefined) throw new ControlError(400, "bad-request", "Send seqs or upTo.");
+      const removed = this.deps.host.store.acknowledgeTransitions(request.params.projectId, {
+        ...(upTo === undefined ? {} : { upTo: upTo as number }),
+        ...(seqs === undefined ? {} : { seqs: seqs as number[] }),
+      });
+      return { body: { removed } };
+    }));
     router.add("POST", ControlRoutes.share, wrap(async (request) => ({ body: await this.share(request.body as ShareNotebookRequest) })));
     router.add("GET", ControlRoutes.pdfResolve, wrap(async (request) => {
       const relative = request.query.get("path") ?? "";
