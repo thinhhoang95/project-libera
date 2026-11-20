@@ -94,8 +94,9 @@ export function readReviewFileIds(directory: string | undefined, projectId: stri
 /** Review documents of one notebook folder ("Notebook/...") with threads not yet migrated. */
 export function documentsToMigrate(db: ReviewDatabase, notebook: string, fileMap?: ReviewFileMap | null): MigratableDocument[] {
   const prefix = `${notebook}/`;
-  // With the map, a review is the notebook's by its recorded file, not by the path it is stored under now.
-  return db.documents.filter((doc) => (fileMap ? Object.hasOwn(fileMap, doc.id) : typeof doc.key === "string" && doc.key.startsWith(prefix)) &&
+  // A review the map names is the notebook's by its recorded file, not by the path it is stored under now.
+  // One the map does not name (made after sharing, or no map) is found by its stored path, which has followed the file since.
+  return db.documents.filter((doc) => (fileMap && Object.hasOwn(fileMap, doc.id) || (typeof doc.key === "string" && doc.key.startsWith(prefix))) &&
     doc.threads.some((thread) => !thread.migratedTo));
 }
 

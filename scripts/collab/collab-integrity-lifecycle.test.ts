@@ -88,14 +88,15 @@ test("S70: local reviews are chosen by the file recorded at share time, not by t
   const dir = temp();
   try {
     const doc = (id: string, key: string): MigratableDocument => ({ id, key, revision: 1, threads: [{ id: `t_${id}`, messages: [{ id: "m", text: "x" }], anchor: { quote: "q" } } as never] } as unknown as MigratableDocument);
-    // `moved` was renamed by someone else; its review is still stored under the old path, where `impostor` now lives.
-    const db = { schemaVersion: 1 as const, documents: [doc("moved", "Nb/old.md"), doc("impostor", "Nb/other.md"), doc("elsewhere", "Other/x.md")] };
+    // `moved` was recorded at share time but its key now points outside the notebook (its path changed since);
+    // `later` was reviewed after sharing, so it is found by its stored path; `elsewhere` is another notebook's.
+    const db = { schemaVersion: 1 as const, documents: [doc("moved", "Other/renamed.md"), doc("later", "Nb/other.md"), doc("elsewhere", "Other/x.md")] };
     recordReviewFileIds(dir, "prj_1", { moved: { fileId: "fil_1", docId: "doc_1" } });
     const map = readReviewFileIds(dir, "prj_1");
-    assert.deepEqual(documentsToMigrate(db, "Nb", map).map((item) => item.id), ["moved"]);
+    assert.deepEqual(documentsToMigrate(db, "Nb", map).map((item) => item.id).sort(), ["later", "moved"]);
     // No map (shared before it existed): the stored path, as before.
     assert.equal(readReviewFileIds(dir, "prj_unknown"), null);
-    assert.deepEqual(documentsToMigrate(db, "Nb", null).map((item) => item.id).sort(), ["impostor", "moved"]);
+    assert.deepEqual(documentsToMigrate(db, "Nb", null).map((item) => item.id).sort(), ["later"]);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
