@@ -25,6 +25,9 @@ export type LatexReference = {
   candidates: string[];
 };
 
+/** A reference as one main file's build resolves it: the same chapter can name a different file in each. */
+export type LatexBuildReference = LatexReference & { main: string };
+
 const GRAPHICS_EXTENSIONS = [".pdf", ".png", ".jpg", ".jpeg", ".eps"];
 const INCLUDE_EXTENSIONS = [".tex"];
 const PDF_EXTENSIONS = [".pdf"];
@@ -41,6 +44,9 @@ function graphicsPaths(text: string) {
  * `files`: the notebook's visible files (library paths). Returns, per LaTeX
  * source, the visible files it needs, its references (with every candidate,
  * found or not), its main files, and whether the sources were only partly read.
+ * `builds` lists the references once per main file that reaches the source
+ * (`references` keeps the first), so a chapter shared by two mains is checked
+ * from each.
  */
 export async function latexDependencies(notebook: string, files: readonly string[]) {
   const visible = new Set(files);
@@ -66,6 +72,7 @@ export async function latexDependencies(notebook: string, files: readonly string
 
   const dependencies = new Map<string, Set<string>>();
   const references = new Map<string, LatexReference[]>();
+  const builds = new Map<string, LatexBuildReference[]>();
   const mainFiles = new Map<string, Set<string>>();
   const unresolved = new Set<string>();
   const visit = (root: string, file: string, prefixes: string[], seen: Set<string>) => {
@@ -78,10 +85,13 @@ export async function latexDependencies(notebook: string, files: readonly string
     dependencies.set(file, needs);
     const written = references.get(file) ?? [];
     references.set(file, written);
+    const built = builds.get(file) ?? [];
+    builds.set(file, built);
     const note = (kind: LatexReference["kind"], reference: string, candidates: string[]) => {
       if (!candidates.length) return;
       if (needsExpansion(reference)) { unresolved.add(`${file}\0${reference}`); return; }
       if (!written.some((item) => item.kind === kind && item.written === reference)) written.push({ kind, written: reference, candidates });
+      if (!built.some((item) => item.main === root && item.kind === kind && item.written === reference)) built.push({ kind, written: reference, candidates, main: root });
       for (const candidate of candidates) if (visible.has(candidate)) needs.add(candidate);
     };
     for (const include of readLatexIncludes(text)) {
@@ -114,5 +124,5 @@ export async function latexDependencies(notebook: string, files: readonly string
   for (const root of roots) visit(root, root, graphicsPaths(texts.get(root)!), new Set());
   // Sources no main file includes are read on their own.
   for (const file of texts.keys()) if (!mainFiles.has(file)) visit(file, file, [], new Set());
-  return { dependencies, references, mainFiles, incomplete, unresolved: unresolved.size };
+  return { dependencies, references, builds, mainFiles, incomplete, unresolved: unresolved.size };
 }

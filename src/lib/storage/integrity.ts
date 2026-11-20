@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { lstat, readdir, readFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, lstat, readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { listReviewEntryPaths } from "@/lib/agent/review-store";
 import { listRunFiles } from "@/lib/agent/snapshots";
@@ -16,13 +17,14 @@ import { searchIndexFile } from "@/lib/search/settings";
 import { citationIndexPath, readCitationIndex } from "@/lib/storage/reference-citations";
 import { fileExistence, libraryNotebookNames, linkCandidates, resolveLinkTargetWith } from "@/lib/storage/library-links";
 import { decodeMarkdownHeadingHash, findMarkdownHeadingAnchorIndex, markdownHeadingAnchors, type MarkdownHeadingAnchor } from "@/lib/markdown-heading-anchors";
-import { savedAnnotationIds } from "@/lib/storage/annotations";
+import { markdownHtmlAnchors } from "@/lib/markdown-link-occurrences";
+import { savedAnnotationIds, type SavedAnnotationIds } from "@/lib/storage/annotations";
 import { parseTranscript } from "@/lib/storage/transcripts";
 import { markdownImageTargets, unreferencedMarkdownAssets } from "@/lib/storage/markdown-assets";
 import { extractNotebookLinkDestinations, forgetNotebookLinkReads, linkIndexPath, readLinkIndex } from "@/lib/storage/notebook-links";
 import { assertSafeSegment, audioPeaksPath, getLinkedFolder, withReadOnlyStorage, getStateRoot, notebookMetadataPath, notebookPath, notebookSystemDirectoryPath, orphanedSidecarsDirectoryPath, relativeFilePath, filePathFromParts, transcriptPath } from "@/lib/storage/paths";
 import { inspectReferenceLibrary } from "@/lib/storage/references";
-import { inspectMissingReviewDocuments, inspectReviewKeys } from "@/lib/storage/review-files";
+import { inspectLegacyReviewKeys, inspectReviewDocumentProblems, inspectReviewKeys } from "@/lib/storage/review-files";
 import { existingSidecars, listSidecars, findOrphanedSidecars, type SidecarInspection } from "@/lib/storage/sidecars";
 import { matchByIdentity, readOrphans } from "@/lib/storage/pdf-sidecars";
 import { getFileType } from "@/lib/storage/file-types";
@@ -200,25 +202,50 @@ function clock(seconds: number) {
   return (parts[0] ? parts : parts.slice(1)).map((part, index) => index ? String(part).padStart(2, "0") : String(part)).join(":");
 }
 
-/** A recording's length, from its transcript or else its waveform; null when neither says. */
-async function recordingDuration(libraryPath: string) {
+/**
+ * A recording's length, from its transcript or else its waveform, but only a
+ * length saved for this recording as it is now (the size it was made for, as
+ * the owners judge their caches). `stale` says a saved length exists that
+ * does not belong to the file (replaced since) or the file could not be
+ * measured, so the position of a link can't be judged; null and not stale:
+ * nothing saved.
+ */
+async function recordingDuration(libraryPath: string): Promise<{ duration: number | null; stale: boolean }> {
   const [notebook, ...parts] = libraryPath.split("/");
+  let size: number;
+  try { size = (await stat(filePathFromParts(notebook, parts))).size; } catch { return { duration: null, stale: true }; }
+  let stale = false;
   for (const [file, read] of [
-    [transcriptPath(notebook, parts), (value: unknown) => parseTranscript(value)?.audio.duration],
-    [audioPeaksPath(notebook, parts), (value: unknown) => (value as { duration?: unknown } | null)?.duration],
+    [transcriptPath(notebook, parts), (value: unknown) => { const transcript = parseTranscript(value); return transcript && { duration: transcript.audio.duration, size: transcript.audio.size }; }],
+    [audioPeaksPath(notebook, parts), (value: unknown) => { const peaks = value as { key?: unknown; duration?: unknown } | null; return { duration: peaks?.duration, size: typeof peaks?.key === "string" ? Number(peaks.key.split(":")[0]) : NaN }; }],
   ] as const) {
     try {
-      const duration = read(JSON.parse(await readFile(file, "utf8")));
-      if (typeof duration === "number" && Number.isFinite(duration) && duration > 0) return duration;
+      const saved = read(JSON.parse(await readFile(file, "utf8")));
+      if (!saved || typeof saved.duration !== "number" || !Number.isFinite(saved.duration) || saved.duration <= 0) continue;
+      if (saved.size === size) return { duration: saved.duration, stale: false };
+      stale = true;
     } catch { /* None saved, or unreadable: the next one may say. */ }
   }
-  return null;
+  return { duration: null, stale };
 }
 
 /** Whether something is at a path. `unknown` (no permission, a drive error) is never reported as missing. */
 async function probe(absolutePath: string): Promise<"present" | "absent" | "unknown"> {
   try { await lstat(absolutePath); return "present"; }
   catch (error) { return ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "") ? "absent" : "unknown"; }
+}
+
+/**
+ * Whether a readable file is at a path, for the consumers that open it as one
+ * (an image, a TeX source): a folder, or a link whose target is gone, is
+ * `absent`; `unknown` (no permission, a drive error) is never reported as missing.
+ */
+async function probeFile(absolutePath: string): Promise<"present" | "absent" | "unknown"> {
+  try {
+    if (!(await stat(absolutePath)).isFile()) return "absent";
+    await access(absolutePath, constants.R_OK);
+    return "present";
+  } catch (error) { return ["ENOENT", "ENOTDIR", "ELOOP"].includes((error as NodeJS.ErrnoException).code ?? "") ? "absent" : "unknown"; }
 }
 
 /**
@@ -344,6 +371,12 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
   const probeOnce = (absolutePath: string) => {
     if (!probes.has(absolutePath)) probes.set(absolutePath, probe(absolutePath));
     return probes.get(absolutePath)!;
+  };
+
+  const fileProbes = new Map<string, Promise<"present" | "absent" | "unknown">>();
+  const probeFileOnce = (absolutePath: string) => {
+    if (!fileProbes.has(absolutePath)) fileProbes.set(absolutePath, probeFile(absolutePath));
+    return fileProbes.get(absolutePath)!;
   };
 
   const absoluteOf = (libraryPath: string) => { const [owner, ...parts] = libraryPath.split("/"); return path.join(notebookPath(owner), ...parts); };
@@ -596,7 +629,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     if (unused.some((asset) => !asset.toLowerCase().endsWith(".py"))) {
       for (const note of readable) {
         for (const target of markdownImageTargets(note.documentPath, note.content)) {
-          if (target.absolutePath && await probeOnce(target.absolutePath) !== "present") embedded.add(path.basename(target.absolutePath).toLowerCase());
+          if (target.absolutePath && await probeFileOnce(target.absolutePath) !== "present") embedded.add(path.basename(target.absolutePath).toLowerCase());
         }
       }
     }
@@ -633,7 +666,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
       for (const target of markdownImageTargets(note.documentPath, note.content)) {
         budget.probe();
         if (!target.absolutePath) { add({ severity: "warning", path: note.documentPath, message: `The image address "${target.source}" can't be read.`, ...say("imageAddressUnreadable", { source: target.source }) }); continue; }
-        const state = await probeOnce(target.absolutePath);
+        const state = await probeFileOnce(target.absolutePath);
         if (state === "unknown") unchecked += 1;
         if (state === "absent") add({ severity: "error", path: note.documentPath, message: `Shows ${target.libraryPath ?? target.source}, which is missing.`, fix: "Put the image back, or insert it again.", ...say("imageMissing", { target: target.libraryPath ?? target.source }, "imageMissingFix") });
       }
@@ -649,15 +682,16 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     // a recording's length from their side files).
     const byPath = new Map(readable.map((note) => [note.documentPath, note]));
     const headings = new Map<string, MarkdownHeadingAnchor[]>();
+    const htmlAnchors = new Map<string, Set<string>>();
     const hasHeading = (note: { documentPath: string; content: string }, fragment: string) => {
       if (!headings.has(note.documentPath)) headings.set(note.documentPath, markdownHeadingAnchors(note.content));
       if (findMarkdownHeadingAnchorIndex(headings.get(note.documentPath)!, fragment) >= 0) return true;
-      // An HTML anchor (`<a id="…">`) is a place to link to as well.
-      const name = decodeMarkdownHeadingHash(fragment);
-      return note.content.includes(`id="${name}"`) || note.content.includes(`name="${name}"`);
+      // An HTML anchor (`<a id="…">`) is a place to link to as well: a real `id` or `name` attribute, in either quote style.
+      if (!htmlAnchors.has(note.documentPath)) htmlAnchors.set(note.documentPath, markdownHtmlAnchors(note.content));
+      return htmlAnchors.get(note.documentPath)!.has(decodeMarkdownHeadingHash(fragment));
     };
-    const annotationIds = new Map<string, Promise<Set<string> | null>>();
-    const durations = new Map<string, Promise<number | null>>();
+    const annotationIds = new Map<string, Promise<SavedAnnotationIds>>();
+    const durations = new Map<string, ReturnType<typeof recordingDuration>>();
     const durationOf = (libraryPath: string) => {
       if (!durations.has(libraryPath)) durations.set(libraryPath, recordingDuration(libraryPath));
       return durations.get(libraryPath)!;
@@ -699,13 +733,17 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
         if (annotation) {
           budget.probe();
           if (!annotationIds.has(target.path)) annotationIds.set(target.path, savedAnnotationIds(target.path));
-          const ids = await annotationIds.get(target.path)!;
-          if (ids && !ids.has(annotation)) add({ severity: "warning", path: note.documentPath, message: `The link "${href}" points at an annotation of ${target.path} that is no longer there; ${opensAtStart}`, fix: "Link to the place again.", ...say("linkAnnotationGone", { href, path: target.path }, "linkAnnotationGoneFix") });
+          const saved = await annotationIds.get(target.path)!;
+          // No side file: the annotations are gone. An older layout or an unreadable one can't be judged here.
+          if (saved.state === "legacy" || saved.state === "unreadable") uncheckedLinks += 1;
+          else if (saved.state === "absent" || !saved.ids.has(annotation)) add({ severity: "warning", path: note.documentPath, message: `The link "${href}" points at an annotation of ${target.path} that is no longer there; ${opensAtStart}`, fix: "Link to the place again.", ...say("linkAnnotationGone", { href, path: target.path }, "linkAnnotationGoneFix") });
         }
         const time = view?.audio?.currentTime;
         if (time !== undefined && time > 0) {
-          const duration = await durationOf(target.path);
-          if (duration && time > duration + 1) add({ severity: "warning", path: note.documentPath, message: `The link "${href}" points at ${clock(time)}, past the end of ${target.path} (${clock(duration)}).`, fix: "Link to the moment again.", ...say("linkPastEnd", { href, time: clock(time), path: target.path, duration: clock(duration) }, "linkPastEndFix") });
+          const { duration, stale } = await durationOf(target.path);
+          // A length saved for another version of the recording says nothing about this one.
+          if (stale && !duration) uncheckedLinks += 1;
+          else if (duration && time > duration + 1) add({ severity: "warning", path: note.documentPath, message: `The link "${href}" points at ${clock(time)}, past the end of ${target.path} (${clock(duration)}).`, fix: "Link to the moment again.", ...say("linkPastEnd", { href, time: clock(time), path: target.path, duration: clock(duration) }, "linkPastEndFix") });
         }
       }
     }
@@ -713,10 +751,11 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
   });
 
   await run("latex", async (add) => {
-    const { references, incomplete, unresolved } = await latexDependencies(notebook, visible.files);
+    const { builds, incomplete, unresolved } = await latexDependencies(notebook, visible.files);
     const what = { include: "includes", bibliography: "uses the bibliography", graphics: "shows" } as const;
     let unchecked = 0;
-    for (const [file, written] of references) {
+    // Each main file's build is checked on its own: a chapter two mains share names its files relative to each.
+    for (const [file, written] of builds) {
       if (!budget.allows()) break;
       for (const reference of written) {
         await disk.check(reference.candidates);
@@ -730,7 +769,9 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
           if (found === "unknown") state = "unknown";
         }
         if (state === "unknown") unchecked += 1;
-        if (state === "absent") add({ severity: "error", path: file, message: `${what[reference.kind]} "${reference.written}", which is not found.`, fix: "Add the file, or correct the path (paths are read from the main file's folder).", ...say("latexMissing", { kind: reference.kind, written: reference.written }, "latexMissingFix") });
+        if (state === "absent" && reference.main === file) add({ severity: "error", path: file, message: `${what[reference.kind]} "${reference.written}", which is not found.`, fix: "Add the file, or correct the path (paths are read from the main file's folder).", ...say("latexMissing", { kind: reference.kind, written: reference.written }, "latexMissingFix") });
+        // A chapter is built from its main file: the one that loses the file is named.
+        else if (state === "absent") add({ severity: "error", path: file, message: `${what[reference.kind]} "${reference.written}", which is not found when building ${reference.main}.`, fix: "Add the file, or correct the path (paths are read from the main file's folder).", ...say("latexMissingInBuild", { part: reference.kind, written: reference.written, main: reference.main }, "latexMissingFix") });
       }
     }
     const notes = [
@@ -755,16 +796,22 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     // Read without migrating older review storage (readReviewKeys would).
     const reviews = await inspectReviewKeys(getStateRoot());
     if (reviews.damaged) add({ severity: "error", path: notebook, message: `The review comments' index can't be read (${reviews.damaged}).`, fix: "Restore .libera/reviews/index.json from your sync service's version history.", ...say("reviewIndexDamaged", { reason: reviews.damaged }, "reviewIndexDamagedFix") });
-    if (reviews.legacy) add({ severity: "info", path: notebook, message: "Older review storage is waiting to be converted; it is the next time review comments load.", ...say("reviewLegacy") });
-    // An index entry whose document is not on disk: not synced yet, or lost. Its file is never offered for removal.
+    // The older single-file database is read as it is, never converted: its keys are checked like the index's.
+    const legacy = reviews.legacy ? await inspectLegacyReviewKeys(getStateRoot()) : { keys: [] as string[], damaged: undefined };
+    if (legacy.damaged) add({ severity: "warning", path: notebook, message: `The older review storage can't be read (${legacy.damaged}).`, fix: "Restore .libera/markdown-reviews.json from your sync service's version history.", ...say("reviewLegacyUnreadable", { reason: legacy.damaged }, "reviewLegacyUnreadableFix") });
+    else if (reviews.legacy) add({ severity: "info", path: notebook, message: "Older review storage is waiting to be converted; it is the next time review comments load.", ...say("reviewLegacy") });
+    // An index entry whose document is not on disk (not synced yet, or lost) or can't be read (corrupt, truncated): its comments are
+    // people's work, so neither is ever offered for removal, whether or not the note is still there.
     const undelivered = new Set<string>();
-    for (const { id, key } of await inspectMissingReviewDocuments(getStateRoot())) {
-      if (!under(key, notebook)) continue;
+    for (const { id, key, problem, reason } of await inspectReviewDocumentProblems(getStateRoot(), (key) => under(key, notebook))) {
       undelivered.add(key);
+      if (problem === "unreadable") { add({ severity: "warning", path: key, message: `The review comments of ${key} can't be read (${reason}); they are kept as they are.`, fix: `Restore .libera/reviews/${id}.json from your sync service's version history.`, ...say("reviewDocumentUnreadable", { path: key, reason: reason ?? "", id }, "reviewDocumentUnreadableFix") }); continue; }
       add({ severity: "warning", path: key, message: `The review comments of ${key} are not on this computer: they may not have synced yet, or are lost.`, fix: `Wait for your sync service to finish; if they don't arrive, restore .libera/reviews/${id}.json from its version history.`, ...say("reviewsNotOnComputer", { path: key }, "reviewsNotOnComputerFix") });
     }
-    for (const key of new Set(reviews.keys)) {
-      if (under(key, notebook) && !undelivered.has(key) && await missing(key)) add({ severity: "info", path: key, message: "Review comments are kept for this file, which is missing.", clear: [{ type: "review", path: key, gone: key }], ...say("reviewFileMissing") });
+    // A key only the older database holds is reported but not offered for removal: converting it is the app's step.
+    const indexed = new Set(reviews.keys);
+    for (const key of new Set([...reviews.keys, ...legacy.keys])) {
+      if (under(key, notebook) && !undelivered.has(key) && await missing(key)) add({ severity: "info", path: key, message: "Review comments are kept for this file, which is missing.", ...(indexed.has(key) ? { clear: [{ type: "review" as const, path: key, gone: key }] } : {}), ...say("reviewFileMissing") });
     }
     const pending = await listReviewEntryPaths();
     if (pending.unreadable) add({ severity: "warning", path: notebook, message: `${pending.unreadable} pending agent ${pending.unreadable === 1 ? "review can't" : "reviews can't"} be read (in any notebook).`, ...say("pendingAgentReviewsUnreadable", { count: pending.unreadable }) });
@@ -794,7 +841,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     };
     for (const starred of metadata.starredFilePaths) keep("stars", starred);
     for (const tagged of Object.keys(metadata.fileTags)) keep("tags", tagged);
-    for (const key of new Set(reviews.keys)) keep("reviews", key);
+    for (const key of new Set([...reviews.keys, ...legacy.keys])) keep("reviews", key);
     for (const reviewed of pending.paths) keep("pending", reviewed);
     for (const file of runs.files) if (!file.shared && !file.reverted) keep("history", file.path);
     for (const [name, entry] of vanished) {

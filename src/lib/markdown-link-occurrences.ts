@@ -47,8 +47,9 @@ export function extractMarkdownLinkOccurrences(content: string): MarkdownLinkOcc
   const root = parser.parse(content) as MdNode;
   const definitions = new Map<string, string>();
   (function collectDefinitions(node: MdNode) {
-    if (node.type === "definition" && node.identifier && node.url) {
-      definitions.set(node.identifier.toUpperCase(), node.url);
+    // The first definition of a label wins, as in CommonMark (a later one is ignored, even an empty one).
+    if (node.type === "definition" && node.identifier && !definitions.has(node.identifier.toUpperCase())) {
+      definitions.set(node.identifier.toUpperCase(), node.url ?? "");
     }
     node.children?.forEach(collectDefinitions);
   })(root);
@@ -86,4 +87,26 @@ export function extractMarkdownLinkOccurrences(content: string): MarkdownLinkOcc
     else node.children?.forEach(visit);
   })(root);
   return occurrences;
+}
+
+/**
+ * The places an HTML anchor in Markdown source offers to a `#fragment` link:
+ * the `id` of any element and the `name` of an `<a>`, from real attributes of
+ * the raw HTML the Markdown contains (quoted either way, or bare), never from
+ * text in code spans and fences.
+ */
+export function markdownHtmlAnchors(content: string): Set<string> {
+  const anchors = new Set<string>();
+  (function visit(node: MdNode) {
+    if (node.type === "html" && node.value) {
+      for (const tag of node.value.matchAll(/<([A-Za-z][\w:-]*)((?:"[^"]*"|'[^']*'|[^>"'])*)>/g)) {
+        for (const attribute of tag[2].matchAll(/\s([^\s"'<>/=]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/g)) {
+          const name = attribute[1].toLowerCase();
+          if (name === "id" || (name === "name" && tag[1].toLowerCase() === "a")) anchors.add(attribute[2] ?? attribute[3] ?? attribute[4]);
+        }
+      }
+    }
+    node.children?.forEach(visit);
+  })(parser.parse(content) as MdNode);
+  return anchors;
 }
