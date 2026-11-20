@@ -454,7 +454,12 @@ async function writeAvailableAsset(directory: string, name: string, body: Buffer
  * paths, so a note embedding one points at it instead of copying it; `copied`
  * lets notes that embed the same image share one copy in the destination.
  */
-export type MarkdownAssetBatch = { moved: ReadonlyMap<string, string>; copied: Map<string, string> };
+export type MarkdownAssetBatch = {
+  moved: ReadonlyMap<string, string>;
+  copied: Map<string, string>;
+  /** Called with each image file as soon as the copy created it, so a caller can record what is its own. */
+  onCreated?: (target: string) => Promise<void>;
+};
 
 /** Copies have independent image files and destinations never overwrite existing images. */
 export async function copyMarkdownImageAssets(from: string, to: string, markdown: string, includeOwnedUploads = false, batch?: MarkdownAssetBatch) {
@@ -516,7 +521,7 @@ export async function copyMarkdownImageAssets(from: string, to: string, markdown
       const sameFigure = ownFigure && await readFile(path.join(directory, asset.fileName)).then((body) => body.equals(asset.body), () => false);
       const available = sameFigure ? { path: path.join(directory, asset.fileName), name: asset.fileName }
         : await writeAvailableAsset(directory, normalizeAssetFileName(asset.fileName), asset.body);
-      if (!sameFigure) created.push(available.path);
+      if (!sameFigure) { created.push(available.path); await batch?.onCreated?.(available.path); }
       imageSources[source] = `${ownFigure ? pythonFigureSourcePrefix(to) : markdownAssetsPathPrefix(destination.pathParts)}/${available.name}`;
       copied.set(key, imageSources[source]);
       if (!ownFigure) batch?.copied.set(key, imageSources[source]);
