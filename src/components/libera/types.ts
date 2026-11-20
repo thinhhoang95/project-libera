@@ -271,14 +271,18 @@ export type WorkspaceConfirmDialogState =
   | {
       mode: "delete-file";
       file: LiberaFileNode;
+      /** Open files under the item with unsaved edits: deleting forgets that text too. */
+      unsavedNames: string[];
     }
   | {
       mode: "delete-folder";
       folder: LiberaFolderNode;
+      unsavedNames: string[];
     }
   | {
       mode: "delete-notebook";
       notebook: string;
+      unsavedNames: string[];
     }
   | {
       mode: "remove-folder";

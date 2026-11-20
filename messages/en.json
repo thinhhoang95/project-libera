@@ -7851,6 +7851,7 @@
     "deleteNotebookConfirm": "Delete notebook",
     "deleteNotebookDescription": "Delete {notebook} and all files inside it?",
     "deleteNotebookTitle": "Delete notebook",
+    "deleteUnsavedWarning": "Unsaved edits in these files will be lost: {names}.",
     "moveFileConfirm": "Move without saving",
     "moveFileDescription": "{name} has unsaved edits.",
     "moveFileTitle": "Move unsaved file",

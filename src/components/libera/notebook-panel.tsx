@@ -2,7 +2,7 @@
 
 import { useWorkspaceView } from "./workspace-view-context";
 import { useLocale, useTranslations } from "next-intl";
-import { createContext, memo, useContext, useMemo, useState, useSyncExternalStore } from "react";
+import { createContext, memo, useContext, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { CSSProperties, DragEvent, MouseEvent, RefObject } from "react";
 import {
   ArrowDownUp,
@@ -61,6 +61,7 @@ import {
 } from "./sidebar-sort-preference";
 import { useRecorderLauncher } from "@/components/libera/recording/meeting-recorder";
 import { NotebookIntegrityDialog } from "@/components/libera/notebook-integrity-dialog";
+import { beginDrag, consumeDrag } from "@/components/libera/drop-target";
 
 const UPLOAD_ACCEPT = [...SUPPORTED_UPLOAD_EXTENSIONS].join(",");
 
@@ -632,6 +633,7 @@ function NotebookPanelContent({
   const tCommon = useTranslations("common");
   const tImport = useTranslations("lib.references.import");
   const [draggingFile, setDraggingFile] = useState<LiberaFileNode | null>(null);
+  const dragSlot = useRef<LiberaFileNode | null>(null);
   const [dragOverPath, setDragOverPath] = useState("");
   const [deepSearchQuery, setDeepSearchQuery] = useState("");
   const [deepSearchOpen, setDeepSearchOpen] = useState(false);
@@ -686,14 +688,23 @@ function NotebookPanelContent({
     void openSidebarNativeMenu(target, nativeMenuPointFromMouseEvent(event));
   }
 
+  /** One place that sets the drag, so the ref a drop reads and the state the rows render agree. */
+  function setDragging(file: LiberaFileNode | null) {
+    if (file) beginDrag(dragSlot, file);
+    else dragSlot.current = null;
+    setDraggingFile(file);
+  }
+
   async function dropFileOnPath(destinationPath: string) {
-    if (!draggingFile) {
+    // Taken before the await: this drag is over, so a slow move cannot clear the next one.
+    const dropped = consumeDrag(dragSlot);
+    if (!dropped) {
       return;
     }
 
-    await onMoveFile(draggingFile, destinationPath);
     setDraggingFile(null);
     setDragOverPath("");
+    await onMoveFile(dropped, destinationPath);
   }
 
   function openDeepSearch(searchQuery: string) {
@@ -1023,7 +1034,7 @@ function NotebookPanelContent({
             onOpenFile={onOpenFile}
             onShowMore={() => showMoreNodes(STARRED_FILES_PAGINATION_KEY)}
             onSetDragOverPath={setDragOverPath}
-            onSetDraggingFile={setDraggingFile}
+            onSetDraggingFile={setDragging}
             onUploadFiles={onUploadFiles}
             visibleLimit={visibleNodeLimitForPath(STARRED_FILES_PAGINATION_KEY)}
           />
@@ -1057,7 +1068,7 @@ function NotebookPanelContent({
               onSelectNotebook={onSelectNotebook}
               onShowMoreNodes={showMoreNodes}
               onSetDragOverPath={setDragOverPath}
-              onSetDraggingFile={setDraggingFile}
+              onSetDraggingFile={setDragging}
               onStartUpload={onStartUpload}
               onToggleNotebook={onToggleNotebook}
               onUploadFiles={onUploadFiles}
@@ -1096,7 +1107,7 @@ function NotebookPanelContent({
               onSelectNotebook={onSelectNotebook}
               onShowMoreNodes={showMoreNodes}
               onSetDragOverPath={setDragOverPath}
-              onSetDraggingFile={setDraggingFile}
+              onSetDraggingFile={setDragging}
               onStartUpload={onStartUpload}
               onToggleNotebook={onToggleNotebook}
               onUploadFiles={onUploadFiles}
@@ -1489,10 +1500,7 @@ function NotebookSection({
           onSetDragOverPath(notebook.path);
         }}
         onDragLeave={() => onSetDragOverPath("")}
-        onDrop={(event) => {
-          event.preventDefault();
-          onDropFile(notebook.path);
-        }}
+        onDrop={(event) => handleFileDropOnDirectory(event, draggingFile, notebook.path, onDropFile)}
       >
         <button
           className="libera-sidebar-icon-button h-5 w-5 shrink-0 rounded text-sm"

@@ -10,6 +10,7 @@ import { REVIEWS_MOVED_EVENT } from "@/lib/markdown-review";
 import { SESSION_EXPIRED_EVENT, SESSION_EXPIRED_HEADER } from "@/lib/auth-session";
 import type { LiberaFileNode, LiberaTree, LiberaTreeNode } from "@/lib/types";
 import { apiRequest } from "./api-client";
+import { announceRepairMoves } from "./repair-channel";
 import { ModalDialog } from "./modal-dialog";
 
 // Results of the notebook check (storage/integrity.ts). The check only reads;
@@ -176,6 +177,7 @@ function IntegrityBody({ notebook, tree, onOpenFile, onClose, onRepaired }: Dial
       setFixed(result); setPlan(null);
       window.dispatchEvent(new CustomEvent(REVIEWS_MOVED_EVENT, { detail: { paths: result.moved.map((move) => move.to) } }));
       window.dispatchEvent(new CustomEvent(REPAIR_MOVED_EVENT, { detail: { moves: result.moved.map(({ from, to }) => ({ from, to })) } }));
+      announceRepairMoves(result.moved);
       await settle();
       again();
     } catch (failure) { setFixError(failure instanceof Error ? failure.message : String(failure)); }
