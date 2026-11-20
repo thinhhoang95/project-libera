@@ -200,6 +200,8 @@ export async function writeTranscript(relativePath: string, transcript: Transcri
   // A file a notebook migration is moving is written after the migration.
   await assertNotMigrating(relativePath);
   const { audio, sidecar, companion } = locate(relativePath);
+  // The recording as the manifest has it when the save starts: the shared write is bound to this file.
+  const ownerFileId = companion && !(options.sharedBase && "offline" in options.sharedBase) ? await (await import("@/lib/collab/shared-owner")).sharedOwnerFileId(relativePath) : undefined;
   const signature = options.expectedSignature ?? await readFileSignature(audio);
   await assertFileSignature(audio, signature);
   if (options.expectedContentHash && await readFileContentHash(audio) !== options.expectedContentHash) {
@@ -217,7 +219,7 @@ export async function writeTranscript(relativePath: string, transcript: Transcri
     try {
       const { writeSharedBlob } = await import("@/lib/collab/shared-writes");
       // An edit replaces only the exact shared version it was made from.
-      const precondition = base ? ("create" in base ? { createOnly: true } : { expectedFileId: base.fileId, expectedBlobHash: base.blobHash }) : {};
+      const precondition = { ...(base ? ("create" in base ? { createOnly: true } : { expectedFileId: base.fileId, expectedBlobHash: base.blobHash }) : {}), ...(ownerFileId ? { ownerFileId } : {}) };
       await writeSharedBlob(transcriptCompanionPath(relativePath), new TextEncoder().encode(JSON.stringify(transcript)), precondition);
       shared = true;
       // The shared copy supersedes one kept here before.
