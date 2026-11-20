@@ -675,6 +675,8 @@ async function buildPlan(request: MigrationRequest) {
   // attachment...) can wait at a path with no file: the arriving file would
   // take them over. They are read once for the whole plan.
   const records = candidates.some((candidate) => candidate.kind === "file") ? await destinationRecords() : null;
+  // An unreadable review index makes every name look taken: report it, and don't search for a free one.
+  if (records?.blocker) blockers.push(records.blocker);
   /** Items renamed only because records of an earlier file are at their name, by target path. */
   const keptFree = new Set<string>();
   const ordered = [...candidates].sort((a, b) => a.fromParts.join("/").localeCompare(b.fromParts.join("/")));
@@ -690,7 +692,7 @@ async function buildPlan(request: MigrationRequest) {
       let clash = takenFiles.has(key) || takenFolders.has(key);
       let byRecords = false;
       if (!clash && !create) clash = !!(await lstatOrNull(rawAbsolute(target)));
-      if (!clash && records && candidate.kind === "file") {
+      if (!clash && records && !records.blocker && candidate.kind === "file") {
         byRecords = (await records.at(destinationName, [...parent, next], candidate.fileType)).length > 0;
         clash = byRecords;
       }

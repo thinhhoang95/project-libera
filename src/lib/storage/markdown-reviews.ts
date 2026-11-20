@@ -143,9 +143,11 @@ export async function moveReviewPaths(moves: ReadonlyMap<string, string>, option
     if (options.replaceEmpty) {
       const sourceOf = new Map([...moves].map(([from, to]) => [to, from]));
       const replaced = new Map<string, string[]>();
+      // An empty destination review gives way only to a review that really is at the source.
+      const reviewed = new Set(tx.keys().map(([, key]) => key));
       for (const [id, key] of tx.keys()) {
         const from = sourceOf.get(key);
-        if (from === undefined || moves.has(key)) continue;
+        if (from === undefined || moves.has(key) || !reviewed.has(from)) continue;
         // A review whose file has not synced yet can't be shown to be empty.
         const doc = await tx.getIfPresent(id);
         if (doc && isEmptyReview(doc)) replaced.set(key, [...replaced.get(key) ?? [], id]);

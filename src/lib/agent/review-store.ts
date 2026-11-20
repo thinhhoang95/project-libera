@@ -116,11 +116,16 @@ async function checkExpected(entry: ReviewEntry, expected?: ReviewExpectation) {
   if (expected && (revisionOf(entry) !== expected.revision || await readDisk(entry.path) !== expected.current)) throw conflict(entry.path);
 }
 
-/** Drops an entry whose file is back to its baseline, or was removed. Returns the file's text while it is still pending. */
-async function settle(entry: ReviewEntry): Promise<string | null> {
+/**
+ * Drops an entry whose file is back to its baseline, or was removed. Returns the file's text while it is still pending.
+ * `keepMissing`: a file that can't be found is not dropped (a note moved outside the app is for Try to fix to
+ * follow); only an explicit discard or a confirmed in-app deletion removes its baseline.
+ */
+async function settle(entry: ReviewEntry, options: { keepMissing?: boolean } = {}): Promise<string | null> {
   const current = isSharedNotebookPath(entry.path) ? null : await readDisk(entry.path);
   // A file half way through a notebook migration is not gone: keep its review for the migration to move.
   if (current === null && await isPathMigrating(entry.path)) return null;
+  if (current === null && options.keepMissing) return null;
   if (current === null || (current === entry.baseline && !(entry.created && current === ""))) {
     await removeEntry(entry.path);
     return null;
@@ -174,7 +179,7 @@ export async function listReviewEntryPaths(): Promise<{ paths: string[]; unreada
   return { paths: paths.sort(), unreadable };
 }
 
-/** Every file with changes to review, with its baseline and its text on disk. Settled entries are dropped on the way. */
+/** Every file with changes to review, with its baseline and its text on disk. Entries back at their baseline are dropped on the way; one whose file is missing is kept, unlisted. */
 export async function listPendingReviews(): Promise<AgentReviewFile[]> {
   let names: string[];
   try { names = (await readdir(reviewDirectory())).filter((name) => name.endsWith(".json")); }
@@ -191,7 +196,7 @@ export async function listPendingReviews(): Promise<AgentReviewFile[]> {
     const pending = entry;
     const current = await serialized(pending.path, async () => {
       const latest = await readEntry(pending.path);
-      return latest ? { entry: latest, text: await settle(latest) } : null;
+      return latest ? { entry: latest, text: await settle(latest, { keepMissing: true }) } : null;
     });
     if (current?.text != null) files.push({ path: current.entry.path, baseline: current.entry.baseline, current: current.text, created: current.entry.created, revision: revisionOf(current.entry) });
   }
@@ -281,6 +286,8 @@ export async function pruneReviews(paths: string[]) {
 export function withMovedReview<T>(from: string, to: string, transform: (text: string) => string, move: () => Promise<T>): Promise<T> {
   return withReviewFiles([from, to], async () => {
     const entry = await readEntry(from);
+    // Ownership of the destination is decided here, under the locks that cover the write and the rollback: a review created there since the caller looked is never written over.
+    if (entry && await takenByOther(to, entry, transform(entry.baseline))) throw takenError(to);
     if (entry) await writeJsonState(entryPath(to), { ...entry, path: to, baseline: transform(entry.baseline), updatedAt: new Date().toISOString(), revision: randomUUID() });
     let result: T;
     try { result = await move(); }
@@ -293,9 +300,47 @@ export function withMovedReview<T>(from: string, to: string, transform: (text: s
   });
 }
 
+const takenError = (filePath: string) => new StorageError(`${filePath} has a pending agent review of its own. Review it or check the notebook, then move again.`, 409);
+
+/**
+ * Whether `to` holds a review that is not the copy of `entry` an earlier,
+ * interrupted attempt of the same move already wrote (a resumed migration
+ * finds that one there, with the same runs and the baseline it would carry).
+ */
+async function takenByOther(to: string, entry: ReviewEntry, baseline: string) {
+  const existing = await readEntry(to);
+  if (!existing) return false;
+  return !(existing.baseline === baseline && existing.created === entry.created && existing.runIds.join() === entry.runIds.join());
+}
+
 /** Whether a file has a pending review stored, settled or not: a move onto its path would take it over. */
 export async function hasReviewEntry(filePath: string) {
   return (await readEntry(filePath)) !== null;
+}
+
+/** The paths of the pending reviews under a folder, read without settling any of them. */
+async function entryPathsUnder(folder: string) {
+  let names: string[] = [];
+  try { names = (await readdir(reviewDirectory())).filter((name) => name.endsWith(".json")); } catch { /* No reviews. */ }
+  const paths: string[] = [];
+  for (const name of names) {
+    try {
+      const entry = JSON.parse(await readFile(path.join(reviewDirectory(), name), "utf8"));
+      if (isEntry(entry) && entry.path.startsWith(`${folder}/`)) paths.push(entry.path);
+    } catch { /* Unreadable entries are the check's to report. */ }
+  }
+  return paths;
+}
+
+/** A file deleted in the app: its pending review goes with it, so a note later created at the name starts clean. */
+export function discardReviewsAt(filePath: string) {
+  return serialized(filePath, () => removeEntry(filePath));
+}
+
+/** A folder deleted in the app: the pending reviews of the files under it go with it. */
+export async function discardReviewsUnder(folder: string) {
+  const paths = await entryPathsUnder(folder);
+  if (paths.length) await withReviewFiles(paths, async () => { for (const filePath of paths) await removeEntry(filePath); });
 }
 
 /**
@@ -305,20 +350,18 @@ export async function hasReviewEntry(filePath: string) {
  */
 export async function withMovedReviewsUnder<T>(from: string, to: string, move: () => Promise<T>): Promise<T> {
   const moved = (filePath: string) => to + filePath.slice(from.length);
-  let names: string[] = [];
-  try { names = (await readdir(reviewDirectory())).filter((name) => name.endsWith(".json")); } catch { /* No reviews. */ }
-  const paths: string[] = [];
-  for (const name of names) {
-    try {
-      const entry = JSON.parse(await readFile(path.join(reviewDirectory(), name), "utf8"));
-      if (isEntry(entry) && entry.path.startsWith(`${from}/`)) paths.push(entry.path);
-    } catch { /* Unreadable entries are the check's to report. */ }
-  }
+  const paths = await entryPathsUnder(from);
   return withReviewFiles([...paths, ...paths.map(moved)], async () => {
-    const carried: ReviewEntry[] = [];
+    const entries: ReviewEntry[] = [];
     for (const filePath of paths) {
       const entry = await readEntry(filePath);
-      if (!entry) continue;
+      if (entry) entries.push(entry);
+    }
+    // Every destination is checked, under the locks, before the first write.
+    for (const entry of entries) if (await takenByOther(moved(entry.path), entry, entry.baseline)) throw takenError(moved(entry.path));
+    const carried: ReviewEntry[] = [];
+    for (const entry of entries) {
+      const filePath = entry.path;
       carried.push(entry);
       await writeJsonState(entryPath(moved(filePath)), { ...entry, path: moved(filePath), updatedAt: new Date().toISOString(), revision: randomUUID() });
     }
