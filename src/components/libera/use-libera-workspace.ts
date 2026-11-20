@@ -4259,13 +4259,25 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       });
       // Each moved file's payload carries its own rewrite, for its tab; the batch's one links step rewrote the rest,
       // which open notes get once here (the moved files' tabs already have theirs).
-      for (const item of result.moved) if (item.payload) followFileMove(item.from, item.payload);
+      for (const item of result.moved) {
+        if (item.payload) { followFileMove(item.from, item.payload); continue; }
+        // Moved, but the server has no result for it (a step after the move stayed behind, or its result could not be read):
+        // its tab follows it anyway, as for a single move the host committed.
+        const file = moving.find((candidate) => candidate.path === item.from);
+        const payload = await apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(item.to)}`).catch(() => null)
+          ?? (file ? { file: { ...file, path: item.to, name: item.to.split("/").at(-1)!, notebook: item.to.split("/")[0] } } : null);
+        if (payload) followFileMove(item.from, { ...payload, moved: { from: item.from, to: item.to } });
+      }
       applyLinkRewritesToTabs(result.links, result.moved.map((item) => item.to));
       if (result.links || result.unfinished) reportMoveOutcome({ notebook: files[0].notebook, links: result.links, unfinished: result.unfinished });
-      if (result.failed) {
-        setWorkspaceError(tRef.current("batchMovePartialError", {
-          moved: result.moved.length, total: moving.length, name: result.failed.path.split("/").at(-1) ?? result.failed.path, message: result.failed.error,
-        }));
+      const stayedBehind = batchUnfinishedMessage(result.moved.flatMap((item) => item.unfinished?.length ? [{ path: item.to, steps: item.unfinished }] : []));
+      if (result.failed || stayedBehind) {
+        setWorkspaceError([
+          result.failed ? tRef.current("batchMovePartialError", {
+            moved: result.moved.length, total: moving.length, name: result.failed.path.split("/").at(-1) ?? result.failed.path, message: result.failed.error,
+          }) : "",
+          stayedBehind,
+        ].filter(Boolean).join(" "));
       }
       await refreshTree(files[0].notebook);
       updateExpanded((current) => {
@@ -4287,6 +4299,13 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     setWorkspaceConfirmDialog({ mode: "delete-files", files, unsavedNames: unsavedNamesAmong(files) });
   }
 
+  /** What stayed behind after files the host already moved or deleted (they cannot be taken back), as one sentence; "" when nothing did. */
+  function batchUnfinishedMessage(entries: { path: string; steps: string[] }[]) {
+    if (!entries.length) return "";
+    const shown = entries.slice(0, 3).map((item) => `${item.path.split("/").at(-1)} (${item.steps.join("; ")})`).join("; ");
+    return tRef.current("batchUnfinishedNotice", { count: entries.length, details: entries.length > 3 ? `${shown}; …` : shown });
+  }
+
   /** Deletes the files one by one on the server; tabs close and drafts are forgotten for each that went, as for a single delete. */
   async function deleteFileNodes(files: LiberaFileNode[]) {
     try {
@@ -4298,9 +4317,13 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       tabs.forEach((tab) => { if (deleted.has(tab.file.path)) forgetTabDraft(tab.id); });
       setTabs((currentTabs) => currentTabs.filter((currentTab) => !deleted.has(currentTab.file.path)));
       setActiveTabId((current) => (deleted.has(current) ? "" : current));
-      if (result.failed.length) {
+      const stayedBehind = batchUnfinishedMessage(result.unfinished ?? []);
+      if (result.failed.length || stayedBehind) {
         const shown = result.failed.slice(0, 3).map((item) => `${item.path.split("/").at(-1)} (${item.error})`).join("; ");
-        setWorkspaceError(tRef.current("batchDeletePartialError", { deleted: result.deleted.length, total: files.length, failures: result.failed.length > 3 ? `${shown}; …` : shown }));
+        setWorkspaceError([
+          result.failed.length ? tRef.current("batchDeletePartialError", { deleted: result.deleted.length, total: files.length, failures: result.failed.length > 3 ? `${shown}; …` : shown }) : "",
+          stayedBehind,
+        ].filter(Boolean).join(" "));
       }
       await refreshTree(files[0].notebook);
     } catch (error) {

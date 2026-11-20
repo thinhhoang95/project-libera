@@ -1,14 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/api";
-import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
-import { deleteSharedFile, moveSharedFile } from "@/lib/collab/shared-writes";
+import { isSharedNotebookPath, sharedNotebookMarker } from "@/lib/collab/shared-notebook";
+import { deleteSharedFile, listSharedEntries, moveSharedFile } from "@/lib/collab/shared-writes";
 import { StorageError } from "@/lib/storage/errors";
 import {
+  assertOneStorageDomain,
   BatchRefusedError,
   deleteFiles,
   moveFilesToDirectory,
   preflightSharedMove,
   sameNotebook,
+  type BatchDomain,
   type BatchItem,
 } from "@/lib/storage/batch-files";
 import { splitDirectoryPath, splitFilePath } from "@/lib/storage/paths";
@@ -20,13 +22,21 @@ export const runtime = "nodejs";
  * Several files of one notebook moved or deleted in one request.
  *
  *   { action: "move", items: [{ path, fileId? }], destinationDirectory }
- *     200 { moved: [{ from, to, payload }], failed: { path, error } | null, notMoved: string[], unchanged: string[] }
+ *     200 { moved: [{ from, to, payload, unfinished? }], failed: { path, error } | null, notMoved: string[], unchanged: string[] }
  *     409 { error, problems: [{ path, message }] }: refused before anything moved
  *   { action: "delete", items: [{ path, fileId? }] }
- *     200 { deleted: string[], failed: [{ path, error }] }
+ *     200 { deleted: string[], failed: [{ path, error }], unfinished?: [{ path, steps }] }
  *
  * Each file goes through the single operation (so every record follows it); see storage/batch-files.ts.
+ * Every item is classified first (local notebook, shared notebook, or a shared notebook's local-only
+ * archive) and a selection that mixes storages is refused whole.
  */
+
+/** Which storage handles the path; `_archive` of a shared notebook is local-only recovery storage. */
+function domainOf(liberaPath: string): BatchDomain {
+  if (isSharedNotebookPath(liberaPath)) return "shared";
+  return sharedNotebookMarker(liberaPath.split("/")[0] ?? "") ? "archive" : "local";
+}
 export async function POST(request: NextRequest) {
   const authError = requireAuth(request);
   if (authError) return authError;
@@ -41,21 +51,28 @@ export async function POST(request: NextRequest) {
     // Parsed up front: a malformed path is the caller's error, before anything is touched.
     for (const item of items) splitFilePath(item.path);
     if (!sameNotebook(items.map((item) => item.path))) throw new StorageError("A batch is files of one notebook.", 400);
-    const shared = isSharedNotebookPath(items[0].path);
+    const destinationDirectory = body.destinationDirectory ?? "";
+    const move = body.action === "move";
+    if (body.action === "delete") assertOneStorageDomain(items, null, domainOf);
+    const shared = domainOf(items[0].path) === "shared";
 
     if (body.action === "delete") {
-      return NextResponse.json(await deleteFiles(items, shared ? { remove: (item) => deleteSharedFile(item.path, { expectedFileId: item.fileId }) } : {}));
+      // Each delete returns as soon as its own cleanup is done: no tree read and no wait per file (the host's tree event
+      // and the app's one refresh after the batch show the result).
+      return NextResponse.json(await deleteFiles(items, shared ? {
+        remove: (item) => deleteSharedFile(item.path, { expectedFileId: item.fileId, deferRefresh: true }),
+      } : {}));
     }
 
-    if (body.action === "move") {
-      const destinationDirectory = body.destinationDirectory ?? "";
+    if (move) {
       const destination = splitDirectoryPath(destinationDirectory).notebook;
       if (destination !== splitFilePath(items[0].path).notebook) {
         throw new StorageError("Moving files to another notebook goes through the notebook migration, which carries their records and references. Use Move to notebook instead.", 409);
       }
+      assertOneStorageDomain(items, destinationDirectory, domainOf);
       if (shared) {
         return NextResponse.json(await moveFilesToDirectory(items, destinationDirectory, {
-          preflight: preflightSharedMove,
+          preflight: (batch, directory) => preflightSharedMove(batch, directory, () => listSharedEntries(destination)),
           move: (item, directory) => moveSharedFile(item.path, directory, undefined, { expectedFileId: item.fileId }),
         }));
       }

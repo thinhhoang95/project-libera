@@ -7749,6 +7749,7 @@
     "moveFileError": "Không thể di chuyển tệp.",
     "batchMovePartialError": "Đã di chuyển {moved}/{total} tệp. Dừng ở {name}: {message} Các tệp sau đó chưa được di chuyển.",
     "batchDeletePartialError": "Đã xóa {deleted}/{total} tệp. Chưa xóa: {failures}",
+    "batchUnfinishedNotice": "{count, plural, other {# tệp đã được thay đổi}}, nhưng một số bước chưa hoàn tất: {details}. Chạy Check Notebook để xử lý.",
     "movedButNotUpdatedError": "Các tệp đã được chuyển, nhưng ứng dụng không thể cập nhật đầy đủ cho việc này: {message}. Hãy mở lại Di chuyển để thử lại.",
     "movedLinksUpdated": "{count, plural, other {Đã cập nhật liên kết trong # ghi chú}}",
     "movedLinksNotUpdated": "{count, plural, other {# liên kết không thể cập nhật và có thể mở một tệp khác hoặc không mở được tệp nào}}: {links}. Kiểm tra sổ tay sẽ liệt kê chúng.",

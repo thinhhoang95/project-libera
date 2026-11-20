@@ -7749,6 +7749,7 @@
     "moveFileError": "无法移动文件。",
     "batchMovePartialError": "已移动 {moved}/{total} 个文件。在 {name} 处停止：{message} 其后的文件未移动。",
     "batchDeletePartialError": "已删除 {deleted}/{total} 个文件。未删除：{failures}",
+    "batchUnfinishedNotice": "{count, plural, other {# 个文件已更改}}，但有些步骤未完成：{details}。请运行 Check Notebook 来处理。",
     "movedButNotUpdatedError": "文件已移动，但应用无法为此完全更新：{message}。请重新打开“迁移”以重试。",
     "movedLinksUpdated": "{count, plural, other {已更新 # 条笔记中的链接}}",
     "movedLinksNotUpdated": "{count, plural, other {# 个链接无法更新，可能会打开另一个文件或无法打开}}：{links}。检查笔记本会列出它们。",
