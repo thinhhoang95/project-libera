@@ -1,24 +1,27 @@
 import type { JSONContent } from "@tiptap/core";
 import type { Root, RootContent } from "mdast";
 import type { Plugin } from "unified";
-import { readFrontMatterField, writeFrontMatterField } from "./front-matter";
-import { yamlFrontMatterEnd } from "./remark-front-matter";
+import { findMacroBlocks } from "./markdown-macros";
 
-// Custom table column widths, kept in the document's front matter:
+// Custom table column widths, kept in the document's macro block
+// (docs/features/markdown-macros.md) as a magic comment, the way TeX keeps
+// `% !TEX program = xelatex`:
 //
-//   ---
-//   table-widths: [[120, 240, null], [], [80]]
-//   ---
+//   ```libera-macro
+//   \R = $\mathbb{R}$
+//   % !table-widths = [[120, 240, null], [], [80]]
+//   ```
 //
 // One entry per table in document order (pipe tables and the HTML tables
 // written for merged cells alike), one width per column in CSS pixels; null
-// (or 0) leaves a column to the layout and [] a whole table. The value is a
-// JSON array, which is also YAML. Markdown tables have no attributes, so the
-// widths live beside them: the Visual editor writes this line as columns are
-// dragged (tiptap-table-widths.ts) and reads it back when the document is
-// parsed; the preview gives each table its widths (remarkTableWidths).
-
-export const TABLE_WIDTHS_FIELD = "table-widths";
+// (or 0) leaves a column to the layout and [] a whole table. The macro parser
+// reads `%` lines as comments, so the line is neither a definition nor a
+// problem, and the block is hidden wherever macros are expanded. Markdown
+// tables have no attributes, so the widths live beside them: the Visual
+// editor writes this line as columns are dragged (tiptap-table-widths.ts)
+// and reads it back when the document is parsed; the preview gives each
+// table its widths (remarkTableWidths). The first macro block with the line
+// holds it.
 
 /** Per table, per column: a width in pixels, or null for an automatic column. */
 export type TableWidths = Array<Array<number | null>>;
@@ -26,6 +29,11 @@ export type TableWidths = Array<Array<number | null>>;
 /** The smallest and largest width a column keeps (TipTap's cellMinWidth is 25). */
 const MIN_WIDTH = 25;
 const MAX_WIDTH = 4000;
+
+/** The magic comment, with its value in group 1. */
+const WIDTHS_LINE = /^[ \t]*%[ \t]*!table-widths\b[ \t]*[=:]?[ \t]*(.*)$/m;
+/** Cheap test for a document that may hold the line. */
+const WIDTHS_MARK = "!table-widths";
 
 function columnWidth(value: unknown): number | null {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
@@ -45,7 +53,7 @@ export function normalizeTableWidths(widths: ReadonlyArray<ReadonlyArray<unknown
 
 /** Parse a `table-widths` value; [] when it is missing or unreadable. */
 export function parseTableWidths(value: string | null | undefined): TableWidths {
-  const text = value?.replace(/[ \t]+#.*$/, "").trim();
+  const text = value?.trim();
   if (!text) return [];
   try {
     const parsed = JSON.parse(text) as unknown;
@@ -55,22 +63,54 @@ export function parseTableWidths(value: string | null | undefined): TableWidths 
   }
 }
 
-/** The value as written in front matter: `[[120, 240, null], [], [80]]`. */
+/** The value as written: `[[120, 240, null], [], [80]]`. */
 export function formatTableWidths(widths: TableWidths) {
   return `[${widths.map((table) => `[${table.map((width) => width === null ? "null" : String(width)).join(", ")}]`).join(", ")}]`;
 }
 
 export const sameTableWidths = (a: TableWidths, b: TableWidths) => formatTableWidths(a) === formatTableWidths(b);
 
-/** The document's table widths ([] without any). Also reads a front matter block's own source. */
-export function readTableWidths(markdown: string | null | undefined): TableWidths {
-  return parseTableWidths(readFrontMatterField(markdown, TABLE_WIDTHS_FIELD));
+/** The line a macro block holds the widths in. */
+export const tableWidthsLine = (widths: TableWidths) => `% !table-widths = ${formatTableWidths(normalizeTableWidths(widths))}`;
+
+/** Whether one macro block's text holds the widths line. */
+export const hasTableWidthsLine = (text: string) => text.includes(WIDTHS_MARK) && WIDTHS_LINE.test(text);
+
+/** Widths from one macro block's text; null when it has no `% !table-widths` line. */
+export function readMacroBlockTableWidths(text: string): TableWidths | null {
+  const match = text.includes(WIDTHS_MARK) ? WIDTHS_LINE.exec(text) : null;
+  return match ? parseTableWidths(match[1]) : null;
 }
 
-/** Set the document's table widths; none set removes the line (and front matter left empty). */
-export function writeTableWidths(markdown: string, widths: TableWidths): string {
+/**
+ * One macro block's text with its widths line set: replaced where it is,
+ * added last, or (with no widths) removed with its line break. Everything
+ * else in the block keeps its bytes.
+ */
+export function writeMacroBlockTableWidths(text: string, widths: TableWidths): string {
   const normalized = normalizeTableWidths(widths);
-  return writeFrontMatterField(markdown, TABLE_WIDTHS_FIELD, normalized.length ? formatTableWidths(normalized) : null);
+  const match = text.includes(WIDTHS_MARK) ? WIDTHS_LINE.exec(text) : null;
+  if (match) {
+    const start = match.index, end = start + match[0].length;
+    if (normalized.length) return text.slice(0, start) + tableWidthsLine(normalized) + text.slice(end);
+    const after = /^\r?\n/.exec(text.slice(end))?.[0].length ?? 0;
+    const before = after ? 0 : /\r?\n$/.exec(text.slice(0, start))?.[0].length ?? 0;
+    return text.slice(0, start - before) + text.slice(end + after);
+  }
+  if (!normalized.length) return text;
+  const newline = /\r\n/.test(text) ? "\r\n" : "\n";
+  if (!text) return tableWidthsLine(normalized);
+  return /\n$/.test(text) ? `${text}${tableWidthsLine(normalized)}${newline}` : `${text}${newline}${tableWidthsLine(normalized)}`;
+}
+
+/** The document's table widths, from the first macro block that has the line ([] without one). */
+export function readTableWidths(markdown: string | null | undefined): TableWidths {
+  if (!markdown?.includes(WIDTHS_MARK)) return [];
+  for (const block of findMacroBlocks(markdown)) {
+    const widths = readMacroBlockTableWidths(markdown.slice(block.contentStart, block.contentEnd));
+    if (widths) return widths;
+  }
+  return [];
 }
 
 /**
@@ -126,8 +166,8 @@ function withTableWidths(table: JSONContent, widths: ReadonlyArray<number | null
 }
 
 /**
- * Give the tables of a parsed TipTap document (JSON) the widths its front
- * matter names. Tables are counted in document order, as the editor counts
+ * Give the tables of a parsed TipTap document (JSON) the widths its macro
+ * block names. Tables are counted in document order, as the editor counts
  * them when it writes the line.
  */
 export function applyTableWidthsToJson(doc: JSONContent, widths: TableWidths): JSONContent {
@@ -163,7 +203,6 @@ type MdNode = Root | RootContent;
 const isHtmlTable = (node: MdNode) => node.type === "html" && /^\s*<table[\s>]/i.test(node.value);
 
 function markTables(tree: Root, source: string | null) {
-  if (!source?.startsWith("---") || !yamlFrontMatterEnd(source)) return;
   const widths = readTableWidths(source);
   if (!widths.length) return;
   let index = 0;
@@ -182,10 +221,10 @@ function markTables(tree: Root, source: string | null) {
 }
 
 /**
- * Give each table of the preview the widths the front matter names for it,
+ * Give each table of the preview the widths the macro block names for it,
  * as a `data-col-widths` attribute the renderer turns into column widths.
- * Use after remark-parse, so the source is at hand (as remarkHideFrontMatter
- * does); otherwise it is read from the file.
+ * Use after remark-parse and remarkMarkdownMacros, so the source is at hand
+ * as written (macro blocks included); otherwise it is read from the file.
  */
 export const remarkTableWidths: Plugin<[], Root> = function () {
   const parse = this.parser;

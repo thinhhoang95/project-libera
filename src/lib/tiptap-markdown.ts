@@ -100,9 +100,9 @@ export function guardLiteralBrackets(markdown: string, pairs: MathMarkerPair[]) 
   return out + markdown.slice(from);
 }
 
-/** A parsed document with the column widths its front matter names (table-widths.ts). */
-function withFrontMatterTableWidths(json: JSONContent, markdown: string) {
-  return markdown.startsWith("---") ? applyTableWidthsToJson(json, readTableWidths(markdown)) : json;
+/** A parsed document with the column widths its macro block names (table-widths.ts). */
+function withStatedTableWidths(json: JSONContent, markdown: string) {
+  return applyTableWidthsToJson(json, readTableWidths(markdown));
 }
 
 const LiberaMarkdown = Markdown.extend({
@@ -110,13 +110,13 @@ const LiberaMarkdown = Markdown.extend({
     const initial = this.editor.options.content;
     this.parent?.(event);
     const manager = this.storage.manager;
-    // Tables take their widths from the front matter wherever a whole document
+    // Tables take their widths from the macro block wherever a whole document
     // is read: the initial content (already parsed above) and setContent.
     if (typeof initial === "string" && this.editor.options.content !== initial && typeof this.editor.options.content === "object" && this.editor.options.content) {
-      this.editor.options.content = withFrontMatterTableWidths(this.editor.options.content as JSONContent, initial);
+      this.editor.options.content = withStatedTableWidths(this.editor.options.content as JSONContent, initial);
     }
     const parse = manager.parse.bind(manager);
-    manager.parse = (markdown) => withFrontMatterTableWidths(parse(markdown), markdown);
+    manager.parse = (markdown) => withStatedTableWidths(parse(markdown), markdown);
     const serialize = manager.serialize.bind(manager);
     // The math extensions publish the configured markers (tiptap-math.ts).
     const pairs = () => ((this.editor?.storage as unknown as Record<string, { markerPairs?: MathMarkerPair[] } | undefined> | undefined)?.inlineMath?.markerPairs) ?? mathMarkerPairs();
@@ -412,7 +412,7 @@ export type MarkdownExtensionOptions = {
   imageNodeView?: NodeViewRenderer;
   /** The front matter block's tooltip, in the interface language (lib.tiptapFrontMatter.frontMatterTitle). */
   frontMatterTitle?: string;
-  /** Columns can be resized by dragging their borders; the widths are kept in the front matter (tiptap-table-widths.ts). Not for slide decks, which have no front matter. */
+  /** Columns can be resized by dragging their borders; the widths are kept in the macro block (tiptap-table-widths.ts). Not for slide decks, whose slides each count their tables from the first. */
   resizableTables?: boolean;
 };
 

@@ -3,39 +3,53 @@ import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { Plugin, PluginKey, type EditorState, type Transaction } from "@tiptap/pm/state";
 import { AddMarkStep, AttrStep, DocAttrStep, RemoveMarkStep, ReplaceAroundStep, ReplaceStep } from "@tiptap/pm/transform";
 import { TIPTAP_BRIDGE_META } from "./collab/bindings/tiptap-ytext";
+import { MACRO_BLOCK_LANGUAGE, isMacroBlockLanguage } from "./markdown-macros";
+import { textChange } from "./references/document-style";
 import { FRONT_MATTER_NODE_NAME } from "./tiptap-front-matter";
-import { cellColumnWidths, normalizeTableWidths, readTableWidths, sameTableWidths, writeTableWidths, type TableWidths } from "./table-widths";
+import {
+  cellColumnWidths, hasTableWidthsLine, normalizeTableWidths, readMacroBlockTableWidths, sameTableWidths, tableWidthsLine,
+  writeMacroBlockTableWidths, type TableWidths,
+} from "./table-widths";
 
 // Keeps the Visual editor's table column widths and the document's
-// `table-widths` front matter line (table-widths.ts) in step.
+// `% !table-widths` line in its ```libera-macro block (table-widths.ts) in
+// step.
 //
 // Dragging a column border (prosemirror-tables' columnResizing) sets the
 // cells' `colwidth`; this plugin then writes every table's widths to the
-// front matter in the same undo step, so the widths reach the Markdown file.
-// Inserting, deleting or moving a table rewrites the line the same way, so
-// each entry stays with its table.
+// macro block in the same undo step, so the widths reach the Markdown file.
+// A document without a macro block gets one at the top. Inserting, deleting
+// or moving a table rewrites the line the same way, so each entry stays with
+// its table.
 //
-// The other way round, a change that brings a new front matter (an undo, a
-// collaborator's edit, the document reloaded from the Source editor) is
-// applied to the tables. Those changes, and a collaborator's table that the
-// bridge parsed on its own, are never answered by writing the front matter:
-// only the user's own edits write it, so two editors never race to.
+// The other way round, a change that brings a new line (an undo, the line
+// edited in the macro block, a collaborator's edit, the document reloaded
+// from the Source editor) is applied to the tables. Those changes, and a
+// collaborator's table that the bridge parsed on its own, are never answered
+// by writing the line: only the user's own edits elsewhere write it, so two
+// editors never race to.
 
 export const tiptapTableWidthsKey = new PluginKey("liberaTableWidths");
 
-const TABLE_STRUCTURE = new Set(["table", "tableRow", "tableCell", "tableHeader", FRONT_MATTER_NODE_NAME]);
+const TABLE_STRUCTURE = new Set(["table", "tableRow", "tableCell", "tableHeader"]);
 
-type TablePosition = { node: ProseMirrorNode; pos: number };
+type Positioned = { node: ProseMirrorNode; pos: number };
 
-/** The document's tables, in order (tables do not nest). */
-export function documentTables(doc: ProseMirrorNode) {
-  const tables: TablePosition[] = [];
+const isMacroBlock = (node: ProseMirrorNode) => !!node.type.spec.code && isMacroBlockLanguage(node.attrs.language);
+
+/** The document's tables and macro blocks, in order (tables do not nest). */
+function documentParts(doc: ProseMirrorNode) {
+  const tables: Positioned[] = [];
+  const macroBlocks: Positioned[] = [];
   doc.descendants((node, pos) => {
     if (node.type.name === "table") { tables.push({ node, pos }); return false; }
+    if (isMacroBlock(node)) { macroBlocks.push({ node, pos }); return false; }
     return !node.isTextblock && !node.isAtom;
   });
-  return tables;
+  return { tables, macroBlocks };
 }
+
+export const documentTables = (doc: ProseMirrorNode) => documentParts(doc).tables;
 
 /** A table's column widths, from its first row (which covers every column). */
 export function tableColumnWidths(table: ProseMirrorNode): Array<number | null> {
@@ -50,22 +64,22 @@ export function tableColumnWidths(table: ProseMirrorNode): Array<number | null> 
 
 const columnCount = (table: ProseMirrorNode) => tableColumnWidths(table).length;
 
-function frontMatter(doc: ProseMirrorNode) {
-  const first = doc.firstChild;
-  return first?.type.name === FRONT_MATTER_NODE_NAME ? first : null;
+/** The widths the document's macro blocks name: the first block with the line ([] without one). */
+function statedWidths(macroBlocks: Positioned[]): TableWidths {
+  for (const { node } of macroBlocks) {
+    const widths = readMacroBlockTableWidths(node.textContent);
+    if (widths) return widths;
+  }
+  return [];
 }
 
-/** The widths the document's front matter names ([] without any). */
-export function frontMatterTableWidths(doc: ProseMirrorNode): TableWidths {
-  const node = frontMatter(doc);
-  return node ? readTableWidths(String(node.attrs.raw ?? "")) : [];
-}
+export const macroBlockTableWidths = (doc: ProseMirrorNode) => statedWidths(documentParts(doc).macroBlocks);
 
 const sameColwidth = (a: unknown, b: number[] | null) =>
   JSON.stringify(Array.isArray(a) && a.some((width) => width > 0) ? a : null) === JSON.stringify(b);
 
 /** Give one table's cells the column widths (positions stay valid: only attributes change). */
-function setTableWidths(tr: Transaction, { node, pos }: TablePosition, widths: ReadonlyArray<number | null>) {
+function setTableWidths(tr: Transaction, { node, pos }: Positioned, widths: ReadonlyArray<number | null>) {
   const shape: Array<Array<readonly [number, number]>> = [];
   node.forEach((row) => {
     const cells: Array<readonly [number, number]> = [];
@@ -82,40 +96,53 @@ function setTableWidths(tr: Transaction, { node, pos }: TablePosition, widths: R
 }
 
 /** Give every table the widths of its entry (none for a table without one). */
-function applyWidths(tr: Transaction, tables: TablePosition[], widths: TableWidths) {
+function applyWidths(tr: Transaction, tables: Positioned[], widths: TableWidths) {
   tables.forEach((table, index) => {
     const own = widths[index] ?? [];
     if (!sameTableWidths(normalizeTableWidths([tableColumnWidths(table.node)]), normalizeTableWidths([own]))) setTableWidths(tr, table, own);
   });
 }
 
-/** Set the front matter's `table-widths` line, adding or removing the front matter as needed. */
-function writeFrontMatter(tr: Transaction, widths: TableWidths) {
-  const node = frontMatter(tr.doc);
-  const type = tr.doc.type.schema.nodes[FRONT_MATTER_NODE_NAME];
-  if (!type) return;
-  const raw = node ? String(node.attrs.raw ?? "") : "";
-  // The line as the user wrote it stays while it says the same.
-  if (sameTableWidths(readTableWidths(raw), widths)) return;
-  const next = writeTableWidths(raw, widths).replace(/(?:\r\n|\r|\n)+$/, "");
-  if (next === raw) return;
-  if (!node) tr.insert(0, type.create({ raw: next }));
-  else if (!next) tr.delete(0, node.nodeSize);
-  else tr.setNodeMarkup(0, undefined, { ...node.attrs, raw: next });
+/**
+ * Set the `% !table-widths` line: in the macro block that has it, else the
+ * first macro block, else a new block at the top (after any front matter).
+ * A block left empty by removing the line goes too.
+ */
+function writeWidths(tr: Transaction, widths: TableWidths) {
+  const { doc } = tr;
+  const { schema } = doc.type;
+  const { macroBlocks } = documentParts(doc);
+  const holder = macroBlocks.find(({ node }) => hasTableWidthsLine(node.textContent)) ?? macroBlocks[0];
+  if (holder) {
+    const text = holder.node.textContent;
+    // The line as the user wrote it stays while it says the same.
+    if (sameTableWidths(readMacroBlockTableWidths(text) ?? [], widths)) return;
+    const next = writeMacroBlockTableWidths(text, widths);
+    if (!next.trim()) { tr.delete(holder.pos, holder.pos + holder.node.nodeSize); return; }
+    const change = textChange(text, next);
+    const start = holder.pos + 1;
+    if (change.insert) tr.insertText(change.insert, start + change.from, start + change.to);
+    else tr.delete(start + change.from, start + change.to);
+    return;
+  }
+  const codeBlock = schema.nodes.codeBlock;
+  if (!widths.length || !codeBlock) return;
+  const at = doc.firstChild?.type.name === FRONT_MATTER_NODE_NAME ? doc.firstChild.nodeSize : 0;
+  tr.insert(at, codeBlock.create({ language: MACRO_BLOCK_LANGUAGE }, schema.text(tableWidthsLine(widths))));
 }
 
-/** Whether a table's structure or a cell's or the front matter's attributes lie in [from, to] (not just text inside a cell). */
+/** Whether table structure lies in [from, to] (not just text inside a cell), or the range touches a macro block. */
 function structureBetween(doc: ProseMirrorNode, from: number, to: number) {
   let found = false;
   doc.nodesBetween(Math.max(0, from), Math.min(doc.content.size, to), (node, pos) => {
     if (found) return false;
-    if (TABLE_STRUCTURE.has(node.type.name) && (pos >= from || pos + node.nodeSize <= to)) found = true;
+    if (isMacroBlock(node) || (TABLE_STRUCTURE.has(node.type.name) && (pos >= from || pos + node.nodeSize <= to))) found = true;
     return !found && !node.isTextblock;
   });
   return found;
 }
 
-/** Whether an edit may change the tables, their widths or the front matter. Typing in a cell does not. */
+/** Whether an edit may change the tables, their widths or the widths line. Typing in a cell does not. */
 export function transactionsMayAffectTableWidths(transactions: readonly Transaction[]) {
   for (const tr of transactions) {
     for (let index = 0; index < tr.steps.length; index++) {
@@ -129,7 +156,8 @@ export function transactionsMayAffectTableWidths(transactions: readonly Transact
         });
         if (touched) return true;
       } else if (step instanceof AttrStep) {
-        if (TABLE_STRUCTURE.has(before.nodeAt(step.pos)?.type.name ?? "")) return true;
+        const node = before.nodeAt(step.pos);
+        if (node && (TABLE_STRUCTURE.has(node.type.name) || isMacroBlock(node) || node.type.spec.code)) return true;
       } else if (!(step instanceof AddMarkStep || step instanceof RemoveMarkStep || step instanceof DocAttrStep)) return true;
     }
   }
@@ -140,34 +168,34 @@ export function transactionsMayAffectTableWidths(transactions: readonly Transact
 const isExternal = (tr: Transaction) => !!tr.getMeta(TIPTAP_BRIDGE_META) || !!tr.getMeta("history$")
   || tr.getMeta("preventUpdate") === true || !!tr.getMeta(tiptapTableWidthsKey);
 
-/** The transaction that brings the tables and the front matter back in step, or null when they are. */
+/** The transaction that brings the tables and the widths line back in step, or null when they are. */
 export function syncTableWidths(transactions: readonly Transaction[], oldState: EditorState, newState: EditorState): Transaction | null {
-  const stated = frontMatterTableWidths(newState.doc);
-  const tables = documentTables(newState.doc);
+  const { tables, macroBlocks } = documentParts(newState.doc);
+  const stated = statedWidths(macroBlocks);
   const tr = newState.tr.setMeta(tiptapTableWidthsKey, true);
-  if (transactions.some(isExternal) || !sameTableWidths(frontMatterTableWidths(oldState.doc), stated)) {
-    // A new front matter: it decides.
+  const old = documentParts(oldState.doc);
+  if (transactions.some(isExternal) || !sameTableWidths(statedWidths(old.macroBlocks), stated)) {
+    // A new line: it decides.
     applyWidths(tr, tables, stated);
     return tr.docChanged ? tr.setMeta("addToHistory", false) : null;
   }
   // The user's edit: the tables decide. A table parsed afresh (an AI rewrite,
   // a pasted replacement) has no widths; while the number of tables holds,
   // it keeps those of its entry.
-  const sameCount = documentTables(oldState.doc).length === tables.length;
+  const sameCount = old.tables.length === tables.length;
   const widths = normalizeTableWidths(tables.map((table, index) => {
     const own = tableColumnWidths(table.node);
     const entry = stated[index];
     return sameCount && entry?.length && own.every((width) => width === null) && entry.length <= columnCount(table.node) ? entry : own;
   }));
   applyWidths(tr, tables, widths);
-  writeFrontMatter(tr, widths);
+  writeWidths(tr, widths);
   return tr.docChanged ? tr : null;
 }
 
 /**
- * The Visual editor's link between column resizing and the front matter
- * (see the header). Add it with Table's `resizable` option; Markdown files
- * that cannot have front matter (slide decks) should not.
+ * The Visual editor's link between column resizing and the macro block (see
+ * the header). Add it with Table's `resizable` option.
  */
 export const TiptapTableWidths = Extension.create({
   name: "liberaTableWidths",

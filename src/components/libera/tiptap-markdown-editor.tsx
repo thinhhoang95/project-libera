@@ -314,7 +314,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
   const extensions = useMemo(() => {
     const [InlineMath, BlockMath] = createMathExtensions(mathMarkers);
     return [
-    // Column widths go to the front matter, which a slide deck cannot have (`---` separates its slides).
+    // Column widths go to the macro block, counted over the whole note; a slide deck renders each slide on its own.
     ...createMarkdownExtensions(documentPath, { citationNodeView: citations.nodeView, codeBlockNodeView, imageNodeView, frontMatterTitle, resizableTables: !isMarkdownSlidesPath(documentPath) }),
     ...citations.extensions,
     // Routes undo to the bridge's Y.UndoManager and keeps ProseMirror history

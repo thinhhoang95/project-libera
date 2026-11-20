@@ -5,6 +5,7 @@ import { useTranslations } from "next-intl";
 import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { MACRO_BLOCK_LANGUAGE, isMacroBlockLanguage, parseMacroDefinitions } from "@/lib/markdown-macros";
+import { hasTableWidthsLine } from "@/lib/table-widths";
 import { NotebookLiveBlock, isLiveCodeBlock } from "./slide-live-blocks";
 
 // The Visual editor's code blocks. A ```chart, ```mermaid or ```html live block keeps
@@ -26,7 +27,7 @@ function codeBlockInfo(value: unknown) {
 /**
  * A ```libera-macro block (docs/features/markdown-macros.md): a header that
  * counts its definitions and folds the block away. It starts folded when it
- * has definitions, open when it is new.
+ * has definitions or table column widths, open when it is new.
  */
 function MacroBlockView({ node }: ReactNodeViewProps) {
   const t = useTranslations("tiptapLiveCodeBlockView");
@@ -34,7 +35,8 @@ function MacroBlockView({ node }: ReactNodeViewProps) {
   const code = node.textContent;
   const definitions = useMemo(() => parseMacroDefinitions(code), [code]);
   const count = definitions.macros.size;
-  const [open, setOpen] = useState(() => count === 0);
+  // The table column widths line (table-widths.ts) is content too: a block written for it starts folded.
+  const [open, setOpen] = useState(() => count === 0 && !hasTableWidthsLine(code));
   const Chevron = open ? ChevronDown : ChevronRight;
   return (
     <NodeViewWrapper className="libera-macro-block" data-open={open ? "true" : "false"}>

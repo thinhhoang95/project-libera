@@ -38,7 +38,7 @@ The note's file keeps the macros as you wrote them. They are expanded whenever t
 
 ## Defining macros
 
-A macro block holds one definition per line (a `\newcommand` body may run over several lines). Lines starting with `%` are comments. A note may have several macro blocks; each definition applies to the whole note, wherever its block is, and a later definition of the same name wins.
+A macro block holds one definition per line (a `\newcommand` body may run over several lines). Lines starting with `%` are comments; one of them, `% !table-widths = […]`, holds the note's table column widths, which the Visual editor writes as columns are resized ([table-column-widths.md](table-column-widths.md)). A note may have several macro blocks; each definition applies to the whole note, wherever its block is, and a later definition of the same name wins.
 
 | Form | Example | Arguments |
 | --- | --- | --- |
