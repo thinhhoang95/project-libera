@@ -93,6 +93,24 @@ import { diffManifestPaths, type RecordedPath } from "./transition-log";
 /** Scans a pairing of a missing file with a new one is held back for an uncertain absence before the usual restore-and-import applies. */
 const MAX_RENAME_DEFERRALS = 8;
 
+/** The scanner's per-project bookkeeping, created on first use (a project built without its field initializers has it too). */
+interface ScanScratch {
+  fairness: ScanFairness;
+  respellSeen: Map<string, string>;
+  respellLogged: Set<string>;
+  ownRespells: Set<string>;
+  renameDeferrals: Map<string, number>;
+}
+const scanScratches = new WeakMap<object, ScanScratch>();
+function scanScratch(owner: object): ScanScratch {
+  let scratch = scanScratches.get(owner);
+  if (!scratch) {
+    scratch = { fairness: new ScanFairness(), respellSeen: new Map(), respellLogged: new Set(), ownRespells: new Set(), renameDeferrals: new Map() };
+    scanScratches.set(owner, scratch);
+  }
+  return scratch;
+}
+
 /** Entries remembered as spelled by a remote normalization-only rename. */
 const MAX_REMOTE_RESPELLS = 200;
 
@@ -385,15 +403,15 @@ export class SharedProject {
   private saveFailures = 0;
   private readonly missingSince = new Map<string, number>();
   /** Files a scan left out or failed to read, so the next scans serve them first; counted in scan passes (S49). */
-  private readonly scanFairness = new ScanFairness();
+  private get scanFairness(): ScanFairness { return scanScratch(this).fairness; }
   /** The disk spelling of a known name that another program changed (case, Unicode form), until it is seen at two scans in a row (S39). */
-  private readonly respellSeen = new Map<string, string>();
+  private get respellSeen(): Map<string, string> { return scanScratch(this).respellSeen; }
   /** Entries already logged as keeping a remote normalization spelling (S39). */
-  private readonly respellLogged = new Set<string>();
+  private get respellLogged(): Set<string> { return scanScratch(this).respellLogged; }
   /** Entries this host's own scan respelled in the manifest: not a remote rename when they come back through the manifest. */
-  private readonly ownRespells = new Set<string>();
+  private get ownRespells(): Set<string> { return scanScratch(this).ownRespells; }
   /** Scans a missing file's pairing with a new file was held back because its absence was uncertain (S41). */
-  private readonly renameDeferrals = new Map<string, number>();
+  private get renameDeferrals(): Map<string, number> { return scanScratch(this).renameDeferrals; }
   private readonly refusedLogged = new Set<string>();
   /** Blobs that could not be downloaded: failures so far and the earliest next try (finding 35). */
   private readonly blobFailures = new Map<string, { count: number; nextAt: number }>();
