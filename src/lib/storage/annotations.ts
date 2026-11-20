@@ -344,19 +344,41 @@ export function inspectPdfSidecar(value: unknown): SidecarInspection | null {
   };
 }
 
+/** What the notebook check can tell of a file's saved annotation ids. */
+export type SavedAnnotationIds =
+  /** The sidecar was read. */
+  | { state: "ids"; ids: Set<string> }
+  /** No sidecar anywhere: the file has no saved annotations. */
+  | { state: "absent" }
+  /** Only an older layout holds them; reading it would upgrade it, so its ids are not known here. */
+  | { state: "legacy" }
+  /** The sidecar (or where it would be) can't be read. */
+  | { state: "unreadable" };
+
 /**
  * The ids of a PDF's or an image's saved annotations, for the notebook check's
  * links to one annotation. Read where the side file is now, without upgrading
- * older layouts: null when there is none there or it can't be read.
+ * older layouts, and saying which case it is: no side file (the annotations
+ * are gone), only an older layout, or one that can't be read.
  */
-export async function savedAnnotationIds(relativePath: string): Promise<Set<string> | null> {
-  const { notebook, name, pathParts } = splitFilePath(relativePath);
-  const image = getFileType(name) === "image";
+export async function savedAnnotationIds(relativePath: string): Promise<SavedAnnotationIds> {
   try {
-    const stored = (JSON.parse(await readFile(image ? imageAnnotationsPath(notebook, pathParts) : pdfAnnotationsPath(notebook, pathParts), "utf8")) as PdfSidecar).annotations;
-    return new Set((image ? normalizeImageAnnotations(stored) : normalizePdfAnnotations(stored)).map((annotation) => annotation.id));
+    const { notebook, name, pathParts } = splitFilePath(relativePath);
+    const image = getFileType(name) === "image";
+    let text: string;
+    try { text = await readFile(image ? imageAnnotationsPath(notebook, pathParts) : pdfAnnotationsPath(notebook, pathParts), "utf8"); }
+    catch (error) {
+      if (!["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) return { state: "unreadable" };
+      for (const old of image ? [legacyFlatImageAnnotationsPath(notebook, name), legacyImageAnnotationsPath(notebook, name)] : [legacyFlatPdfAnnotationsPath(notebook, name), legacyPdfAnnotationsPath(notebook, name)]) {
+        try { await stat(old); return { state: "legacy" }; }
+        catch (legacyError) { if (!["ENOENT", "ENOTDIR"].includes((legacyError as NodeJS.ErrnoException).code ?? "")) return { state: "unreadable" }; }
+      }
+      return { state: "absent" };
+    }
+    const stored = (JSON.parse(text) as PdfSidecar).annotations;
+    return { state: "ids", ids: new Set((image ? normalizeImageAnnotations(stored) : normalizePdfAnnotations(stored)).map((annotation) => annotation.id)) };
   } catch {
-    return null;
+    return { state: "unreadable" };
   }
 }
 

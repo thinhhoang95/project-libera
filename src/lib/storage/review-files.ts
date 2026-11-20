@@ -197,19 +197,40 @@ export async function inspectReviewKeys(root: string): Promise<{ keys: string[];
 }
 
 /**
- * Index entries whose document file is not on disk (not synced yet, or lost),
- * without touching anything or taking the lock. Empty when the index can't be
- * read (inspectReviewKeys says so).
+ * Index entries whose document can't be used, without touching anything or
+ * taking the lock: `missing` (its file is not on disk: not synced yet, or
+ * lost) and `unreadable` (the file is there but truncated, corrupt or not
+ * readable), with the reason. `matches` limits which keys are read. Empty
+ * when the index can't be read (inspectReviewKeys says so).
  */
-export async function inspectMissingReviewDocuments(root: string): Promise<{ id: string; key: string }[]> {
-  const absent: { id: string; key: string }[] = [];
+export async function inspectReviewDocumentProblems(root: string, matches: (key: string) => boolean = () => true): Promise<{ id: string; key: string; problem: "missing" | "unreadable"; reason?: string }[]> {
+  const problems: { id: string; key: string; problem: "missing" | "unreadable"; reason?: string }[] = [];
   let index: Map<string, string>;
-  try { index = await readIndexFile(root) ?? new Map<string, string>(); } catch { return absent; }
+  try { index = await readIndexFile(root) ?? new Map<string, string>(); } catch { return problems; }
   for (const [id, key] of index) {
-    try { await stat(documentPath(root, id)); }
-    catch (error) { if (missing(error)) absent.push({ id, key }); }
+    if (!matches(key)) continue;
+    try { await readDocumentFile(root, id, key); }
+    catch (error) {
+      if (error instanceof ReviewDocumentMissingError) problems.push({ id, key, problem: "missing" });
+      else problems.push({ id, key, problem: "unreadable", reason: error instanceof Error ? error.message : String(error) });
+    }
   }
-  return absent;
+  return problems;
+}
+
+/**
+ * The keys of the older single-file review database that is still waiting to
+ * be converted, read without converting it. `damaged` when it can't be read.
+ */
+export async function inspectLegacyReviewKeys(root: string): Promise<{ keys: string[]; damaged?: string }> {
+  try {
+    const legacy = await readJson(legacyReviewDatabasePath(root)) as { schemaVersion?: number; documents?: { key?: unknown }[] } | undefined;
+    if (legacy === undefined) return { keys: [] };
+    if (!legacy || legacy.schemaVersion !== 1 || !Array.isArray(legacy.documents)) return { keys: [], damaged: "Unsupported review database." };
+    return { keys: legacy.documents.flatMap((doc) => doc && typeof doc.key === "string" ? [doc.key] : []) };
+  } catch (error) {
+    return { keys: [], damaged: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 /**
