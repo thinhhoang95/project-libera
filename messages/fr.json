@@ -7736,6 +7736,7 @@
     "moveFileError": "Impossible de déplacer le fichier.",
     "batchMovePartialError": "{moved} fichier(s) déplacé(s) sur {total}. Arrêt à {name} : {message} Les fichiers suivants n’ont pas été déplacés.",
     "batchDeletePartialError": "{deleted} fichier(s) supprimé(s) sur {total}. Non supprimés : {failures}",
+    "batchUnfinishedNotice": "{count, plural, one {# fichier a été modifié} other {# fichiers ont été modifiés}}, mais certaines étapes n’ont pas abouti : {details}. Lancez la vérification du carnet pour les régler.",
     "movedButNotUpdatedError": "Les fichiers ont été déplacés, mais l’application n’a pas pu se mettre entièrement à jour : {message}. Rouvrez Migration pour réessayer.",
     "movedLinksUpdated": "{count, plural, one {Liens mis à jour dans # note} other {Liens mis à jour dans # notes}}",
     "movedLinksNotUpdated": "{count, plural, one {# lien n’a pas pu être mis à jour et peut ouvrir un autre fichier ou aucun} other {# liens n’ont pas pu être mis à jour et peuvent ouvrir un autre fichier ou aucun}} : {links}. Vérifier le carnet les liste.",

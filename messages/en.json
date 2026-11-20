@@ -7736,6 +7736,7 @@
     "moveFileError": "Could not move file.",
     "batchMovePartialError": "Moved {moved} of {total} files. Stopped at {name}: {message} The files after it were not moved.",
     "batchDeletePartialError": "Deleted {deleted} of {total} files. Not deleted: {failures}",
+    "batchUnfinishedNotice": "{count, plural, one {# file was} other {# files were}} changed, but some steps stayed behind: {details}. Run Check Notebook to settle them.",
     "movedButNotUpdatedError": "The files moved, but the app could not fully update for it: {message}. Reopen Migration to try again.",
     "movedLinksUpdated": "{count, plural, one {Updated links in # note} other {Updated links in # notes}}",
     "movedLinksNotUpdated": "{count, plural, one {# link could not be updated and may open another file or none} other {# links could not be updated and may open another file or none}}: {links}. Check Notebook lists them.",

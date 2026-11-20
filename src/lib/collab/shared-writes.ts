@@ -93,6 +93,12 @@ export interface SharedIdentityOptions extends SharedWriteOptions {
    * Without it the host acts on the file at the path.
    */
   expectedFileId?: string;
+  /**
+   * Delete only: a batch deletes many files and does its own one wait and one
+   * refresh at the end, so the call returns right after its own cleanup, null
+   * instead of the tree.
+   */
+  deferRefresh?: boolean;
 }
 
 function hostConfig(liberaPath: string, options: SharedWriteOptions): HostClientConfig {
@@ -762,7 +768,9 @@ async function moveSharedLocalRecords(from: string, to: string): Promise<string[
 }
 
 /** Delete via the manifest; the host removes the working copy and syncs the deletion. */
-export async function deleteSharedFile(relativePath: string, options: SharedIdentityOptions = {}): Promise<LiberaTree> {
+export async function deleteSharedFile(relativePath: string, options: SharedIdentityOptions & { deferRefresh: true }): Promise<null>;
+export async function deleteSharedFile(relativePath: string, options?: SharedIdentityOptions): Promise<LiberaTree>;
+export async function deleteSharedFile(relativePath: string, options: SharedIdentityOptions = {}): Promise<LiberaTree | null> {
   await ensureAdminRoot();
   const current = splitFilePath(relativePath);
   const liberaPath = relativeFilePath(current.notebook, current.pathParts);
@@ -794,6 +802,7 @@ export async function deleteSharedFile(relativePath: string, options: SharedIden
   if (left.length) {
     throw new StorageError(`The file was deleted, but its ${left.join(", ")} could not be removed. Run Check Notebook to settle them.`, 500);
   }
+  if (options.deferRefresh) return null;
   // If it is slower than this, the host says when the file has left the disk.
   await diskCaughtUp(liberaPath, false);
   return getTree();

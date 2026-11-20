@@ -1,3 +1,5 @@
+import { manifestPathKey } from "@/lib/collab/protocol/schema";
+import { isSharedOperationUnfinished } from "@/lib/collab/shared-outcomes";
 import { StorageError } from "@/lib/storage/errors";
 import { assertLocalFileIdentity, assertNoLeftoverRecords, deleteFile, moveFileToDirectory, MoveCommittedError, readLiberaFile } from "@/lib/storage/files";
 import { followMovedLinks } from "@/lib/storage/move-links";
@@ -29,7 +31,17 @@ export class BatchRefusedError extends StorageError {
 
 /** `moved`: in order, each with the payload the single move returns. `payload` is null when the move happened but its result could not be read. */
 export type BatchMoveResult = {
-  moved: { from: string; to: string; payload: LiberaFileMovePayload | null }[];
+  moved: {
+    from: string;
+    to: string;
+    payload: LiberaFileMovePayload | null;
+    /**
+     * A shared move the host committed whose later steps (records kept on this
+     * computer, links, indexes) did not all finish: the file is at `to`, and
+     * these sentences say what stayed behind. Absent when everything finished.
+     */
+    unfinished?: string[];
+  }[];
   /** The file whose move stopped the batch, and why; null when all moved. */
   failed: { path: string; error: string } | null;
   /** Never tried, because an earlier file failed. */
@@ -46,7 +58,12 @@ export type BatchMoveResult = {
   unfinished?: LiberaMoveStep[];
 };
 
-export type BatchDeleteResult = { deleted: string[]; failed: { path: string; error: string }[] };
+/**
+ * `deleted`: every file that is gone (a shared delete the host committed counts
+ * even when a later step stayed behind). `unfinished`: those files again, each
+ * with what stayed behind; absent when nothing did.
+ */
+export type BatchDeleteResult = { deleted: string[]; failed: { path: string; error: string }[]; unfinished?: { path: string; steps: string[] }[] };
 
 /** How one file is handled; local by default, and the route passes the shared wrappers for a shared notebook. */
 export type BatchMoveHooks = {
@@ -57,6 +74,15 @@ export type BatchMoveHooks = {
 
 export type BatchDeleteHooks = {
   remove?: (item: BatchItem) => Promise<unknown>;
+};
+
+/** Where a path is stored: a local notebook, the active files of a shared notebook, or the local-only archive of a shared notebook. */
+export type BatchDomain = "local" | "shared" | "archive";
+
+const DOMAIN_NOTE: Record<BatchDomain, string> = {
+  local: "In a local notebook.",
+  shared: "In the shared notebook.",
+  archive: "In the notebook's archive, which stays on this computer.",
 };
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -126,18 +152,74 @@ export async function preflightLocalMove(items: BatchItem[], destinationDirector
   return problems;
 }
 
-/** Only name uniqueness can be known without the host: the shared move checks the rest itself. */
-export async function preflightSharedMove(items: BatchItem[], destinationDirectory: string): Promise<BatchProblem[]> {
+/**
+ * The proposed layout of a shared move, checked with the host's own rule (`manifestPathKey`:
+ * names equal after Unicode NFC and case folding clash, as they do on disk) against
+ * everything the manifest already has in the destination, selected files that stay
+ * there included. The host checks the rest (identity, records) per file. When the
+ * manifest cannot be read the batch is refused: uniqueness cannot be established.
+ * `listEntries` is the shared notebook's authoritative list (Libera paths, as listSharedEntries returns), read once per batch.
+ */
+export async function preflightSharedMove(items: BatchItem[], destinationDirectory: string, listEntries: () => Promise<{ path: string }[]>): Promise<BatchProblem[]> {
+  const prefix = destinationDirectory;
+  let entries: { path: string }[];
+  try {
+    entries = await listEntries();
+  } catch (error) {
+    return [{ path: destinationDirectory, message: `The shared notebook's file list could not be read (${messageOf(error)}), so the destination cannot be checked.` }];
+  }
+  const occupied = new Map<string, string>();
+  for (const entry of entries) {
+    if (manifestPathKey(parentOf(entry.path)) === manifestPathKey(prefix)) occupied.set(manifestPathKey(entry.path), entry.path);
+  }
+  const selected = new Set(items.map((item) => item.path));
   const problems: BatchProblem[] = [];
   const landing = new Map<string, string>();
   for (const item of items) {
+    // Stays where it is; it is an occupant of the destination for the others.
     if (parentOf(item.path) === destinationDirectory) continue;
-    const key = baseName(item.path).toLowerCase();
+    const name = baseName(item.path);
+    const relative = prefix ? `${prefix}/${name}` : name;
+    const key = manifestPathKey(relative);
     const clash = landing.get(key);
-    if (clash) problems.push({ path: item.path, message: `${clash} and ${item.path} would both be named ${baseName(item.path)} in ${destinationDirectory}.` });
-    else landing.set(key, item.path);
+    if (clash) {
+      problems.push({ path: item.path, message: `${clash} and ${item.path} would both be named ${name} in ${destinationDirectory}.` });
+      continue;
+    }
+    landing.set(key, item.path);
+    const occupant = occupied.get(key);
+    if (!occupant) continue;
+    const there = `${destinationDirectory}/${baseName(occupant)}`;
+    problems.push({ path: item.path, message: selected.has(there) ? `${there} is selected too but stays in ${destinationDirectory}, so ${name} would take its name.` : `${there} already exists.` });
   }
   return problems;
+}
+
+/**
+ * A batch is handled by one storage: the shared notebook's files go through the
+ * collaboration host, the archive's files (recovery storage, on this computer only)
+ * through local files. Every item (and the destination, for a move) is classified
+ * before anything changes, and a selection that mixes them is refused whole, in
+ * whatever order it was selected.
+ */
+export function assertOneStorageDomain(items: BatchItem[], destinationDirectory: string | null, domainOf: (path: string) => BatchDomain) {
+  const domains = new Set(items.map((item) => domainOf(item.path)));
+  if (domains.size > 1) {
+    throw new BatchRefusedError(
+      "Nothing was changed: the selection mixes files of the shared notebook with files in its archive, which are handled separately. Select one kind at a time.",
+      items.map((item) => ({ path: item.path, message: DOMAIN_NOTE[domainOf(item.path)] })),
+    );
+  }
+  if (destinationDirectory === null) return;
+  const domain = [...domains][0];
+  const target = domainOf(destinationDirectory);
+  if (target === domain) return;
+  const message = domain === "shared"
+    ? "Files of a shared notebook cannot be moved into its archive: the archive stays on this computer."
+    : domain === "archive"
+      ? "Files in the archive cannot be moved into the shared notebook from here."
+      : "The destination is in a different storage than these files.";
+  throw new BatchRefusedError(`Nothing was moved: ${message}`, items.map((item) => ({ path: item.path, message })));
 }
 
 function refusal(problems: BatchProblem[]) {
@@ -174,6 +256,15 @@ export async function moveFilesToDirectory(items: BatchItem[], destinationDirect
       const payload = await move(item, destinationDirectory);
       result.moved.push({ from: item.path, to: payload.file.path, payload });
     } catch (error) {
+      // The host committed this move and a later step stayed behind: the file moved, so it counts as moved with
+      // what stayed behind reported, and the batch goes on (the move itself cannot be taken back).
+      if (isSharedOperationUnfinished(error)) {
+        const change = error.committed.find((entry) => entry.from === item.path && entry.to !== null);
+        if (change?.to) {
+          result.moved.push({ from: item.path, to: change.to, payload: null, unfinished: error.unfinished });
+          continue;
+        }
+      }
       // The file is at its destination but its result could not be built: it moved, and the batch still stops.
       if (error instanceof MoveCommittedError) result.moved.push({ from: error.moved.from, to: error.moved.to, payload: null });
       result.failed = { path: item.path, error: messageOf(error) };
@@ -221,6 +312,12 @@ export async function deleteFiles(items: BatchItem[], hooks: BatchDeleteHooks = 
       await remove(item);
       result.deleted.push(item.path);
     } catch (error) {
+      // The host committed the delete and a later step stayed behind: the file is gone, reported with what stayed.
+      if (isSharedOperationUnfinished(error) && error.committed.some((entry) => entry.from === item.path && entry.to === null)) {
+        result.deleted.push(item.path);
+        (result.unfinished ??= []).push({ path: item.path, steps: error.unfinished });
+        continue;
+      }
       result.failed.push({ path: item.path, error: messageOf(error) });
     }
   }
