@@ -5,6 +5,12 @@
 // a command whose response was lost on the network is applied once. Server
 // errors (5xx) and kinds this server cannot run yet are not stored: replaying
 // them later must be able to succeed.
+//
+// The id is claimed (a row with a null status) before the handler runs, so two
+// overlapping submissions cannot both apply the effect (audit S58). A claim
+// that outlives its lease is a handler that died before its receipt: the next
+// submission takes it over and re-runs the handler, which every command kind
+// makes idempotent on its own client-supplied ids.
 
 import type { FastifyInstance } from "fastify";
 import { ZodError, z } from "zod";
@@ -105,6 +111,9 @@ async function run(context: ServerContext, accountId: string, command: Command):
   }
 }
 
+/** How long a claim blocks duplicates before a replay may take it over. */
+export const COMMAND_CLAIM_LEASE_MS = 60_000;
+
 export function registerCommandRoutes(app: FastifyInstance, context: ServerContext): void {
   const { db } = context;
 
@@ -113,28 +122,49 @@ export function registerCommandRoutes(app: FastifyInstance, context: ServerConte
     const { id, kind } = envelope.parse(request.body);
     const command = request.body as Command;
 
-    const stored = await db
-      .selectFrom("commands")
-      .select(["status", "result"])
-      .where("account_id", "=", accountId)
-      .where("id", "=", id)
-      .executeTakeFirst();
-    if (stored) return { id, status: stored.status, body: stored.result };
+    const receipt = (row: { status: number | null; result: unknown } | undefined): CommandResult | null =>
+      row && row.status !== null ? { id, status: row.status, body: row.result } : null;
+    const lookup = () => db.selectFrom("commands").select(["status", "result"])
+      .where("account_id", "=", accountId).where("id", "=", id).executeTakeFirst();
 
-    const { result, store } = await run(context, accountId, command);
-    if (!store) return { id, status: result.status, body: result.body };
-    await db
-      .insertInto("commands")
-      .values({ account_id: accountId, id, kind, status: result.status, result: JSON.stringify(result.body ?? null) })
+    const done = receipt(await lookup());
+    if (done) return done;
+
+    // Claim the id. Losing means a receipt exists, a live claim is running, or a dead claim can be taken over.
+    const claimedAt = new Date();
+    const claimed = await db.insertInto("commands")
+      .values({ account_id: accountId, id, kind, status: null, result: null, claimed_at: claimedAt })
       .onConflict((conflict) => conflict.columns(["account_id", "id"]).doNothing())
+      .returning("id").executeTakeFirst();
+    if (!claimed) {
+      const taken = await db.updateTable("commands").set({ claimed_at: claimedAt })
+        .where("account_id", "=", accountId).where("id", "=", id).where("status", "is", null)
+        .where("claimed_at", "<", new Date(claimedAt.getTime() - COMMAND_CLAIM_LEASE_MS))
+        .returning("id").executeTakeFirst();
+      if (!taken) {
+        const raced = receipt(await lookup());
+        if (raced) return raced;
+        // Still running on another request: a transient answer the host retries.
+        return { id, status: 503, body: errorBody("internal", "This command is already being applied. Retry shortly.") };
+      }
+    }
+
+    let outcome: { result: HandlerResult; store: boolean } | null = null;
+    try {
+      outcome = await run(context, accountId, command);
+    } finally {
+      // Nothing to remember (transient or unavailable) or the handler threw: free the id for a retry.
+      if (!outcome?.store) {
+        await db.deleteFrom("commands").where("account_id", "=", accountId).where("id", "=", id).where("status", "is", null).execute();
+      }
+    }
+    if (!outcome.store) return { id, status: outcome.result.status, body: outcome.result.body };
+    await db.updateTable("commands")
+      .set({ status: outcome.result.status, result: JSON.stringify(outcome.result.body ?? null) })
+      .where("account_id", "=", accountId).where("id", "=", id).where("status", "is", null)
       .execute();
-    // A concurrent replay may have stored first; everyone gets that result.
-    const winner = await db
-      .selectFrom("commands")
-      .select(["status", "result"])
-      .where("account_id", "=", accountId)
-      .where("id", "=", id)
-      .executeTakeFirstOrThrow();
-    return { id, status: winner.status, body: winner.result };
+    // A takeover may have stored first; everyone gets that result.
+    const winner = await lookup();
+    return receipt(winner) ?? { id, status: outcome.result.status, body: outcome.result.body };
   });
 }
