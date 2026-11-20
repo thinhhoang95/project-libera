@@ -75,6 +75,20 @@ function assertChunkFor(fileType: string, chunk: string) {
   if (!chunkFits(fileType, chunk)) throw new StorageError("That ink chunk does not belong to this kind of file.");
 }
 
+/**
+ * The ink files of a folder that a file of `fileType` has no chunk for (a PDF's
+ * pages are not an image's, an image's chunk is not a note's), by name. A
+ * rename to another file type is refused while there are any, as for any
+ * other record the new type cannot use. Reads names only; throws when the
+ * folder can't be listed.
+ */
+export async function inkChunksTheTypeLacks(folder: string, fileType: string): Promise<string[]> {
+  return (await readdir(folder)).filter((name) => {
+    const parsed = parseInkFileName(name);
+    return parsed !== null && !chunkFits(fileType, parsed.chunk);
+  });
+}
+
 export type InkFolderInspection = {
   /** Ink files the reader leaves out: not readable as ink, or named for another author than the one inside. */
   unreadable: string[];

@@ -5,7 +5,7 @@ import { getStateRoot, relativeFilePath } from "@/lib/storage/paths";
 import { libraryNotebookNames } from "@/lib/storage/library-links";
 import { inspectReferenceLibrary } from "@/lib/storage/references";
 import { inspectReviewDocuments, inspectReviewKeys } from "@/lib/storage/review-files";
-import { existingSidecars, SIDECAR_KINDS } from "@/lib/storage/sidecars";
+import { existingSidecars, legacyAnnotationSidecars, SIDECAR_KINDS } from "@/lib/storage/sidecars";
 import { readWorkspaceMetadata } from "@/lib/storage/workspace-metadata";
 
 // What records of a file that was there before a path still holds (stars,
@@ -42,7 +42,8 @@ export async function destinationRecords() {
     async at(notebook: string, parts: string[], fileType: string | null): Promise<string[]> {
       const relative = relativeFilePath(notebook, parts);
       const kept = new Set<string>();
-      for (const sidecar of await existingSidecars(notebook, parts, fileType)) {
+      // Older annotation layouts too (legacyAnnotationSidecars): the arriving file would be given them.
+      for (const sidecar of [...await existingSidecars(notebook, parts, fileType), ...await legacyAnnotationSidecars(notebook, parts, fileType)]) {
         if (caches.has(sidecar.kind)) continue;
         // An ink folder with nothing in it holds no strokes.
         if (sidecar.kind === "ink" && !(await readdir(sidecar.path).catch(() => ["?"])).length) continue;

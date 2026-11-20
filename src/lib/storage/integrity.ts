@@ -16,7 +16,7 @@ import { searchIndexFile } from "@/lib/search/settings";
 import { citationIndexPath, readCitationIndex } from "@/lib/storage/reference-citations";
 import { fileExistence, libraryNotebookNames, linkCandidates, resolveLinkTargetWith } from "@/lib/storage/library-links";
 import { decodeMarkdownHeadingHash, findMarkdownHeadingAnchorIndex, markdownHeadingAnchors, type MarkdownHeadingAnchor } from "@/lib/markdown-heading-anchors";
-import { savedAnnotationIds } from "@/lib/storage/annotations";
+import { listLegacyAnnotations, savedAnnotationIds } from "@/lib/storage/annotations";
 import { parseTranscript } from "@/lib/storage/transcripts";
 import { markdownImageTargets, unreferencedMarkdownAssets } from "@/lib/storage/markdown-assets";
 import { extractNotebookLinkDestinations, forgetNotebookLinkReads, linkIndexPath, readLinkIndex } from "@/lib/storage/notebook-links";
@@ -537,6 +537,22 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
       add(moved
         ? { severity: "info", path: orphan.filePath, message: `${what}, belong to ${moved}: the same file, moved outside the app. They go to it the next time the notebook is opened.`, ...say("orphanSideFileMoved", { kind: orphan.kind, path: orphan.filePath, moved }) }
         : { severity: "warning", path: orphan.filePath, message: `${what}.`, fix: "Put the file back where it was and it is found again. If it is gone for good, the side file can be removed from the notebook's .libera folder; keep a copy if unsure.", clear: [{ type: "side-file", kind: orphan.kind, filePath: orphan.filePath, gone: orphan.filePath }], ...say("orphanSideFile", { kind: orphan.kind, path: orphan.filePath }, "orphanSideFileFix") });
+    }
+    // Notes still in an older layout, keyed by file name alone: read without
+    // upgrading them (annotations.ts listLegacyAnnotations). The migrator gives
+    // them to the one file of that name when it is opened, and sets them aside
+    // when there are several.
+    const older = await listLegacyAnnotations(notebook);
+    if (older.unreadable) unreadSidecars += 1;
+    for (const { kind, name: fileName, owners } of older.legacy) {
+      if (owners.length === 1) {
+        const owned = `${notebook}/${owners[0].join("/")}`;
+        add({ severity: "info", path: owned, message: `Saved ${kind} annotations of ${owned} are still in an older layout; they are moved to it the next time it is opened.`, ...say("legacyAnnotations", { kind, path: owned }) });
+      } else if (owners.length) {
+        add({ severity: "warning", path: notebook, message: `Saved ${kind} annotations of "${fileName}" are in an older layout that does not say which of ${owners.length} files of that name they belong to, so none of them gets them: they are set aside the next time one is opened.`, fix: "Copy the notes out of the notebook's .libera folder if you want to keep them; they can't be matched to a file by name alone.", ...say("legacyAnnotationsAmbiguous", { kind, name: fileName, count: owners.length }, "legacyAnnotationsAmbiguousFix") });
+      } else {
+        add({ severity: "info", path: notebook, message: `Saved ${kind} annotations of "${fileName}" are in an older layout and no file of that name is in the notebook. A file of that name that comes back, alone in the notebook, is given them.`, ...say("legacyAnnotationsNoFile", { kind, name: fileName }) });
+      }
     }
     // Side files set aside for files that left the notebook outside the app,
     // waiting for them to come back. Those whose file is back go to it the

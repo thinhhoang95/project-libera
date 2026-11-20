@@ -243,6 +243,14 @@ async function listSidecars(notebook: string, store: KindStore): Promise<Found[]
   return found;
 }
 
+/** Whether the PDF was modified after its annotations were last saved; true too when that can't be told (never recorded as known). */
+async function changedSinceNotes(notebook: string, pathParts: string[]) {
+  try {
+    const [pdf, notes] = await Promise.all([stat(filePathFromParts(notebook, pathParts)), stat(pdfAnnotationsPath(notebook, pathParts))]);
+    return pdf.mtimeMs > notes.mtimeMs;
+  } catch { return true; }
+}
+
 async function pdfExists(libraryPath: string): Promise<boolean | null> {
   try {
     const { notebook, pathParts } = splitFilePath(libraryPath);
@@ -296,7 +304,8 @@ export async function reconcilePdfSidecars(notebook: string, pdfFiles: Array<{ p
       for (const libraryPath of lacksIdentity) {
         const { notebook: owner, pathParts } = splitFilePath(libraryPath);
         const json = await readJson(pdfAnnotationsPath(owner, pathParts));
-        if (!sidecarIdentity(json)) await recordPdfAnnotationsSource(libraryPath).catch(() => undefined);
+        // Notes older than their PDF's last change may be for an earlier file under this name: what the PDF is now is no evidence of what they were made for, so they stay without an identity.
+        if (!sidecarIdentity(json) && !(await changedSinceNotes(owner, pathParts))) await recordPdfAnnotationsSource(libraryPath).catch(() => undefined);
       }
     })();
   }

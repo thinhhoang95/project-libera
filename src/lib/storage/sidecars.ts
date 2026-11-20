@@ -4,7 +4,7 @@ import path from "node:path";
 import { DEFINITIONS_FILE_TYPES, parseDefinitionsFile } from "@/lib/definitions";
 import { parseInkFileName } from "@/lib/ink/authors";
 import { parsePdfOutlineFile } from "@/lib/pdf-outline";
-import { inspectImageSidecar, inspectPdfSidecar } from "@/lib/storage/annotations";
+import { inspectImageSidecar, inspectLegacyAnnotations, inspectPdfSidecar } from "@/lib/storage/annotations";
 import { inspectPdfTextCache } from "@/lib/storage/pdf-text-cache";
 import { parseTranscript } from "@/lib/storage/transcripts";
 import { inspectAudioPeaksCache } from "@/lib/transcription/peaks";
@@ -13,7 +13,7 @@ import { INK_DIR } from "@/lib/storage/constants";
 import { getFileType } from "@/lib/storage/file-types";
 import { StorageError } from "@/lib/storage/errors";
 import { moveFileIfExists, moveWithoutReplacing, pathExists } from "@/lib/storage/fs-utils";
-import { inkFolderPath, inspectInkFolder, supportsInk, type InkFolderInspection } from "@/lib/storage/ink";
+import { inkChunksTheTypeLacks, inkFolderPath, inspectInkFolder, supportsInk, type InkFolderInspection } from "@/lib/storage/ink";
 import { deletePythonSidecar, movePythonSidecar } from "@/lib/storage/markdown-assets";
 import {
   assertSafeUserSegment,
@@ -128,7 +128,12 @@ export async function lostSidecarRecords(notebook: string, parts: string[], from
   const keptKinds = new Set(SIDECAR_KINDS.filter((kind) => kind.appliesTo(toType)).map((kind) => kind.id));
   const lost: string[] = [];
   for (const sidecar of await existingSidecars(notebook, parts, fromType)) {
-    if (caches.has(sidecar.kind) || keptKinds.has(sidecar.kind)) continue;
+    if (caches.has(sidecar.kind)) continue;
+    if (keptKinds.has(sidecar.kind)) {
+      // Both types take ink, but not the same chunks: the new editor would never show the old ones. A folder that can't be listed is not shown to fit.
+      if (sidecar.kind === "ink" && (await inkChunksTheTypeLacks(sidecar.path, toType).catch(() => ["?"])).length) lost.push(sidecar.kind);
+      continue;
+    }
     // An ink folder with nothing in it holds no strokes.
     if (sidecar.kind === "ink" && !(await readdir(sidecar.path).catch(() => ["?"])).length) continue;
     lost.push(sidecar.kind);
@@ -246,6 +251,26 @@ export async function existingSidecars(notebook: string, pathParts: string[], fi
     if (await pathExists(target)) found.push({ kind: "python", path: target });
   }
   return found;
+}
+
+/**
+ * Notes saved in an older annotation layout (a flat file or a dot file, keyed
+ * by file name alone) that a file arriving at `parts` would be given: when it
+ * is opened, the migrator attaches them to the one file of that name in the
+ * notebook. Read only (inspectLegacyAnnotations). `moving` is the file being
+ * moved there from the same notebook: it is not a rival owner, and with the
+ * same name the notes are its own (or ambiguous), not the destination's. A
+ * notebook that can't be listed is not shown to be free of them.
+ */
+export async function legacyAnnotationSidecars(notebook: string, parts: string[], fileType: string | null, moving?: string[]): Promise<ExistingSidecar[]> {
+  const kind = fileType === "pdf" || fileType === "image" ? fileType : null;
+  const name = parts.at(-1);
+  if (!kind || !name) return [];
+  if (moving && moving.at(-1)?.toLowerCase() === name.toLowerCase()) return [];
+  const { files, namesakes } = await inspectLegacyAnnotations(notebook, parts, kind);
+  const rivals = namesakes?.filter((file) => !moving || file.join("/").toLowerCase() !== moving.join("/").toLowerCase());
+  if (rivals?.length) return [];
+  return files.map((file) => ({ kind: `${kind}-annotations`, path: file }));
 }
 
 export type ListedSidecar = ExistingSidecar & { kindInfo: SidecarKind; filePath: string; fileParts: string[] };
