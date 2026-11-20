@@ -1686,6 +1686,17 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     return reconcileMovedText({ saved: tab.saved, draft, fetched: payload.content, rewrite });
   }
 
+  /**
+   * What the app does once the server says a file moved, whichever way it was moved
+   * (Move…, rename, drag and drop, one file of a selection): open tabs follow it, and
+   * the notices say what changed with it. The caller refreshes the tree (once for a batch).
+   */
+  function followFileMove(fromPath: string, payload: LiberaFileMovePayload) {
+    retargetOpenTab(fromPath, payload);
+    reportReferenceMove(payload);
+    reportMovedLinks(payload);
+  }
+
   /** After a move: the destination's References panel reloads, and a notice says what was copied or renamed. */
   function reportReferenceMove(payload: LiberaFileMovePayload) {
     if (payload.references) reportReferences(payload.references, payload.file.notebook);
@@ -4003,9 +4014,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
           fileId: file.fileId,
         }),
       }, (payload) => ({ paths: [payload.file.path], moved: { from: file.path, to: payload.file.path } }));
-      retargetOpenTab(file.path, payload);
-      reportReferenceMove(payload);
-      reportMovedLinks(payload);
+      followFileMove(file.path, payload);
       await refreshTree(payload.file.notebook);
     } catch (error) {
       setWorkspaceError(isIdentityConflict(error) ? tRef.current("fileChangedUnderYouError") : error instanceof Error ? error.message : tRef.current("moveFileError"));
@@ -4055,9 +4064,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
           fileId: file.fileId,
         }),
       }, (payload) => ({ paths: [payload.file.path], moved: { from: file.path, to: payload.file.path } }));
-      retargetOpenTab(file.path, payload);
-      reportReferenceMove(payload);
-      reportMovedLinks(payload);
+      followFileMove(file.path, payload);
       await refreshTree(payload.file.notebook);
       updateExpanded((current) => {
         const next = new Set(current);

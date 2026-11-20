@@ -44,4 +44,31 @@ shared files (`files.ts`, `integrity.ts`, `migration.ts`, `use-libera-workspace.
 
 ## Results
 
-(Filled in as packages merge.)
+All 17 packages merged into `fix/move-integrity-audit`. 99 findings: 85 fixed, 13 partly fixed, 1 left (F63).
+Every finding was confirmed real by its fixing agent; none was rejected as not a bug, though F31 and F79 each had
+one half that the code already handled.
+
+| Package | Fixed | Partly fixed (what is left) |
+|---|---|---|
+| A1 direct moves | 1, 3, 4, 5, 19, 21, 86 | 2 (local `fileId` is optional: the tree does not send `localFileIdentity` yet; delete is checked at the route only) |
+| A2 copy and shared writes | 9, 10, 96, 97, 98 | 11 (a copy into a shared notebook does not copy cited references) |
+| A3 folder operations | 13, 14, 15, 16 | none. A folder whose deletion can't check other notebooks' notes for its images is still deleted and the images are reported as left behind |
+| A4 record stores | 6, 12, 17, 18, 20, 76 | none. `notebook-groups.ts`, `notebooks.ts` and `directory-mode.ts` still write workspace metadata outside the queue (follow-up) |
+| A5 side file types, legacy | 7, 8 | 48 (legacy annotations are listed by the check, not paired by Try to fix: they are keyed by name only); 40 (the PDF legacy backfill skips notes older than their PDF; same-path replacement of images and notes is not detectable without a fingerprint, documented under "Not checked") |
+| B1 renderer saves | 22, 23, 24, 25, 26, 27 | none |
+| B2 renderer delete, drop | 28, 29, 30 | 31 (missing tabs are marked; saving was already refused); 32 (repair mappings reach other windows; replay of a lost response is not done) |
+| C1 upkeep reattachment | 34, 35, 36, 37, 39 | none (the case-sensitive test of 39 is skipped on Windows) |
+| C2 tree walk, linked folders | 33, 38, 41, 42, 43 | 44 (server-side relink only, no UI) |
+| C3 reference reattachment | 45, 46 | 95 (moves report libraries that are offline; no deferred queue) |
+| D1 verifier scope | 47, 49, 57, 58 | 56 (some inventories still run outside the budget: `listSidecars`, ink inspection, set-aside reads, LaTeX sources, the `_assets` walk) |
+| D2 verifier checks | 50, 51, 52, 53, 54, 55 | none |
+| D3 indexes | 59, 60, 61, 62 | 63 left: no documented SQLite read mode closes the race; the check is still skipped when the prerequisite is missing |
+| E1 Try to fix | 64, 65, 66, 67, 68, 69, 71, 72, 74, 75 | 70 (the token binds size and time, not content: a same-name, same-size, same-time replacement is the same pair under the name rule); 73 (a set-aside JSON file or agent entry left by a failed removal still reads as "own") |
+| E2 Acknowledge | 78, 80, 81, 83, 84, 85 | 79 (a case/NFC alias is held, not removed through); 82 (no hook to ask open editors about unsaved drafts) |
+| M1 migration publication | 77, 87, 88, 89, 93 | none (the case-sensitive tests of 93 only run on such volumes) |
+| M2 migration rewrites | 90, 91, 94, 99 | 92 (an item Stop could not follow stays out of the records steps and is reported incomplete) |
+
+F64 was decided by the user: the content-identity pairing from `2632bbd` is gone and Try to fix is name-only again.
+
+After the merges the user set the rule the follow-up work holds to: **Check Notebook is the oracle**. An in-app move,
+fix or automatic upkeep step must never leave findings the verifier disagrees with, unless they were acknowledged.
