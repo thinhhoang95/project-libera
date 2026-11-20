@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, rename, rm, stat, symlink } from "node:fs/promises";
+import fsp, { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { mock } from "node:test";
+import { bibTetherStatePath, readTetherTarget, resetBibTethers, tetherBibFile } from "../../src/lib/references/bib-tether";
 import { DEFINITIONS_VERSION } from "../../src/lib/definitions";
 import { pythonSidecarPath } from "../../src/lib/python/sidecar";
 import { applyNotebookCleanup, planNotebookCleanup } from "../../src/lib/storage/cleanup";
@@ -250,4 +251,245 @@ test("what a check that ran only in part found is not offered", () => withTempor
   const result = await applyNotebookCleanup("Nb", partial.token, options);
   assert.equal(result.cleared, 0);
   assert.deepEqual((await readWorkspaceMetadata()).starredFilePaths, ["Nb/a.md"]);
+}));
+
+// ---- Races, versions and outcomes (findings 78-85) ----
+
+/** Runs `before` once, the first time `fsp[name]` is called with arguments `when` accepts, then carries on. */
+function onFirst(name: "realpath" | "rm" | "open" | "mkdir", when: (args: unknown[]) => boolean, before: () => Promise<unknown>) {
+  const original = fsp[name] as (...args: unknown[]) => Promise<unknown>;
+  let fired = false;
+  mock.method(fsp, name, (async (...args: unknown[]) => {
+    if (!fired && when(args)) { fired = true; await before(); }
+    return original(...args);
+  }) as never);
+  return () => fired;
+}
+const isIn = (args: unknown[], directory: string) => path.resolve(String(args[0])) === path.resolve(directory);
+
+test("a transcript or review saved at the same address after the plan is not removed with the stale one", () => withTemporaryLibrary(["Nb"], async () => {
+  await writeAt(transcriptPath("Nb", ["audio", "memo.m4a"]), seeded("transcript"));
+  await addReviewThreads("Nb/gone.md", "# G\n", [{ range: { start: 2, end: 3 }, text: "first" }]);
+  const plan = await planNotebookCleanup("Nb");
+  assert.equal(plan.items.length, 2);
+  const transcript = transcriptPath("Nb", ["audio", "memo.m4a"]);
+  const replacedTranscript = onFirst("realpath", (args) => isIn(args, path.dirname(transcript)), () => writeFile(transcript, "{\"new\":\"transcript saved after the plan\"}"));
+  const replacedReview = onFirst("mkdir", (args) => String(args[0]).includes(`${path.sep}libera-locks${path.sep}reviews-`), () => addReviewThreads("Nb/gone.md", "# G\n", [{ range: { start: 0, end: 1 }, text: "a newer comment" }]));
+  try {
+    const result = await applyNotebookCleanup("Nb", plan.token);
+    assert.ok(replacedTranscript() && replacedReview());
+    assert.equal(result.cleared, 0);
+    assert.equal(result.outcomes.held, 2);
+    assert.match(result.problems.join("\n"), /changed since it was shown/);
+    assert.match(result.problems.join("\n"), /review comments of Nb\/gone\.md changed since/);
+    assert.ok(await exists(transcript), "the new transcript is kept");
+    assert.equal((await findReview("Nb/gone.md"))?.threads.length, 2, "the review with the newer comment is kept");
+  } finally { mock.restoreAll(); }
+}));
+
+test("ink files added to a stale ink folder after the plan keep the folder", () => withTemporaryLibrary(["Nb"], async () => {
+  const folder = inkFolderPath("Nb", ["a", "x.pdf"]);
+  await writeAt(path.join(folder, "page-0001.aaaaaaaaaa.ink"), inkFile());
+  const plan = await planNotebookCleanup("Nb");
+  assert.equal(plan.items.length, 1);
+  onFirst("realpath", (args) => isIn(args, path.dirname(folder)), () => writeFile(path.join(folder, "page-0002.aaaaaaaaaa.ink"), inkFile()));
+  try {
+    const result = await applyNotebookCleanup("Nb", plan.token);
+    assert.equal(result.outcomes.held, 1);
+    assert.equal((await readdir(folder)).length, 2);
+  } finally { mock.restoreAll(); }
+}));
+
+test("a stale record whose name is now a folder is offered, and removed, not refused at apply", () => withTemporaryLibrary(["Nb"], async () => {
+  await writeLibraryFile("Nb/old.md", "# Old\n");
+  await setStarredFilePath("Nb/old.md", true);
+  await gone("Nb/old.md");
+  await mkdir(filePathFromParts("Nb", ["old.md"]));
+  const plan = await planNotebookCleanup("Nb");
+  assert.deepEqual(plan.items.map((item) => item.path), ["Nb/old.md"]);
+  const result = await applyNotebookCleanup("Nb", plan.token);
+  assert.deepEqual(result.problems, []);
+  assert.deepEqual((await readWorkspaceMetadata()).starredFilePaths, []);
+}));
+
+/** Ink set aside for files that are gone, one set per owner; the tree's upkeep did it. */
+async function setAsideInk(files: string[], pages = ["text.aaaaaaaaaa.ink"]) {
+  for (const file of files) {
+    const [, ...parts] = file.split("/");
+    await writeLibraryFile(file, "# X\n");
+    for (const page of pages) await writeAt(path.join(inkFolderPath("Nb", parts), page), inkFile());
+    await gone(file);
+  }
+  await upkeep("Nb");
+}
+
+test("set-aside ink whose owner returns during apply is kept, record and payload", () => withTemporaryLibrary(["Nb"], async () => {
+  await setAsideInk(["Nb/a/x.md"]);
+  const plan = await planNotebookCleanup("Nb");
+  assert.ok(plan.items.some((item) => /kept for files/.test(item.message)));
+  const root = orphanedSidecarsDirectoryPath("Nb", "ink");
+  onFirst("realpath", (args) => path.resolve(String(args[0])).startsWith(path.resolve(root)), () => writeLibraryFile("Nb/a/x.md", "# X\n"));
+  try {
+    const result = await applyNotebookCleanup("Nb", plan.token);
+    assert.equal(result.outcomes.removed, 0);
+    assert.ok(result.outcomes.held >= 1);
+    const [unit] = await readdir(root);
+    assert.deepEqual((await readdir(path.join(root, unit))).sort(), ["ink", "record.json"]);
+  } finally { mock.restoreAll(); }
+}));
+
+test("when part of a set-aside ink folder can't be removed, its record stays with what is left", () => withTemporaryLibrary(["Nb"], async () => {
+  await setAsideInk(["Nb/a/x.md"], ["text.aaaaaaaaaa.ink", "text.bbbbbbbbbb.ink"]);
+  const plan = await planNotebookCleanup("Nb");
+  const root = orphanedSidecarsDirectoryPath("Nb", "ink");
+  const original = fsp.rm as (...args: unknown[]) => Promise<void>;
+  mock.method(fsp, "rm", (async (target: unknown, ...rest: unknown[]) => {
+    if (String(target).endsWith("text.aaaaaaaaaa.ink")) throw Object.assign(new Error("busy"), { code: "EBUSY" });
+    return original(target, ...rest);
+  }) as never);
+  try {
+    const result = await applyNotebookCleanup("Nb", plan.token);
+    assert.equal(result.outcomes.unreadable, 1);
+    assert.equal(result.cleared, 0, "the finding stays");
+    const [unit] = await readdir(root);
+    assert.ok(await exists(path.join(root, unit, "record.json")), "the record that says whose ink it is stays");
+    assert.deepEqual(await readdir(path.join(root, unit, "ink")), ["text.aaaaaaaaaa.ink"]);
+  } finally { mock.restoreAll(); }
+}));
+
+test("the preview lists each set-aside record and the file it was kept for", () => withTemporaryLibrary(["Nb"], async () => {
+  await setAsideInk(["Nb/a/x.md", "Nb/b/y.md"]);
+  const plan = await planNotebookCleanup("Nb");
+  const aside = plan.items.find((item) => /kept for files/.test(item.message))!;
+  assert.deepEqual([...new Set(aside.entries.map((entry) => entry.origin))].sort(), ["Nb/a/x.md", "Nb/b/y.md"]);
+  assert.ok(aside.entries.every((entry) => /orphaned-sidecars/.test(entry.record)));
+  assert.ok(aside.entries.length >= 4, "payload and record of both");
+}));
+
+test("an image another notebook's note shows by address is not offered, by either address form", () => withTemporaryLibrary(["Nb", "Other"], async () => {
+  const folder = path.join(notebookPath("Nb"), "_assets", "notes", "old.md");
+  for (const name of ["chart.png", "chart2.png", "free.png"]) await writeAt(path.join(folder, name), "png");
+  await writeLibraryFile("Other/n.md", [
+    "![a](/api/files/raw/Nb/_assets/notes/old.md/chart.png)",
+    `![b](/api/markdown-assets/raw?document=${encodeURIComponent("Nb/notes/old.md")}&asset=${encodeURIComponent("_assets/notes/old.md/chart2.png")})`,
+  ].join("\n"));
+  const plan = await planNotebookCleanup("Nb");
+  assert.deepEqual(plan.items.map((item) => item.path), ["Nb/_assets/notes/old.md/free.png"]);
+  assert.match(plan.notes.join("\n"), /2 images left out/);
+  await applyNotebookCleanup("Nb", plan.token);
+  assert.ok((await exists(path.join(folder, "chart.png"))) && (await exists(path.join(folder, "chart2.png"))) && !(await exists(path.join(folder, "free.png"))));
+}));
+
+test("when other notebooks' notes can't all be read, no image is offered", () => withTemporaryLibrary(["Nb", "Other"], async () => {
+  const image = path.join(notebookPath("Nb"), "_assets", "notes", "old.md", "chart.png");
+  await writeAt(image, "png");
+  await writeLibraryFile("Other/sub/n.md", "text");
+  const original = fsp.readdir as (...args: unknown[]) => Promise<unknown>;
+  mock.method(fsp, "readdir", ((target: unknown, ...rest: unknown[]) => String(target).endsWith(`${path.sep}sub`)
+    ? Promise.reject(Object.assign(new Error("denied"), { code: "EACCES" }))
+    : original(target, ...rest)) as never);
+  try {
+    const plan = await planNotebookCleanup("Nb");
+    assert.deepEqual(plan.items, []);
+    assert.match(plan.notes.join("\n"), /could not be read/);
+    await applyNotebookCleanup("Nb", plan.token);
+    assert.ok(await exists(image));
+  } finally { mock.restoreAll(); }
+}));
+
+test("an image a note starts to show while Acknowledge applies is kept", () => withTemporaryLibrary(["Nb"], async () => {
+  const image = path.join(notebookPath("Nb"), "_assets", "notes", "old.md", "chart.png");
+  await writeAt(image, "png");
+  await writeAt(transcriptPath("Nb", ["audio", "memo.m4a"]), seeded("transcript"));
+  const plan = await planNotebookCleanup("Nb");
+  assert.equal(plan.items.length, 2);
+  // The transcript goes first; the note is saved with the image right then.
+  onFirst("rm", () => true, () => writeLibraryFile("Nb/n.md", "# N\n\n![](_assets/notes/old.md/chart.png)\n"));
+  try {
+    const result = await applyNotebookCleanup("Nb", plan.token);
+    assert.ok(await exists(image));
+    assert.match(result.problems.join("\n"), /is shown by a note now/);
+    assert.equal(result.outcomes.held, 1);
+  } finally { mock.restoreAll(); }
+}));
+
+/** A notebook tethered to a .bib outside it, which then goes missing; its folder stays. */
+async function tetheredToMissing(outside: string) {
+  const bib = path.join(outside, "refs.bib");
+  await writeFile(bib, "@article{a, title={A}}\n");
+  await tetherBibFile("Nb", bib, { prefer: "library" });
+  resetBibTethers();
+  await rm(bib);
+  return bib;
+}
+
+test("a tether is kept when its file returns, or another file is tethered, between the plan and the removal", () => withTemporaryLibrary(["Nb"], async () => {
+  const outside = await mkdtemp(path.join(os.tmpdir(), "libera-bib-"));
+  try {
+    const bib = await tetheredToMissing(outside);
+    const plan = await planNotebookCleanup("Nb");
+    assert.equal(plan.items.length, 1);
+    const lock = (args: unknown[]) => String(args[0]).includes("reflib-");
+    onFirst("open", lock, () => writeFile(bib, "@article{a, title={A}}\n"));
+    try {
+      const result = await applyNotebookCleanup("Nb", plan.token);
+      assert.equal(result.outcomes.held, 1);
+      assert.deepEqual(await readTetherTarget("Nb"), { absolutePath: bib });
+    } finally { mock.restoreAll(); resetBibTethers(); }
+    // Missing again; this time another window points the tether at a different file just before the lock is taken (its state file is rewritten; tethering in process would queue behind this lock).
+    await rm(bib);
+    const other = path.join(outside, "other.bib");
+    await writeFile(other, "@article{b, title={B}}\n");
+    const second = await planNotebookCleanup("Nb");
+    assert.equal(second.items.length, 1);
+    onFirst("open", lock, async () => {
+      const state = JSON.parse(await readFile(bibTetherStatePath("Nb"), "utf8")) as { target: { kind: string; path: string } };
+      state.target = { kind: "absolute", path: other };
+      await writeFile(bibTetherStatePath("Nb"), JSON.stringify(state));
+    });
+    try {
+      const result = await applyNotebookCleanup("Nb", second.token);
+      assert.equal(result.outcomes.held, 1);
+      assert.deepEqual(await readTetherTarget("Nb"), { absolutePath: other });
+    } finally { mock.restoreAll(); resetBibTethers(); }
+  } finally { await rm(outside, { recursive: true, force: true }); }
+}));
+
+test("a tether whose folder can't be checked is not offered", () => withTemporaryLibrary(["Nb"], async () => {
+  const outside = await mkdtemp(path.join(os.tmpdir(), "libera-bib-"));
+  try {
+    await tetheredToMissing(outside);
+    assert.equal((await planNotebookCleanup("Nb")).items.length, 1, "with the folder readable it is");
+    for (const name of ["lstat", "stat"] as const) {
+      const original = fsp[name] as (...args: unknown[]) => Promise<unknown>;
+      mock.method(fsp, name, ((target: unknown, ...rest: unknown[]) => isIn([target], outside)
+        ? Promise.reject(Object.assign(new Error("denied"), { code: "EACCES" }))
+        : original(target, ...rest)) as never);
+    }
+    try {
+      const plan = await planNotebookCleanup("Nb");
+      assert.deepEqual(plan.items, []);
+      assert.match(plan.notes.join("\n"), /tether is left out/);
+    } finally { mock.restoreAll(); }
+  } finally { await rm(outside, { recursive: true, force: true }); }
+}));
+
+test("a removal that can't be done is not counted as done", () => withTemporaryLibrary(["Nb"], async () => {
+  const transcript = transcriptPath("Nb", ["audio", "memo.m4a"]);
+  await writeAt(transcript, seeded("transcript"));
+  await writeLibraryFile("Nb/lost.md", "x");
+  await setStarredFilePath("Nb/lost.md", true);
+  await gone("Nb/lost.md");
+  const plan = await planNotebookCleanup("Nb");
+  assert.equal(plan.items.length, 2);
+  const original = fsp.realpath as (...args: unknown[]) => Promise<unknown>;
+  mock.method(fsp, "realpath", ((target: unknown, ...rest: unknown[]) => isIn([target], path.dirname(transcript))
+    ? Promise.reject(Object.assign(new Error("denied"), { code: "EACCES" }))
+    : original(target, ...rest)) as never);
+  try {
+    const result = await applyNotebookCleanup("Nb", plan.token);
+    assert.deepEqual(result.outcomes, { removed: 1, alreadyAbsent: 0, unreadable: 1, held: 0 });
+    assert.equal(result.cleared, 1, "only the star's finding is cleared");
+    assert.ok(await exists(transcript));
+  } finally { mock.restoreAll(); }
 }));

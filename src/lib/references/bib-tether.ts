@@ -952,25 +952,43 @@ export async function recreateTetheredFile(notebook: string) {
   return requestTetherSync(notebook, { recreate: true, deletions: "restore" });
 }
 
-/** Stop syncing. The file and the library stay as they are. */
-export async function untetherBibFile(notebook: string) {
+/** The tether's target, as `readTetherTarget` reports it. */
+export type TetherTargetInfo = { libraryPath: string } | { absolutePath: string };
+
+/**
+ * Stop syncing. The file and the library stay as they are. With `confirm`, the
+ * tether is read again under the state file's lock and removed only if
+ * `confirm` agrees with what is there now (Acknowledge: still the tether it
+ * was shown, still to a missing file); otherwise nothing changes and this is
+ * false.
+ */
+export async function untetherBibFile(notebook: string, confirm?: (target: TetherTargetInfo | null) => boolean | Promise<boolean>): Promise<boolean> {
   const runtime = registry.runtimes.get(notebook);
-  if (runtime) {
+  const teardown = () => {
+    if (!runtime) return;
     stopWatching(runtime);
     clearTimer(runtime.libraryTimer);
     resetRetry(runtime);
-  }
+  };
+  if (!confirm) teardown();
+  let removed = false;
   if (await pathExists(notebookPath(notebook))) {
-    await withReferenceFileLock(bibTetherStatePath(notebook), () => rm(bibTetherStatePath(notebook), { force: true }));
-  }
-  if (runtime) {
-    stopWatching(runtime);
-    clearTimer(runtime.libraryTimer);
-    resetRetry(runtime);
-  }
+    await withReferenceFileLock(bibTetherStatePath(notebook), async () => {
+      if (confirm) {
+        let config: TetherConfig | null;
+        try { config = await readConfig(notebook); } catch { return; }
+        if (!(await confirm(config ? targetInfo(notebook, config) : null))) return;
+      }
+      await rm(bibTetherStatePath(notebook), { force: true });
+      removed = true;
+    });
+  } else removed = !confirm;
+  if (!removed) return false;
+  teardown();
   registry.runtimes.delete(notebook);
   registry.tethered.set(notebook, false);
   publishReferenceEvent({ type: "tether", notebook, status: null });
+  return true;
 }
 
 /**
@@ -1085,7 +1103,10 @@ export async function readTetherTarget(notebook: string): Promise<{ libraryPath:
   let config: TetherConfig | null;
   try { config = await readConfig(notebook); }
   catch (error) { return { damaged: error instanceof Error ? error.message : String(error) }; }
-  if (!config) return null;
+  return config ? targetInfo(notebook, config) : null;
+}
+
+function targetInfo(notebook: string, config: TetherConfig): TetherTargetInfo {
   return config.target.kind === "absolute" ? { absolutePath: config.target.path } : { libraryPath: displayPath(notebook, config.target) };
 }
 
