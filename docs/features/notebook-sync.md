@@ -168,6 +168,13 @@ The [lifecycle review](../audits/2026-11-01-sync-lifecycle-review.md) preserves 
 
 The [transition review](../audits/2026-11-01-sync-transition-review.md) adds [eight standalone scenarios](../../scripts/collab/audit/sync-transition-review.mjs) for G30–G34: six fail and two controls pass. Those findings remain open. The 38 selected existing tests for lifecycle, tree events, takedown, albums and the previous lifecycle fixes still pass; their narrower coverage does not include these new transitions.
 
+## Shared tree identity in the window
+
+- **A row carries a file ID only when its bytes are verified.** `attachSharedFileIds` (`src/lib/collab/tree-file-ids.ts`) gives a shared file's row the manifest file ID only when the working copy holds that entry's bytes (a blob's SHA-256 is the entry's `blobHash`, a document's bytes are the host's live text); equal size proves nothing. Checked copies are remembered by file, size and modification time, so an unchanged copy is not read again, and an online-only placeholder is never read to check it. A row without a verified ID has `fileIdState` "mismatch" (the listing answered and the path holds something else, or the disk is behind sync) or "unknown" (no answer within 3 s).
+- **Move, rename and delete from the UI need the ID.** `/api/files` refuses them for a shared file without one ("still being brought up to date by sync") and sends it to the host as `expectedFileId`. Server-side callers that resolve the ID from the manifest themselves are not affected.
+- **Refreshes.** A read that could not check ("unknown") keeps the ID the shown row had; a read that checked and found another file ("mismatch") drops it. A reused path never inherits the old identity. The incremental metadata read verifies only the paths it was asked for.
+- **Remote moves follow the file, not the path.** A collaborator's move retargets an open tab, draft and ink only when the file at the destination is verified to be the event's file ID; if another file took the name, the file is found by ID in the manifest (`GET /api/files?notebook=&fileId=`). A tab known to be another file stays where it is. A move whose destination has not arrived or cannot be verified is kept by file ID and tried again on the next `tree-changed` or `files-changed` batch (no timer); a later move of the same file continues from where the kept one began. Confirmed moves also update saved workspaces through `runFileChange`.
+
 ## Same-account sign-in conditions
 
 Account sign-in and notebook membership are separate. Signing in through a device grant does not restore a removed membership, join an arbitrary shared folder, or grant permission from another server/account's marker.

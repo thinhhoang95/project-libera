@@ -159,9 +159,18 @@ export type LiberaFileNode = {
   /**
    * The shared notebook's file id for this path, when the host listed it at
    * the time the tree was built. Rename and delete send it so a path that
-   * another file has taken over is refused instead of acted on.
+   * another file has taken over is refused instead of acted on. In a shared
+   * notebook it is set only when the row's bytes were verified to be that
+   * manifest entry (never by size alone).
    */
   fileId?: string;
+  /**
+   * A shared file's row without a verified id: "mismatch" when the host's
+   * listing answered and this path does not hold that entry's bytes (another
+   * file, or the disk is behind sync), "unknown" when no answer came in time.
+   * A later read keeps the earlier id on "unknown" and drops it on "mismatch".
+   */
+  fileIdState?: "mismatch" | "unknown";
 };
 
 export type LiberaFolderNode = {

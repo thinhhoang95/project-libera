@@ -125,7 +125,9 @@ test("finding 1: file ids attach only where the listing agrees with the node, an
     entry("Shared/sub/c.png", "id-c", { size: 9 }),
     entry("Shared/sub", "id-folder", { kind: "folder" }),
   ];
-  await attachSharedFileIds([book, notebookNode("Local", [file("Local", "x.md")])], listing, (name) => name === "Shared");
+  // Bytes are compared by the real verifier (see shared-tree-identity-integrity.test.ts); here a size comparison stands in for it.
+  const sameSize = async (listed: FileListEntry, node: LiberaFileNode) => listed.size === undefined || listed.size === node.size;
+  await attachSharedFileIds([book, notebookNode("Local", [file("Local", "x.md")])], listing, (name) => name === "Shared", undefined, sameSize);
   const byPath = (path: string) => {
     const find = (list: unknown[]): LiberaFileNode | undefined => { for (const node of list as (LiberaFileNode | { kind: "folder"; children: unknown[] })[]) { if (node.kind === "file" && node.path === path) return node; if (node.kind === "folder") { const found = find(node.children); if (found) return found; } } return undefined; };
     return find(book.children);
@@ -144,7 +146,7 @@ test("finding 1: file ids attach only where the listing agrees with the node, an
   assert.equal((slow.children[0] as LiberaFileNode).fileId, undefined, "a hung host does not hold the tree");
 
   const standalone = [file("Shared", "a.pdf", { size: 5 })];
-  attachFileIds(standalone, [entry("Shared/a.pdf", "x", { size: 5 })]);
+  await attachFileIds(standalone, [entry("Shared/a.pdf", "x", { size: 5 })], sameSize);
   assert.equal(standalone[0].fileId, "x");
 });
 

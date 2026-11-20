@@ -36,12 +36,39 @@ function share(previous: unknown, next: unknown): unknown {
 }
 
 /**
+ * A shared file's row whose id the read could not check (no listing in time:
+ * fileIdState "unknown") keeps the id the shown row had. That id is the one the
+ * host checked the row against, and the host still refuses an action on a path
+ * another file has taken over. A row the listing answered for without a match
+ * ("mismatch") keeps nothing: a reused path never inherits the old identity.
+ */
+export function inheritUnknownFileIds(before: Iterable<LiberaFileNode>, fresh: Iterable<LiberaFileNode>) {
+  const earlier = new Map<string, LiberaFileNode>();
+  for (const file of before) if (file.fileId) earlier.set(file.path, file);
+  if (!earlier.size) return;
+  for (const file of fresh) {
+    if (file.fileId || file.fileIdState !== "unknown") continue;
+    const shown = earlier.get(file.path);
+    if (shown?.fileId) file.fileId = shown.fileId;
+  }
+}
+
+function* filesOf(nodes: readonly LiberaTreeNode[]): Generator<LiberaFileNode> {
+  for (const node of nodes) {
+    if (node.kind === "file") yield node;
+    else yield* filesOf(node.children);
+  }
+}
+
+/**
  * The tree to show after reading `next`: `previous` itself when the content is
  * the same, otherwise `next` with every unchanged notebook, folder and file
  * keeping its old object, so memoized sidebar rows skip them.
  */
 export function mergeTree(previous: LiberaTree | null | undefined, next: LiberaTree): LiberaTree {
-  return previous ? share(previous, next) as LiberaTree : next;
+  if (!previous) return next;
+  inheritUnknownFileIds(previous.notebooks.flatMap((notebook) => [...filesOf(notebook.children)]), next.notebooks.flatMap((notebook) => [...filesOf(notebook.children)]));
+  return share(previous, next) as LiberaTree;
 }
 
 function newerDate(left: string, right: string) {
@@ -116,6 +143,8 @@ export function applyFileMetadata(tree: LiberaTree, results: readonly FileMetada
     const { linkDestinations } = metadata;
     const { linkedFilePaths: _fresh, ...bare } = metadata.node;
     void _fresh;
+    // The read's own verdict on the row's identity wins; an unanswered check keeps the shown id.
+    if (!bare.fileId && bare.fileIdState === "unknown" && shown.fileId) bare.fileId = shown.fileId;
     let node: LiberaFileNode = bare;
     if (linkDestinations) {
       const linked = new Set<string>();

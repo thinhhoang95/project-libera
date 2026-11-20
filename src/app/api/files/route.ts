@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/api";
 import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
-import { copyFileIntoSharedDirectory, createSharedMarkdownFile, deleteSharedFile, moveSharedFile, saveSharedFileText } from "@/lib/collab/shared-writes";
+import { copyFileIntoSharedDirectory, createSharedMarkdownFile, deleteSharedFile, listSharedEntries, moveSharedFile, saveSharedFileText } from "@/lib/collab/shared-writes";
+import { attachSharedFileIdTo, sharedPathOfFileId } from "@/lib/collab/tree-file-ids";
 import { StorageError } from "@/lib/storage/errors";
 import { assertSafeSegment, splitDirectoryPath, splitFilePath } from "@/lib/storage/paths";
 import { assertLocalFileIdentity, MoveCommittedError } from "@/lib/storage/files";
@@ -27,6 +28,18 @@ function handleError(error: unknown) {
 }
 
 /**
+ * A rename, move or delete of a shared file from the UI must name the file it
+ * was shown (a verified file id), so the host can refuse when the path now
+ * holds another file. A row without one (its bytes not yet verified against the
+ * manifest, or no listing in time) is refused, never acted on by path alone.
+ */
+function requireSharedFileId(path: string, fileId: string | undefined, action: string) {
+  if (fileId) return;
+  const name = path.split("/").at(-1) || path;
+  throw new StorageError(`${name} is still being brought up to date by sync, so it cannot be ${action} yet. Try again once sync has caught up.`, 409);
+}
+
+/**
  * The move from one notebook to another is the migration's (reviewed, crash
  * safe, with the references it needs); the direct move stays inside a notebook.
  */
@@ -44,8 +57,20 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const filePath = request.nextUrl.searchParams.get("path") ?? "";
-    return NextResponse.json(await readLiberaFile(filePath, { requireContent: true }));
+    let filePath = request.nextUrl.searchParams.get("path") ?? "";
+    // A shared file by identity: where the manifest lists it now (a moved file whose path changed again).
+    const fileId = request.nextUrl.searchParams.get("fileId");
+    const notebook = request.nextUrl.searchParams.get("notebook");
+    if (fileId && notebook) {
+      if (!isSharedNotebookPath(`${notebook}/.`)) throw new StorageError("Files are looked up by id only in shared notebooks.", 400);
+      const found = await sharedPathOfFileId(notebook, fileId, listSharedEntries);
+      if (!found) throw new StorageError("That file is no longer in the shared notebook.", 410);
+      filePath = found;
+    }
+    const payload = await readLiberaFile(filePath, { requireContent: true });
+    // A shared file's id is set only when the bytes read here are verified to be that manifest entry.
+    if (isSharedNotebookPath(filePath)) await attachSharedFileIdTo(payload.file, listSharedEntries);
+    return NextResponse.json(payload);
   } catch (error) {
     return handleError(error);
   }
@@ -126,7 +151,8 @@ export async function PATCH(request: NextRequest) {
 
     if (body.destinationDirectory) {
       if (isSharedNotebookPath(body.path ?? "")) {
-        return NextResponse.json(await moveSharedFile(body.path ?? "", body.destinationDirectory, body.destinationName, { expectedFileId: body.fileId }));
+        requireSharedFileId(body.path ?? "", expectedFileId, "moved");
+        return NextResponse.json(await moveSharedFile(body.path ?? "", body.destinationDirectory, body.destinationName, { expectedFileId }));
       }
       if (isSharedNotebookPath(body.destinationDirectory)) throw new StorageError("Moving files between shared and other notebooks is not supported. Use Copy to create a separate file in the destination notebook.", 409);
       assertSameNotebook(body.path ?? "", splitDirectoryPath(body.destinationDirectory).notebook);
@@ -142,10 +168,11 @@ export async function PATCH(request: NextRequest) {
 
     if (body.destinationNotebook || body.destinationName) {
       if (isSharedNotebookPath(body.path ?? "")) {
+        requireSharedFileId(body.path ?? "", expectedFileId, "renamed");
         const current = splitFilePath(body.path ?? "");
         const notebook = body.destinationNotebook ? assertSafeSegment(body.destinationNotebook, "Notebook name") : current.notebook;
         const parent = notebook === current.notebook ? current.pathParts.slice(0, -1) : [];
-        return NextResponse.json(await moveSharedFile(body.path ?? "", [notebook, ...parent].join("/"), body.destinationName, { expectedFileId: body.fileId }));
+        return NextResponse.json(await moveSharedFile(body.path ?? "", [notebook, ...parent].join("/"), body.destinationName, { expectedFileId }));
       }
       if (isSharedNotebookPath(body.destinationNotebook ?? "")) throw new StorageError("Moving files between shared and other notebooks is not supported. Use Copy to create a separate file in the destination notebook.", 409);
       assertSameNotebook(body.path ?? "", body.destinationNotebook ?? "");
@@ -178,7 +205,10 @@ export async function DELETE(request: NextRequest) {
   try {
     const filePath = request.nextUrl.searchParams.get("path") ?? "";
     const fileId = request.nextUrl.searchParams.get("fileId") || undefined;
-    if (isSharedNotebookPath(filePath)) return NextResponse.json(await deleteSharedFile(filePath, { expectedFileId: fileId }));
+    if (isSharedNotebookPath(filePath)) {
+      requireSharedFileId(filePath, fileId, "deleted");
+      return NextResponse.json(await deleteSharedFile(filePath, { expectedFileId: fileId }));
+    }
     // A local file: the one the person chose, not another that took its path (deleteFile's own records are not touched here).
     if (fileId) await assertLocalFileIdentity(filePath, fileId);
     return NextResponse.json(await deleteFile(filePath));

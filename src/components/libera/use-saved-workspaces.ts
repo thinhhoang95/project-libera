@@ -382,6 +382,13 @@ export function useSavedWorkspaces(options: Options) {
       try { return await task; }
       finally { fileChanges.current.delete(task); }
     },
+    /** The moves among `moves` that saved workspaces may follow: not those whose `from` is held by a saved tab known to be another file. */
+    movesForSavedWorkspaces: <M extends { from: string; fileId?: string }>(moves: M[]): M[] => {
+      const library = snapshot();
+      const sessions = [library.librarySession, ...library.workspaces.map((workspace) => workspace.session)];
+      return moves.filter((move) => !move.fileId || !sessions.some((session) => session?.tabs.some((tab) =>
+        !tab.gallery && !tab.page && tab.file.path === move.from && tab.file.fileId !== undefined && tab.file.fileId !== move.fileId)));
+    },
     switchWorkspace: (id: string | null) => commit((value) => value, id),
     saveWorkspace: (workspace: Omit<SavedWorkspace, "session">) => {
       const exists = libraryRef.current.workspaces.some((item) => item.id === workspace.id);
