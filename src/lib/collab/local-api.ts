@@ -409,6 +409,19 @@ export interface FileBlobResponse {
 export interface FileOpResult {
   paths: string[];
   fileId?: string;
+  /**
+   * For a rename or delete: exactly what the host committed, per manifest
+   * entry (Libera paths). Companions (ink, transcript, Python code) are listed
+   * like files. `to` is null for a removal. Absent when the operation was a
+   * no-op repeat or not a rename or delete.
+   */
+  moves?: FileOpMove[];
+}
+
+export interface FileOpMove {
+  fileId: string;
+  from: string;
+  to: string | null;
 }
 
 /**
@@ -464,6 +477,19 @@ export interface FileOpRequest {
   /** The visible identity/version reviewed by a storage mutation. */
   expectedFileId?: string;
   expectedBlobHash?: string;
+  /**
+   * For a folder rename or delete: the manifest IDs of every entry under the
+   * folder (not the folder's own entry) as the person reviewed them. The host
+   * refuses if the folder holds other entries now.
+   */
+  expectedDescendantIds?: string[];
+  /**
+   * For a companion save (an ink file under `_ink/<owner>/`, a `<recording>.transcript`):
+   * the owner file's ID as read. The host refuses when the owner is gone from
+   * that path or is another file now; with or without it, it never creates a
+   * companion for an owner that is not in the manifest.
+   */
+  ownerFileId?: string;
   /** Seed a new live PDF before publishing its manifest entry. */
   pdfSeed?: import("./protocol/pdf").PdfImportRequest;
 }

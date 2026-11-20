@@ -114,8 +114,19 @@ export interface PersistInput {
   /** Every removed stable identity, including ordinary blobs and folders. */
   removedFileIds?: string[];
   removedPdfFiles?: Array<{ id: string; fileId: string }>;
+  /** Manifest updates: documents the update newly lists; they must exist and be live when it commits. */
+  requiredDocIds?: string[];
+  /** Manifest updates: every document id the update adds (derived PDF ids included); none may be deleted. */
+  addedDocIds?: string[];
   /** Client updates are validated for this role; lock it through commit. */
   requiredAccess?: { projectId: string; role: Role };
+}
+
+/** A manifest update names a document that was deleted or never belonged to the project after it was validated (audit S60). */
+export class ManifestReferenceChangedError extends HttpError {
+  constructor(message: string) {
+    super("conflict", message);
+  }
 }
 
 export class UpdateAccessChangedError extends HttpError {
@@ -137,8 +148,11 @@ export class ProjectClosingError extends HttpError {
  * commit in order even if two writers ever raced. Returns null when the
  * document no longer exists.
  *
- * Lock order (shared with guarded takedown in api/projects.ts, which deadlocked
- * when the two differed): the project's document rows first, then memberships.
+ * Lock order, one for every project mutation (this, takedown and its fence in
+ * api/projects.ts, REST document deletion in api/documents.ts): the project's
+ * manifest row, then its other document rows sorted by id, then memberships.
+ * A manifest update locks every content row it references or retires before
+ * it looks at memberships (audit S61).
  */
 export async function persistUpdate(db: Kysely<DB>, input: PersistInput): Promise<number | null> {
   return db.transaction().execute(async (trx) => {
@@ -154,6 +168,24 @@ export async function persistUpdate(db: Kysely<DB>, input: PersistInput): Promis
     // that got the row lock afterwards sees it (and one before it commits first).
     const project = await trx.selectFrom("projects").select("closing_at").where("id", "=", row.project_id).executeTakeFirst();
     if (closingFenceActive(project?.closing_at)) throw new ProjectClosingError();
+    if (input.subdoc === "manifest") {
+      // The documents this update lists or retires, locked in id order before memberships.
+      // Takedown and REST deletion hold them too, so a reference validated earlier
+      // cannot have been deleted since (audit S60) and the lock order is one (S61).
+      const wanted = [...new Set([...(input.requiredDocIds ?? []), ...(input.addedDocIds ?? []), ...(input.removedDocIds ?? [])])].sort();
+      if (wanted.length) {
+        const rows = await trx.selectFrom("documents").select(["id", "deleted_at"])
+          .where("project_id", "=", row.project_id).where("id", "in", wanted).orderBy("id").forUpdate().execute();
+        const byId = new Map(rows.map((doc) => [doc.id, doc]));
+        for (const id of input.requiredDocIds ?? []) {
+          const doc = byId.get(id);
+          if (!doc || doc.deleted_at) throw new ManifestReferenceChangedError(`files: document ${id} was deleted before this change could be saved.`);
+        }
+        for (const id of input.addedDocIds ?? []) {
+          if (byId.get(id)?.deleted_at) throw new ManifestReferenceChangedError("A deleted document cannot be added back. Create a new file to restore its text.");
+        }
+      }
+    }
     if (input.requiredAccess) {
       const member = await trx.selectFrom("memberships").select("role")
         .where("project_id", "=", input.requiredAccess.projectId)

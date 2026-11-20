@@ -345,6 +345,7 @@ export async function writeInk(relativePath: string, chunk: string, opsValue: un
     // A follower's disk file may lag every successful save. Merge against
     // the host's acknowledged blob and fence the replacement by its identity.
     const inkPath = inkLibraryPath(notebook, pathParts, fileName);
+    let ownerFileId: string | undefined;
     const authority = shared ? await (await import("@/lib/collab/shared-writes")).readSharedBlob(inkPath) : null;
     if (authority) {
       own = authority.contentBase64 === null ? undefined : normalizeInkAuthorFile(JSON.parse(Buffer.from(authority.contentBase64, "base64").toString("utf8"))) ?? undefined;
@@ -365,6 +366,8 @@ export async function writeInk(relativePath: string, chunk: string, opsValue: un
       // Authors whose files have not reached this disk yet: the manifest lists them under the drawing's ink folder.
       const known = new Set([author.key, ...others.map((file) => file.author.key)]);
       const listed = await listSharedEntries(notebook).catch(() => []);
+      // The drawing's owner as the manifest has it now: the save is bound to this file (see writeSharedBlob).
+      ownerFileId = listed.find((entry) => entry.kind !== "folder" && entry.path === libraryPath)?.fileId;
       const folderPrefix = `${inkLibraryPath(notebook, pathParts)}/`;
       const arrived: string[] = [];
       for (const entry of listed) {
@@ -400,9 +403,10 @@ export async function writeInk(relativePath: string, chunk: string, opsValue: un
         // Shared notebooks are written through the host, which syncs the file.
         // Imported here: shared-writes reaches back into storage.
         const { writeSharedBlob } = await import("@/lib/collab/shared-writes");
-        await writeSharedBlob(inkPath, new Uint8Array(bytes), authority?.fileId
-          ? { expectedFileId: authority.fileId, expectedBlobHash: authority.blobHash }
-          : { createOnly: true });
+        await writeSharedBlob(inkPath, new Uint8Array(bytes), {
+          ...(authority?.fileId ? { expectedFileId: authority.fileId, expectedBlobHash: authority.blobHash } : { createOnly: true }),
+          ...(ownerFileId ? { ownerFileId } : {}),
+        });
       } else {
         await mkdir(folder, { recursive: true });
         await publishInkFile(target, written);

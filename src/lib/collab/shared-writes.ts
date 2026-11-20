@@ -509,7 +509,7 @@ export async function saveSharedFileText(liberaPath: string, content: string, op
  * existing one, as a manifest blob. A new text file (.md, .tex, …) becomes a
  * document instead. Returns the Libera paths written.
  */
-export async function writeSharedBlob(liberaPath: string, bytes: Uint8Array, options: SharedWriteOptions & { createOnly?: boolean; replaceOnly?: boolean; expectedFileId?: string; expectedBlobHash?: string; pdfSeed?: import("./protocol/pdf").PdfImportRequest } = {}): Promise<FileOpResult> {
+export async function writeSharedBlob(liberaPath: string, bytes: Uint8Array, options: SharedWriteOptions & { createOnly?: boolean; replaceOnly?: boolean; expectedFileId?: string; expectedBlobHash?: string; ownerFileId?: string; pdfSeed?: import("./protocol/pdf").PdfImportRequest } = {}): Promise<FileOpResult> {
   const target = manifestTarget(liberaPath);
   if (bytes.byteLength > MAX_STAGED_BLOB_BYTES) {
     throw new SharedWriteError(
@@ -522,8 +522,10 @@ export async function writeSharedBlob(liberaPath: string, bytes: Uint8Array, opt
   const createOnly = { ...(options.createOnly ? { createOnly: true } : {}), ...(options.replaceOnly ? { replaceOnly: true } : {}),
     ...(options.expectedFileId ? { expectedFileId: options.expectedFileId } : {}),
     ...(options.expectedBlobHash ? { expectedBlobHash: options.expectedBlobHash } : {}), ...(options.pdfSeed ? { pdfSeed: options.pdfSeed } : {}) };
+  // A companion save (ink, transcript) names the owner file it was made for.
+  if (options.ownerFileId) Object.assign(createOnly, { ownerFileId: options.ownerFileId });
   if (bytes.byteLength <= MAX_SHARED_BLOB_BYTES) {
-    const contentBase64 = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
+    const contentBase64 =Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
     return host(liberaPath, () => fileOp(target.projectId, { op: "write-blob", path: target.path, contentBase64, ...createOnly }, config));
   }
   // Too large for a request: hand the host a file in the notebook's own
@@ -853,9 +855,11 @@ export async function renameSharedFolder(relativePath: string, name: string, opt
   // A name free in the manifest can still hold records of earlier files on this computer: refused before the host renames, as a local rename is.
   if (sourcePath !== nextPath) await assertNoLeftoverFolderRecords(current.notebook, parts);
   // The files under the folder, as the manifest has them before the rename: their records move with them below.
-  const files = sourcePath === nextPath ? [] : (await listSharedEntries(current.notebook, options)).filter((entry) => entry.kind !== "folder" && entry.path.startsWith(`${sourcePath}/`));
+  const reviewed = sourcePath === nextPath ? [] : (await listSharedEntries(current.notebook, options)).filter((entry) => entry.path.startsWith(`${sourcePath}/`));
+  const files = reviewed.filter((entry) => entry.kind !== "folder");
   const config = hostConfig(sourcePath, options);
-  await host(sourcePath, () => fileOp(source.projectId, { op: "rename", path: source.path, to: parts.join("/") }, config));
+  // The host renames the folder only if it still holds exactly the entries listed here.
+  await host(sourcePath, () => fileOp(source.projectId, { op: "rename", path: source.path, to: parts.join("/"), ...(sourcePath === nextPath ? {} : { expectedDescendantIds: reviewed.map((entry) => entry.fileId) }) }, config));
   // The manifest has renamed; the records kept on this computer follow, as for a local folder rename.
   // Every step runs, and what could not move is reported (the rename itself cannot be taken back).
   const stayed: string[] = [];
@@ -880,7 +884,9 @@ export async function deleteSharedFolder(relativePath: string, options: SharedWr
   const target = manifestTarget(liberaPath);
   await assertSharedDirectoryExists(itemPath(current.notebook, current.pathParts), liberaPath, "Folder was not found.", options);
   const config = hostConfig(liberaPath, options);
-  await host(liberaPath, () => fileOp(target.projectId, { op: "delete", path: target.path }, config));
+  // The host deletes the folder only if it still holds exactly the entries listed here.
+  const reviewed = (await listSharedEntries(current.notebook, options)).filter((entry) => entry.path.startsWith(`${liberaPath}/`));
+  await host(liberaPath, () => fileOp(target.projectId, { op: "delete", path: target.path, expectedDescendantIds: reviewed.map((entry) => entry.fileId) }, config));
   // The records kept on this computer go too, as in a local folder delete; each step runs and failures are reported (the host's deletion cannot be undone).
   const left: string[] = [];
   const cleanup = async (what: string, work: () => Promise<unknown>) => {

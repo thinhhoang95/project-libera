@@ -221,9 +221,11 @@ export interface CommandsTable {
   account_id: string;
   id: string;
   kind: string;
-  status: number;
+  /** Null while the command is claimed and its handler has not finished (migrations/012_command_claims.sql). */
+  status: number | null;
   result: Json<unknown>;
   created_at: CreatedAt;
+  claimed_at: CreatedAt;
 }
 
 export interface AuditLogTable {

@@ -12,7 +12,7 @@ import path from "node:path";
 
 import type * as Y from "yjs";
 
-import type { FileBlobResponse, FileListEntry, FileListResponse, FileOpRequest, FileOpResult, HostEvent, LocalAlbum, LocalAlbumPhoto, Reconciliation, UpdateAlbumRequest } from "../../../src/lib/collab/local-api";
+import type { FileBlobResponse, FileListEntry, FileListResponse, FileOpMove, FileOpRequest, FileOpResult, HostEvent, LocalAlbum, LocalAlbumPhoto, Reconciliation, UpdateAlbumRequest } from "../../../src/lib/collab/local-api";
 import type { Provenance } from "../../../src/lib/collab/protocol/actor";
 import type { ProjectClosingResponse } from "../../../src/lib/collab/protocol/api";
 import type { Role } from "../../../src/lib/collab/protocol/roles";
@@ -1626,7 +1626,11 @@ export class SharedProject {
   private ensureDoc(docId: string, fileId: string): void {
     const existing = this.docs.get(docId);
     if (existing) {
-      existing.fileId = fileId;
+      // A document belongs to one file id. A second entry naming it is a malformed manifest: keep the first binding.
+      if (existing.fileId !== fileId) {
+        this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: document ${docId} is listed under file ${fileId} but belongs to ${existing.fileId}; keeping the first`);
+        return;
+      }
       existing.hub.reviveDeleted();
       return;
     }
@@ -2845,7 +2849,29 @@ export class SharedProject {
     return entriesUnder(readManifest(doc).values(), `${INK_DIRECTORY}/${relative}`);
   }
 
-  private inkCompanionMoves(doc: Y.Doc, from: string, to: string, folder: boolean, now: number): ManifestEntry[] {
+  /**
+   * The companion planners return the moved entries, or nothing when there is
+   * nothing to move. Inferred moves (an outside rename) keep the lenient
+   * answer for an occupied or invalid destination; an explicit operation
+   * passes `strict` and is refused, naming the companion, before anything is
+   * published.
+   */
+  private companionBlocked(strict: boolean, what: string, from: string, to: string, why: string): ManifestEntry[] {
+    if (!strict) return [];
+    throw new ControlError(409, "conflict", `${from} was not renamed: its ${what} cannot move to ${to} (${why}). Nothing was changed.`);
+  }
+
+  /** Whether `key` is held in the manifest by an entry outside `ids`, or by a file above it. */
+  private slotTaken(entries: ManifestEntry[], key: string, ids: Set<string>): boolean {
+    const displayed = computeLayout(entries).paths;
+    return entries.some((entry) => {
+      if (ids.has(entry.fileId)) return false;
+      const other = manifestPathKey(displayed.get(entry.fileId) ?? entry.path);
+      return other === key || other.startsWith(`${key}/`) || (entry.kind !== "folder" && key.startsWith(`${other}/`));
+    });
+  }
+
+  private inkCompanionMoves(doc: Y.Doc, from: string, to: string, folder: boolean, now: number, strict = false): ManifestEntry[] {
     if (this.info.album || from === to) return [];
     const inside = (relative: string) => relative === INK_DIRECTORY || relative.startsWith(`${INK_DIRECTORY}/`);
     if (inside(from) || inside(to)) return [];
@@ -2865,10 +2891,10 @@ export class SharedProject {
       const other = manifestPathKey(shown(entry));
       return other === key || other.startsWith(`${key}/`) || (entry.kind !== "folder" && key.startsWith(`${other}/`));
     });
-    if (taken) return [];
+    if (taken) return this.companionBlocked(strict, "ink", from, to, `${inkTo} is already in use`);
     const depth = inkFrom.split("/").length;
     const moved = moving.map((entry) => ({ ...entry, path: [inkTo, ...shown(entry).split("/").slice(depth)].join("/"), updatedAt: now }));
-    return moved.every((entry) => isShareablePath(entry.path)) ? moved : [];
+    return moved.every((entry) => isShareablePath(entry.path)) ? moved : this.companionBlocked(strict, "ink", from, to, "the new ink path is not allowed");
   }
 
   /**
@@ -2882,16 +2908,15 @@ export class SharedProject {
   }
 
   /** The renamed recording's transcript at its new path; none when the destination is occupied. */
-  private transcriptCompanionMoves(doc: Y.Doc, from: string, to: string, now: number): ManifestEntry[] {
+  private transcriptCompanionMoves(doc: Y.Doc, from: string, to: string, now: number, strict = false): ManifestEntry[] {
     if (from === to || !AUDIO_EXTENSIONS.has(path.posix.extname(to).toLowerCase())) return [];
     const entries = [...readManifest(doc).values()];
     const moving = this.transcriptCompanion(entries, from);
-    if (moving.length !== 1) return [];
+    if (moving.length === 0) return [];
+    if (moving.length !== 1) return this.companionBlocked(strict, "transcript", from, to, "it is not one file");
     const next = `${to}.transcript`;
-    const key = manifestPathKey(next);
-    const displayed = computeLayout(entries).paths;
-    const taken = entries.some((entry) => entry.fileId !== moving[0].fileId && manifestPathKey(displayed.get(entry.fileId) ?? entry.path) === key);
-    if (taken || !isShareablePath(next)) return [];
+    if (this.slotTaken(entries, manifestPathKey(next), new Set([moving[0].fileId]))) return this.companionBlocked(strict, "transcript", from, to, `${next} is already in use`);
+    if (!isShareablePath(next)) return this.companionBlocked(strict, "transcript", from, to, `${next} is not an allowed path`);
     return [{ ...moving[0], path: next, updatedAt: now }];
   }
 
@@ -2906,17 +2931,41 @@ export class SharedProject {
   }
 
   /** The renamed note's Python code at its new path; none when the destination is occupied. */
-  private pythonCompanionMoves(doc: Y.Doc, from: string, to: string, now: number): ManifestEntry[] {
+  private pythonCompanionMoves(doc: Y.Doc, from: string, to: string, now: number, strict = false): ManifestEntry[] {
     if (from === to || !MARKDOWN_EXTENSIONS.has(path.posix.extname(to).toLowerCase())) return [];
     const entries = [...readManifest(doc).values()];
     const moving = this.pythonCompanion(entries, from);
-    if (moving.length !== 1) return [];
+    if (moving.length === 0) return [];
+    if (moving.length !== 1) return this.companionBlocked(strict, "Python code", from, to, "it is not one file");
     const next = pythonSidecarPath(`n/${to}`).split("/").slice(1).join("/");
-    const key = manifestPathKey(next);
-    const displayed = computeLayout(entries).paths;
-    const taken = entries.some((entry) => entry.fileId !== moving[0].fileId && manifestPathKey(displayed.get(entry.fileId) ?? entry.path) === key);
-    if (taken || !isShareablePath(next)) return [];
+    if (this.slotTaken(entries, manifestPathKey(next), new Set([moving[0].fileId]))) return this.companionBlocked(strict, "Python code", from, to, `${next} is already in use`);
+    if (!isShareablePath(next)) return this.companionBlocked(strict, "Python code", from, to, `${next} is not an allowed path`);
     return [{ ...moving[0], path: next, updatedAt: now }];
+  }
+
+  /**
+   * The Python code of every note under a renamed folder, at the slots the
+   * notes will have (`_assets/<new prefix>/…`). Those slots are disjoint from
+   * the folder's own prefix, so the folder's entries do not carry them.
+   */
+  private pythonFolderMoves(doc: Y.Doc, from: string, to: string, now: number, strict = false): ManifestEntry[] {
+    const entries = [...readManifest(doc).values()];
+    const displayed = computeLayout(entries).paths;
+    const depth = from.split("/").length;
+    const moved: ManifestEntry[] = [];
+    for (const entry of entriesUnder(entries, from)) {
+      if (entry.kind === "folder") continue;
+      const shown = displayed.get(entry.fileId) ?? entry.path;
+      const next = [to, ...shown.split("/").slice(depth)].join("/");
+      moved.push(...this.pythonCompanionMoves(doc, shown, next, now, strict));
+    }
+    const slots = new Set<string>();
+    for (const entry of moved) {
+      const key = manifestPathKey(entry.path);
+      if (slots.has(key)) return this.companionBlocked(strict, "Python code", from, to, `two scripts would share ${entry.path}`);
+      slots.add(key);
+    }
+    return moved;
   }
 
   /**
@@ -3058,6 +3107,49 @@ export class SharedProject {
     return Promise.resolve({ entries: list });
   }
 
+  /**
+   * A folder rename or delete acts on what the person reviewed: when the
+   * request lists the descendant IDs it was confirmed with, the folder must
+   * hold exactly those now (it was not renamed away and replaced, nothing was
+   * added or removed). Nothing is changed otherwise. Absent list: no binding.
+   */
+  private assertReviewedDescendants(relative: string, selected: ManifestEntry[], reviewed: string[] | undefined): void {
+    if (reviewed === undefined || selected.length === 0) return;
+    const displayed = computeLayout(this.entries.values()).paths;
+    const own = manifestPathKey(relative);
+    const current = new Set(selected.filter((entry) => manifestPathKey(displayed.get(entry.fileId) ?? entry.path) !== own).map((entry) => entry.fileId));
+    const expected = new Set(reviewed);
+    if (current.size === expected.size && [...current].every((fileId) => expected.has(fileId))) return;
+    throw new ControlError(409, "conflict", `${relative} changed since you reviewed it: its files are not the ones you confirmed. Nothing was changed. Open the folder again and repeat the action.`);
+  }
+
+  /**
+   * The owner a companion save belongs to: `_ink/<owner>/<file>` for ink,
+   * `<recording>.transcript` for a transcript. The owner must be a file in
+   * the manifest now, and the one the caller read when it names an ID. A save
+   * for an owner that moved or was removed is refused instead of creating a
+   * companion at the old path (the caller re-reads the owner's current path).
+   */
+  private assertCompanionOwner(relative: string, ownerFileId: string | undefined): void {
+    if (this.info.album) return;
+    let owner: string | null = null;
+    let what = "";
+    const parts = relative.split("/");
+    if (parts[0] === INK_DIRECTORY && parts.length >= 3) {
+      owner = parts.slice(1, -1).join("/");
+      what = "ink";
+    } else if (parts[0] !== INK_DIRECTORY && relative.toLowerCase().endsWith(".transcript") && AUDIO_EXTENSIONS.has(path.posix.extname(relative.slice(0, -".transcript".length)).toLowerCase())) {
+      owner = relative.slice(0, -".transcript".length);
+      what = "transcript";
+    }
+    if (owner === null) return;
+    const files = entriesUnder(this.entries.values(), owner).filter((entry) => entry.kind !== "folder");
+    const displayed = computeLayout(this.entries.values()).paths;
+    const found = files.find((entry) => manifestPathKey(displayed.get(entry.fileId) ?? entry.path) === manifestPathKey(owner!));
+    if (!found) throw new ControlError(409, "conflict", `${owner} is not in this notebook at that path (it was moved or removed), so its ${what} was not saved. Reopen the file and try again.`);
+    if (ownerFileId !== undefined && found.fileId !== ownerFileId) throw new ControlError(409, "conflict", `${owner} is a different file now, so its ${what} was not saved. Reopen the file and try again.`);
+  }
+
   /** A name being created or renamed must leave room for its sidecar files (existing names are not re-judged). */
   private assertNewName(relative: string): void {
     const problem = manifestNewNameError(relative);
@@ -3091,7 +3183,11 @@ export class SharedProject {
           request.expectedBlobHash !== undefined && (selected.length !== 1 || selected[0].blobHash !== request.expectedBlobHash)) {
         throw new ControlError(409, "conflict", "This file changed since it was read. Refresh it before changing it.");
       }
+      if (request.op === "rename" || request.op === "delete") this.assertReviewedDescendants(relative, selected, request.expectedDescendantIds);
+      if (request.op === "write-blob" || request.op === "create-file") this.assertCompanionOwner(relative, request.ownerFileId);
       const paths: string[] = [];
+      // The exact committed change per manifest entry, for a rename or delete.
+      const moves: FileOpMove[] = [];
       const uploaded: string[] = [];
       // The file a create or a blob write produced or changed, for the caller to name it by.
       let resultFileId: string | undefined;
@@ -3179,6 +3275,7 @@ export class SharedProject {
               const next = [to, ...rest].join("/");
               if (!isShareablePath(next)) throw new ControlError(400, "bad-request", `${next} is not an allowed path.`);
               paths.push(visible, next);
+              moves.push({ fileId: entry.fileId, from: this.liberaPath(visible), to: this.liberaPath(next) });
               return { ...entry, path: next, updatedAt: now };
             });
             // A folder unless `relative` names a file (folders may have no entry of their own).
@@ -3187,26 +3284,28 @@ export class SharedProject {
               const file = moving.find((entry) => entry.kind !== "folder" && manifestPathKey(displayed.get(entry.fileId) ?? entry.path) === manifestPathKey(relative));
               if (file) this.assertRenameKeepsRecords(file, relative, to);
             }
+            // The companions (ink, transcript, Python code of the file, or of every note
+            // under a folder) are planned with the primary move: an occupied or invalid
+            // slot refuses the whole rename here, before anything is published.
+            const planDoc = this.manifestDoc();
+            const planned = [
+              ...this.inkCompanionMoves(planDoc, relative, to, folder, now, true),
+              ...(folder
+                ? this.pythonFolderMoves(planDoc, relative, to, now, true)
+                : [...this.transcriptCompanionMoves(planDoc, relative, to, now, true), ...this.pythonCompanionMoves(planDoc, relative, to, now, true)]),
+            ];
+            const before = computeLayout(readManifest(planDoc).values()).paths;
+            for (const entry of planned) {
+              paths.push(entry.path);
+              moves.push({ fileId: entry.fileId, from: this.liberaPath(before.get(entry.fileId) ?? entry.path), to: this.liberaPath(entry.path) });
+            }
             // A folder of many files is several transactions: one manifest update
             // over the server's limit would never sync.
             for (const [index, batch] of splitManifestBatches(updates, manifestEntryBytes).entries()) {
-              await this.writeManifest((map, doc) => {
+              await this.writeManifest((map) => {
                 for (const entry of batch) map.set(entry.fileId, entryRecord(entry));
                 if (index > 0) return;
-                for (const entry of this.inkCompanionMoves(doc, relative, to, folder, now)) {
-                  map.set(entry.fileId, entryRecord(entry));
-                  paths.push(entry.path);
-                }
-                if (!folder) {
-                  for (const entry of this.transcriptCompanionMoves(doc, relative, to, now)) {
-                    map.set(entry.fileId, entryRecord(entry));
-                    paths.push(entry.path);
-                  }
-                  for (const entry of this.pythonCompanionMoves(doc, relative, to, now)) {
-                    map.set(entry.fileId, entryRecord(entry));
-                    paths.push(entry.path);
-                  }
-                }
+                for (const entry of planned) map.set(entry.fileId, entryRecord(entry));
               }, { source: "typing" });
             }
             break;
@@ -3219,20 +3318,33 @@ export class SharedProject {
               throw new ControlError(404, "not-found", `${relative} is not in this notebook.`);
             }
             const displayed = computeLayout(this.entries.values()).paths;
+            // The Python code of every note being deleted (the file itself, or each note under
+            // a folder) lives under `_assets/<note path>`, outside the folder's prefix: it goes
+            // in the same committed set, so a note created at the same path later starts clean.
+            const planDoc = this.manifestDoc();
+            const planEntries = [...readManifest(planDoc).values()];
+            const planDisplayed = computeLayout(planEntries).paths;
+            const removedIds = new Set(removing.map((entry) => entry.fileId));
+            const extra = new Map<string, ManifestEntry>();
+            const addExtra = (entry: ManifestEntry) => { if (!removedIds.has(entry.fileId)) extra.set(entry.fileId, entry); };
+            for (const entry of removing) {
+              if (entry.kind === "folder") continue;
+              this.pythonCompanion(planEntries, planDisplayed.get(entry.fileId) ?? entry.path).forEach(addExtra);
+            }
+            this.transcriptCompanion(planEntries, relative).forEach(addExtra);
+            // Someone deleted it on purpose, so its ink goes too (archived on disk like the file).
+            this.inkCompanions(planDoc, relative).forEach(addExtra);
+            for (const entry of removing) moves.push({ fileId: entry.fileId, from: this.liberaPath(displayed.get(entry.fileId)!), to: null });
+            for (const entry of extra.values()) {
+              paths.push(entry.path);
+              moves.push({ fileId: entry.fileId, from: this.liberaPath(planDisplayed.get(entry.fileId) ?? entry.path), to: null });
+            }
             // Many entries are removed in several transactions (see rename).
             for (const [index, batch] of splitManifestBatches(removing, () => 256).entries()) {
-              await this.writeManifest((map, doc) => {
+              await this.writeManifest((map) => {
                 for (const entry of batch) map.delete(entry.fileId);
                 if (index > 0) return;
-                for (const entry of this.transcriptCompanion([...readManifest(doc).values()], relative)) {
-                  map.delete(entry.fileId);
-                  paths.push(entry.path);
-                }
-                // Someone deleted it on purpose, so its ink goes too (archived on disk like the file).
-                for (const entry of this.inkCompanions(doc, relative)) {
-                  map.delete(entry.fileId);
-                  paths.push(entry.path);
-                }
+                for (const fileId of extra.keys()) map.delete(fileId);
               }, { source: "typing" });
             }
             paths.push(...removing.map((entry) => displayed.get(entry.fileId)!));
@@ -3247,7 +3359,7 @@ export class SharedProject {
         // change; rebuild the resolvePath index here, or a file just created
         // would not resolve (the caller's next request is often an edit to it).
         this.ctx.layoutChanged(this.info.projectId);
-        return { paths: paths.map((item) => this.liberaPath(item)), ...(resultFileId ? { fileId: resultFileId } : {}) };
+        return { paths: paths.map((item) => this.liberaPath(item)), ...(resultFileId ? { fileId: resultFileId } : {}), ...(moves.length ? { moves } : {}) };
       } finally {
         for (const hash of uploaded) this.uploadedBlobs.delete(hash);
       }

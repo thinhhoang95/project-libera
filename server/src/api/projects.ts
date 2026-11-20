@@ -1,7 +1,7 @@
 // Projects (shared notebooks), their members, and the audit log.
 
 import type { FastifyInstance } from "fastify";
-import type { Kysely } from "kysely";
+import { sql, type Kysely } from "kysely";
 import { z } from "zod";
 
 import { requireProjectAction, writeAudit } from "../auth/access.js";
@@ -206,12 +206,14 @@ export function registerProjectRoutes(app: FastifyInstance, context: ServerConte
     await requireProjectAction(db, projectId, accountId, "delete-project", actor);
     const body = z.object({ expectedManifestSeq: z.number().int().nonnegative().optional() }).parse(request.body ?? {});
     const { docs, members } = await db.transaction().execute(async (trx) => {
-      // Lock order, shared with persistUpdate (sync/store.ts): every document
-      // row first (the manifest's included), then memberships. The manifest
-      // alone, then the cascade into memberships, deadlocked with an update
-      // that held its membership row and waited for the manifest row.
+      // Lock order, shared with persistUpdate (sync/store.ts) and REST document
+      // deletion: the manifest row, then the other document rows by id, then
+      // memberships. A different order (documents sorted with the manifest
+      // among them, or the manifest alone and then the cascade into
+      // memberships) deadlocked with an update that held its manifest or
+      // membership row and waited for a content row (audit S61).
       const docs = await trx.selectFrom("documents").select(["id", "kind", "last_server_seq"])
-        .where("project_id", "=", projectId).orderBy("id").forUpdate().execute();
+        .where("project_id", "=", projectId).orderBy(sql`(kind = 'manifest')`, "desc").orderBy("id").forUpdate().execute();
       const members = await trx.selectFrom("memberships").select("account_id")
         .where("project_id", "=", projectId).orderBy("account_id").forUpdate().execute();
       // A fence that lapsed (sync/closing.ts) may have let writes in after the owner's export.
@@ -249,9 +251,9 @@ export function registerProjectRoutes(app: FastifyInstance, context: ServerConte
     const actor = bindActor(accountId, undefined);
     await requireProjectAction(db, projectId, accountId, "delete-project", actor);
     return db.transaction().execute(async (trx) => {
-      // Same order as persistUpdate and the takedown itself: documents, then memberships.
+      // Same order as persistUpdate and the takedown itself: manifest, other documents, then memberships.
       const docs = await trx.selectFrom("documents").select(["id", "kind", "last_server_seq"])
-        .where("project_id", "=", projectId).where("deleted_at", "is", null).orderBy("id").forUpdate().execute();
+        .where("project_id", "=", projectId).where("deleted_at", "is", null).orderBy(sql`(kind = 'manifest')`, "desc").orderBy("id").forUpdate().execute();
       const member = await trx.selectFrom("memberships").select("role")
         .where("project_id", "=", projectId).where("account_id", "=", accountId).forShare().executeTakeFirst();
       if (!member) throw new HttpError("forbidden", "Your notebook access changed before this change could be saved.");

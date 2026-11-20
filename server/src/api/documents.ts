@@ -14,12 +14,14 @@ import {
   ApiRoutes,
   bindActor,
   isSubdoc,
+  ManifestKeys,
   SyncLimits,
   type Actor,
   type DocumentInfo,
   type Provenance,
   type UpdatesPage,
 } from "../protocol.js";
+import { loadSubdocState } from "../sync/store.js";
 import { clientIdSchema, decodeBase64, encodeBase64, iso, isoOrNull, notifyRooms, pathId, requireAccount, route } from "./common.js";
 
 const base64Field = z.string().max(Math.ceil((SyncLimits.maxUpdateBytes * 4) / 3) + 4);
@@ -190,7 +192,21 @@ export function registerDocumentRoutes(app: FastifyInstance, context: ServerCont
     const access = await requireDocumentAction(db, docId, accountId, "manage-files", actor);
     if (access.kind === "manifest") throw new HttpError("bad-request", "The manifest is deleted with its project.");
     await db.transaction().execute(async (trx) => {
+      // Project lock order (sync/store.ts persistUpdate): manifest row, other documents, then memberships.
+      const manifest = await trx.selectFrom("documents").select("id").where("project_id", "=", access.projectId).where("kind", "=", "manifest").forUpdate().executeTakeFirst();
+      const target = await trx.selectFrom("documents").select(["id", "kind", "file_id", "deleted_at"]).where("id", "=", docId).where("project_id", "=", access.projectId).forUpdate().executeTakeFirst();
       await lockProjectAction(trx, access.projectId, accountId, "manage-files", actor);
+      if (!target || target.deleted_at) return;
+      // The manifest decides which documents exist. A document it lists is retired by a manifest
+      // change (persistUpdate tombstones it in that transaction), never on its own (audit S60).
+      if (!manifest) throw new HttpError("conflict", "The notebook's file list is missing, so this document is kept.");
+      const files = (await loadSubdocState(trx, manifest.id, "manifest")).getMap<unknown>(ManifestKeys.files);
+      for (const [fileId, entry] of files.entries()) {
+        const listed = typeof entry === "object" && entry !== null && (entry as { docId?: unknown }).docId === docId;
+        if (listed || (target.kind === "pdf" && target.file_id === fileId)) {
+          throw new HttpError("conflict", "The notebook still lists this file. Delete the file from the notebook instead.", { fileId });
+        }
+      }
       await trx.updateTable("documents").set({ deleted_at: new Date() }).where("id", "=", docId).execute();
     });
     await writeAudit(db, { projectId: access.projectId, actor, accountId, action: "document.delete", target: docId });

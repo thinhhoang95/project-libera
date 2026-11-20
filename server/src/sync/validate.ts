@@ -414,11 +414,31 @@ function baseName(path: string): string {
 /** What a changed notebook entry points at that this update introduces (an unchanged reference was checked when it was added). */
 export interface ManifestReferences {
   docs: Map<string, DocKind>;
+  /** The file id each newly referenced document is listed under. */
+  bindings: Map<string, string>;
   blobs: Set<string>;
 }
 
+/**
+ * A document belongs to exactly one file id (audit S59): the manifest may not
+ * list a newly referenced document under a second file id.
+ */
+export function docOwnershipViolation(after: Y.Doc, references: ManifestReferences): string | null {
+  if (references.bindings.size === 0) return null;
+  const owners = new Map<string, string>();
+  for (const [fileId, value] of after.getMap<unknown>(ManifestKeys.files).entries()) {
+    if (!isPlainRecord(value) || value.kind !== "doc" || typeof value.docId !== "string") continue;
+    const other = owners.get(value.docId);
+    if (other !== undefined && references.bindings.has(value.docId)) {
+      return `files: document ${value.docId} is listed under two file ids (${other} and ${fileId}).`;
+    }
+    owners.set(value.docId, fileId);
+  }
+  return null;
+}
+
 export function newManifestReferences(after: Y.Doc, changed: ChangedTypes, before: Y.Doc): ManifestReferences {
-  const found: ManifestReferences = { docs: new Map(), blobs: new Set() };
+  const found: ManifestReferences = { docs: new Map(), bindings: new Map(), blobs: new Set() };
   for (const [type, keys] of changed) {
     if (rootName(after, type) !== ManifestKeys.files || !(type instanceof Y.Map)) continue;
     for (const key of keys) {
@@ -427,7 +447,10 @@ export function newManifestReferences(after: Y.Doc, changed: ChangedTypes, befor
       if (!isPlainRecord(entry)) continue;
       const previous: unknown = before.getMap<unknown>(ManifestKeys.files).get(key);
       const prior = isPlainRecord(previous) ? previous : null;
-      if (entry.kind === "doc" && typeof entry.docId === "string" && (prior?.docId !== entry.docId || prior?.docKind !== entry.docKind)) found.docs.set(entry.docId, entry.docKind as DocKind);
+      if (entry.kind === "doc" && typeof entry.docId === "string" && (prior?.docId !== entry.docId || prior?.docKind !== entry.docKind)) {
+        found.docs.set(entry.docId, entry.docKind as DocKind);
+        found.bindings.set(entry.docId, key);
+      }
       if (entry.kind === "blob" && typeof entry.blobHash === "string" && prior?.blobHash !== entry.blobHash) found.blobs.add(entry.blobHash);
     }
   }

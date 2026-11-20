@@ -34,10 +34,11 @@ describe("manifest validation (finding 35)", () => {
   }
 
   test("a document entry must name a document of this project with the same kind", async () => {
-    const docId = await createDocument(env.db, env.project.id, { kind: "latex" });
-    assert.equal(await submit(nextFile(), { path: "wrong-kind.md", kind: "doc", docKind: "markdown", docId }), "invalid-update");
+    const fileId = nextFile();
+    const docId = await createDocument(env.db, env.project.id, { kind: "latex", fileId });
+    assert.equal(await submit(fileId, { path: "wrong-kind.md", kind: "doc", docKind: "markdown", docId }), "invalid-update");
     assert.equal(await submit(nextFile(), { path: "missing.md", kind: "doc", docKind: "markdown", docId: "doc_does_not_exist_anywhere" }), "invalid-update");
-    assert.equal(await submit(nextFile(), { path: "ok.tex", kind: "doc", docKind: "latex", docId }), "acked");
+    assert.equal(await submit(fileId, { path: "ok.tex", kind: "doc", docKind: "latex", docId }), "acked");
   });
 
   test("a document of another project is not a valid reference", async () => {
