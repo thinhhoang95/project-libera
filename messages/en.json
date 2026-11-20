@@ -7748,7 +7748,9 @@
       "unwritable": "it can't be written back",
       "unreadable": "the file could not be updated",
       "shared-notebook": "shared notebook",
-      "migrating": "being moved to another notebook"
+      "migrating": "being moved to another notebook",
+      "read-only": "your role cannot edit this note",
+      "edited": "it was edited while the links were being updated"
     },
     "movedLinksUnchecked": "Notes in {notebooks} could not all be read, so some of their links may not have followed.",
     "moveUnfinishedNotice": "Moved, but some of what goes with it did not follow: {steps}. Check Notebook finds what is left.",

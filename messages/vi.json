@@ -7748,7 +7748,9 @@
       "unwritable": "không thể ghi lại",
       "unreadable": "không thể cập nhật tệp",
       "shared-notebook": "sổ tay dùng chung",
-      "migrating": "đang được chuyển sang sổ tay khác"
+      "migrating": "đang được chuyển sang sổ tay khác",
+      "read-only": "vai trò của bạn không thể sửa ghi chú này",
+      "edited": "ghi chú đã được sửa trong lúc cập nhật liên kết"
     },
     "movedLinksUnchecked": "Không đọc được hết các ghi chú trong {notebooks}, nên một số liên kết của chúng có thể chưa được cập nhật theo.",
     "moveUnfinishedNotice": "Đã di chuyển, nhưng một phần dữ liệu đi kèm chưa theo kịp: {steps}. Kiểm tra sổ tay sẽ tìm ra phần còn lại.",

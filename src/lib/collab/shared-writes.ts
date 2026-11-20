@@ -712,11 +712,15 @@ export async function moveSharedFile(relativePath: string, destinationDirectory:
     console.error(`[shared-writes] Could not move the review, attachment or tag records of ${sourcePath}:`, error);
     stayed.push(`review comments, reference attachments or tags of ${sourcePath}`);
   });
+  // Links and asset paths that opened the file, or that it wrote, follow it (shared notes through the host).
+  const followed = await (await import("@/lib/storage/shared-move-links")).followSharedMovedLinks([{ from: sourcePath, to: nextPath }]);
+  stayed.push(...followed.unfinished);
   notifySearchChanges([sourcePath, nextPath]);
   if (stayed.length) {
     throw new StorageError(`The file was moved, but these records could not be moved with it and stay at the old path: ${stayed.join("; ")}. Run Check Notebook to settle them.`, 500);
   }
-  return savedFile(nextPath, moving.size, () => readSharedText(nextPath, options).then((result) => result.text, () => undefined));
+  const saved = await savedFile(nextPath, moving.size, () => readSharedText(nextPath, options).then((result) => result.text, () => undefined));
+  return { ...saved, ...(followed.links.rewritten.length || followed.links.skipped.length || followed.links.unchecked.length ? { links: followed.links } : {}) };
 }
 
 // Records of a file that SIDECAR_KINDS lists and that something else already moves in a shared
@@ -833,11 +837,14 @@ export async function renameSharedFolder(relativePath: string, name: string, opt
   await moveReferenceAttachments(sourcePath, nextPath);
   await renameFileMetadataPathPrefix(sourcePath, nextPath);
   await renameNotebookPanelExpandedPathPrefix(sourcePath, nextPath);
+  // Links and asset paths that opened files in the folder, or that they wrote, follow it (shared notes through the host).
+  const followed = await (await import("@/lib/storage/shared-move-links")).followSharedMovedLinks([{ from: sourcePath, to: nextPath, folder: true }]);
+  stayed.push(...followed.unfinished);
   notifySearchChanges();
   if (stayed.length) {
     throw new StorageError(`The folder was renamed, but these records could not be moved with it and stay at the old path: ${stayed.join("; ")}. Run Check Notebook to settle them.`, 500);
   }
-  return getTree();
+  return { ...await getTree(), ...(followed.links.rewritten.length || followed.links.skipped.length || followed.links.unchecked.length ? { links: followed.links } : {}) };
 }
 
 export async function deleteSharedFolder(relativePath: string, options: SharedWriteOptions = {}): Promise<LiberaTree> {
