@@ -11,6 +11,8 @@ import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { ARCHIVE_DIR, INK_DIR, MARKDOWN_ASSETS_DIR } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
+import { localFileIdentity } from "@/lib/storage/file-identity";
+import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { assertSupportedFileName, getFileType } from "@/lib/storage/file-types";
 import { pathExists } from "@/lib/storage/fs-utils";
 import { readNotebookMetadata } from "@/lib/storage/notebook-metadata";
@@ -334,10 +336,22 @@ async function readTreeDirectory(
   return children.sort(sortTreeNodes);
 }
 
+/** Gives each local file node its identity, so a move or delete can tell it from a file that later takes its path. */
+function stampLocalFileIds(nodes: LiberaTreeNode[]) {
+  for (const node of nodes) {
+    if (node.kind === "folder") stampLocalFileIds(node.children);
+    else node.fileId = localFileIdentity(node);
+  }
+}
+
 /** A notebook's top level, or nothing (and an incomplete walk) when it cannot be listed. */
 async function readTreeRoot(notebook: string, options: TreeReadOptions) {
-  try { return await readTreeDirectory(notebook, [], options); }
-  catch {
+  try {
+    const children = await readTreeDirectory(notebook, [], options);
+    // A shared notebook's files are identified by the host's listing (attachFileIds), never by this.
+    if (!isSharedNotebookPath(notebook)) stampLocalFileIds(children);
+    return children;
+  } catch {
     if (options.walk) options.walk.incomplete = true;
     return [];
   }

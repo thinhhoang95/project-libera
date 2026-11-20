@@ -38,20 +38,24 @@ test("a drop consumes the drag at once, so a later drag survives the first move'
   const slot: DragSlot = { current: null };
   const a = file("Nb/a.md");
   const b = file("Nb/b.md");
-  beginDrag(slot, a);
+  beginDrag(slot, [a]);
   let release!: () => void;
   const slowMove = new Promise<void>((resolve) => { release = resolve; });
   // What the panel does at drop: take the file first, then await the move.
   const dropped = consumeDrag(slot);
   const completion = slowMove.then(() => dropped);
-  assert.equal(dropped, a);
+  assert.deepEqual(dropped, [a]);
   assert.equal(slot.current, null);
   assert.equal(consumeDrag(slot), null, "dropping the same drag twice moves nothing");
-  beginDrag(slot, b);
+  beginDrag(slot, [b]);
   release();
   await completion;
-  assert.equal(slot.current, b, "the first move finishing leaves the second drag alone");
-  assert.equal(consumeDrag(slot), b);
+  assert.deepEqual(slot.current, [b], "the first move finishing leaves the second drag alone");
+  assert.deepEqual(consumeDrag(slot), [b]);
+  // A selection is dragged as one list and consumed as one.
+  beginDrag(slot, [a, b]);
+  assert.deepEqual(consumeDrag(slot), [a, b]);
+  assert.equal(consumeDrag(slot), null);
 });
 
 // F31

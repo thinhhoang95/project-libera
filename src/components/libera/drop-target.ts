@@ -14,20 +14,21 @@ export function splitDropDestination(destination: string): { notebook: string; f
 }
 
 /**
- * The file being dragged in the notebook rail. Shape is deliberately plain (one file
- * or nothing) so a multi-file selection can later widen `current` to a list.
+ * The files being dragged in the notebook rail: the one under the pointer, or
+ * every file of the selection when the drag started on a selected row. A list,
+ * never empty while a drag is on, and null when none is.
  * It lives in a ref beside the React state: a drop consumes it synchronously, before
  * any await, so a slow move can never clear a drag that began after it.
  */
-export type DragSlot = { current: LiberaFileNode | null };
+export type DragSlot = { current: LiberaFileNode[] | null };
 
-export function beginDrag(slot: DragSlot, file: LiberaFileNode) {
-  slot.current = file;
+export function beginDrag(slot: DragSlot, files: LiberaFileNode[]) {
+  slot.current = files.length ? files : null;
 }
 
-/** Takes the dragged file out of the slot. A second drop of the same drag gets nothing. */
-export function consumeDrag(slot: DragSlot): LiberaFileNode | null {
-  const file = slot.current;
+/** Takes the dragged files out of the slot. A second drop of the same drag gets nothing. */
+export function consumeDrag(slot: DragSlot): LiberaFileNode[] | null {
+  const files = slot.current;
   slot.current = null;
-  return file;
+  return files;
 }

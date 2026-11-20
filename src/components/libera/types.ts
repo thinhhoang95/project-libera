@@ -246,6 +246,12 @@ export type WorkspaceInputDialogState =
       error?: string;
     }
   | {
+      /** The selected files of one notebook, moved to one destination. */
+      mode: "move-files";
+      files: LiberaFileNode[];
+      error?: string;
+    }
+  | {
       mode: "rename-file";
       file: LiberaFileNode;
       error?: string;
@@ -305,6 +311,19 @@ export type WorkspaceConfirmDialogState =
       mode: "move-file-folder";
       destinationPath: string;
       file: LiberaFileNode;
+    }
+  | {
+      /** The selected files of one notebook, for a delete of all of them. */
+      mode: "delete-files";
+      files: LiberaFileNode[];
+      unsavedNames: string[];
+    }
+  | {
+      /** The selected files, some open with unsaved edits, for a move to a folder of their notebook. */
+      mode: "move-files-folder";
+      destinationPath: string;
+      files: LiberaFileNode[];
+      unsavedNames: string[];
     }
   | {
       mode: "replace-disk-version";
@@ -448,6 +467,10 @@ export type LiberaWorkspace = {
   shiftMarkdownList: (direction: "indent" | "outdent") => void;
   moveFileFromPrompt: (tab: OpenTab) => Promise<void>;
   moveFileToFolder: (file: LiberaFileNode, destinationPath: string) => Promise<void>;
+  /** The selected files of one notebook: to a folder of it directly, to another notebook through the migration dialog. */
+  moveFilesToFolder: (files: LiberaFileNode[], destinationPath: string) => Promise<void>;
+  moveFilesFromPrompt: (files: LiberaFileNode[]) => Promise<void>;
+  deleteFileNodesFromPrompt: (files: LiberaFileNode[]) => Promise<void>;
   openFile: (
     file: LiberaFileNode,
     options?: { viewState?: OpenTabViewState; placement?: "tab" | "right" | "bottom" },

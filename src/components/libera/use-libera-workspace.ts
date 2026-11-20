@@ -84,6 +84,7 @@ import {
   withinPath, type ClosedViewStates, type WorkspaceFileChange,
 } from "@/lib/workspaces";
 import type { MigrationRequest, MigrationResult } from "@/lib/storage/migration";
+import type { BatchDeleteResult, BatchMoveResult } from "@/lib/storage/batch-files";
 import type { MigrationPreset } from "./notebook-migration-dialog";
 import { REPAIR_MOVED_EVENT } from "./notebook-integrity-dialog";
 import { splitDropDestination } from "./drop-target";
@@ -4079,6 +4080,103 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
   }
 
+  // ---- Several files at once (the selection in the notebook rail; storage/batch-files.ts) ----
+
+  /** The open files among `files` with unsaved edits, by name. */
+  function unsavedNamesAmong(files: LiberaFileNode[]) {
+    return files.flatMap((file) => unsavedNamesUnder(tabs, file.path, tabUnsaved));
+  }
+
+  async function moveFilesFromPrompt(files: LiberaFileNode[]) {
+    if (!files.length) return;
+    setWorkspaceError("");
+    setWorkspaceInputDialog(files.length === 1 ? { mode: "move-file", file: files[0] } : { mode: "move-files", files });
+  }
+
+  /**
+   * Moves the files to one destination. To another notebook they go through the
+   * migration dialog with every path preset; within the notebook the server checks
+   * the whole batch first and moves them one by one, and each moved file is followed
+   * by the same step as a single move (followFileMove). The tree is read once at the end.
+   */
+  async function moveFilesToFolder(
+    files: LiberaFileNode[],
+    destinationPath: string,
+    options?: { skipDirtyCheck?: boolean },
+  ) {
+    if (files.length === 1) return moveFileToFolder(files[0], destinationPath, options);
+    if (!files.length || !destinationPath) return;
+    const { notebook: destinationNotebook, folder } = splitDropDestination(destinationPath);
+    if (destinationNotebook && destinationNotebook !== files[0].notebook) {
+      openMigrationDialog(files[0].notebook, { paths: files.map((file) => file.path), destination: destinationNotebook, folder, flat: true });
+      return;
+    }
+    // Files already in the folder have nothing to do, as for a single move.
+    const moving = files.filter((file) => parentPathForFile(file) !== destinationPath);
+    if (!moving.length) return;
+    const unsavedNames = unsavedNamesAmong(moving);
+    if (unsavedNames.length && !options?.skipDirtyCheck) {
+      setWorkspaceConfirmDialog({ mode: "move-files-folder", files: moving, destinationPath, unsavedNames });
+      return;
+    }
+
+    try {
+      const result = await workspaceFileRequest<BatchMoveResult>("/api/files/batch", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "move",
+          items: moving.map((file) => ({ path: file.path, fileId: file.fileId })),
+          destinationDirectory: destinationPath,
+        }),
+      }, (result) => ({ paths: result.moved.map((item) => item.to), moved: result.moved.map(({ from, to }) => ({ from, to })) }));
+      for (const item of result.moved) if (item.payload) followFileMove(item.from, item.payload);
+      if (result.failed) {
+        setWorkspaceError(tRef.current("batchMovePartialError", {
+          moved: result.moved.length, total: moving.length, name: result.failed.path.split("/").at(-1) ?? result.failed.path, message: result.failed.error,
+        }));
+      }
+      await refreshTree(files[0].notebook);
+      updateExpanded((current) => {
+        const next = new Set(current);
+        next.add(destinationPath.split("/")[0] ?? destinationPath);
+        next.add(destinationPath);
+        return next;
+      });
+    } catch (error) {
+      // A refused batch changed nothing; the server's message says which file and why.
+      setWorkspaceError(isIdentityConflict(error) ? tRef.current("fileChangedUnderYouError") : error instanceof Error ? error.message : tRef.current("moveFileError"));
+      await refreshTree().catch(() => undefined);
+    }
+  }
+
+  async function deleteFileNodesFromPrompt(files: LiberaFileNode[]) {
+    if (!files.length) return;
+    if (files.length === 1) { await deleteFileNodeFromPrompt(files[0]); return; }
+    setWorkspaceConfirmDialog({ mode: "delete-files", files, unsavedNames: unsavedNamesAmong(files) });
+  }
+
+  /** Deletes the files one by one on the server; tabs close and drafts are forgotten for each that went, as for a single delete. */
+  async function deleteFileNodes(files: LiberaFileNode[]) {
+    try {
+      const result = await workspaceFileRequest<BatchDeleteResult>("/api/files/batch", {
+        method: "POST",
+        body: JSON.stringify({ action: "delete", items: files.map((file) => ({ path: file.path, fileId: file.fileId })) }),
+      }, (result) => ({ removed: result.deleted }));
+      const deleted = new Set(result.deleted);
+      tabs.forEach((tab) => { if (deleted.has(tab.file.path)) forgetTabDraft(tab.id); });
+      setTabs((currentTabs) => currentTabs.filter((currentTab) => !deleted.has(currentTab.file.path)));
+      setActiveTabId((current) => (deleted.has(current) ? "" : current));
+      if (result.failed.length) {
+        const shown = result.failed.slice(0, 3).map((item) => `${item.path.split("/").at(-1)} (${item.error})`).join("; ");
+        setWorkspaceError(tRef.current("batchDeletePartialError", { deleted: result.deleted.length, total: files.length, failures: result.failed.length > 3 ? `${shown}; …` : shown }));
+      }
+      await refreshTree(files[0].notebook);
+    } catch (error) {
+      setWorkspaceError(error instanceof Error ? error.message : tRef.current("deleteFileError"));
+      await refreshTree().catch(() => undefined);
+    }
+  }
+
   // ---- Notebook migration (notebook-migration-dialog.tsx, storage/migration.ts) ----
 
   /** The source notebook the migration dialog opens on; null while it is closed. */
@@ -4400,6 +4498,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         body: JSON.stringify({
           path: file.path,
           archive: true,
+          fileId: file.fileId,
         }),
       }, (payload) => ({ moved: { from: file.path, to: payload.file.path } }));
       // The tab follows the archived file with whatever was typed while the request ran.
@@ -4540,6 +4639,17 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         await moveFileToFolder(workspaceInputDialog.file, destinationDirectory);
       }
 
+      if (workspaceInputDialog.mode === "move-files") {
+        const destinationDirectory = values.destinationDirectory.trim();
+
+        if (!destinationDirectory) {
+          setWorkspaceInputDialogError(tRef.current("destinationPathRequired"));
+          return;
+        }
+
+        await moveFilesToFolder(workspaceInputDialog.files, destinationDirectory);
+      }
+
       if (workspaceInputDialog.mode === "rename-file") {
         const name = values.name.trim();
 
@@ -4676,6 +4786,14 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
       if (workspaceConfirmDialog.mode === "delete-file") {
         await deleteFileNode(workspaceConfirmDialog.file);
+      }
+
+      if (workspaceConfirmDialog.mode === "delete-files") {
+        await deleteFileNodes(workspaceConfirmDialog.files);
+      }
+
+      if (workspaceConfirmDialog.mode === "move-files-folder") {
+        await moveFilesToFolder(workspaceConfirmDialog.files, workspaceConfirmDialog.destinationPath, { skipDirtyCheck: true });
       }
 
       if (workspaceConfirmDialog.mode === "delete-folder") {
@@ -5069,6 +5187,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     insertMarkdownTable,
     moveFileFromPrompt,
     moveFileToFolder,
+    moveFilesToFolder,
+    moveFilesFromPrompt,
+    deleteFileNodesFromPrompt,
     openFile,
     openGalleryPhoto,
     openRecordingTab,

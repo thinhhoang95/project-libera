@@ -2768,6 +2768,8 @@ html.libera-glass .libera-left-panel {
    notebook title card above keeps its inset. */
 .libera-notebook-children .libera-tree-row { width: calc(100% + 16px); }
 .libera-notebook-children .libera-tree-file-tags { margin-right: -8px; }
+/* A file picked in the multiple selection (aria-selected also tells assistive tech). */
+.libera-tree-row[aria-selected="true"] { background: color-mix(in srgb, var(--accent) 18%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent); }
 .libera-tree-file-tags .libera-tag-chip { flex-shrink: 0; padding: 0 6px; font-size: 10px; }
 .libera-tree-file-edited { flex-shrink: 0; font-size: 11px; color: var(--muted-foreground); white-space: nowrap; }
 .libera-tree-guide { position: absolute; top: 0; bottom: 0; width: 1px; margin: 0 !important; background: color-mix(in srgb, var(--foreground) 14%, transparent); pointer-events: none; }
