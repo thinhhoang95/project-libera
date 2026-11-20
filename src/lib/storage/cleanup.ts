@@ -15,6 +15,7 @@ import { assertSafeSegment, notebookPath, notebookSystemDirectoryPath, splitFile
 import { refreshNotebookCitations } from "@/lib/storage/reference-citations";
 import { readReferenceLibrary, updateReferenceLibrary } from "@/lib/storage/references";
 import { assertRepairable, planNotebookRepair, type RepairPlan } from "@/lib/storage/repair";
+import { withNotebookOperation } from "@/lib/storage/migration-fence";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { SIDECAR_KINDS } from "@/lib/storage/sidecars";
 import { setFileTagsForPath, setStarredFilePath } from "@/lib/storage/workspace-metadata";
@@ -300,7 +301,9 @@ async function perform(notebook: string, action: CleanupAction) {
 const label = (action: CleanupAction) => "path" in action ? action.path : "filePath" in action ? action.filePath : action.type;
 
 /** Removes what the plan the token names listed; planned again first, and refused if anything changed since. */
-export async function applyNotebookCleanup(name: string, token: string, options: CleanupOptions = {}): Promise<CleanupResult> {
+export const applyNotebookCleanup = (name: string, token: string, options: CleanupOptions = {}): Promise<CleanupResult> => withNotebookOperation(name, () => applyCleanup(name, token, options));
+
+async function applyCleanup(name: string, token: string, options: CleanupOptions): Promise<CleanupResult> {
   const notebook = assertRepairable(name);
   const { listInterruptedMigrations } = await import("@/lib/storage/migration");
   if ((await listInterruptedMigrations()).some((migration) => migration.source === notebook || migration.destination.notebook === notebook)) {

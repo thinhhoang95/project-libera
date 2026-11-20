@@ -24,6 +24,7 @@ import { listSidecars, SIDECAR_KINDS, type ListedSidecar } from "@/lib/storage/s
 import { listVisibleNotebookFiles } from "@/lib/storage/tree";
 import { readWorkspaceMetadata, renameFileMetadataPaths } from "@/lib/storage/workspace-metadata";
 import { StorageError } from "@/lib/storage/errors";
+import { withNotebookOperation } from "@/lib/storage/migration-fence";
 import { isTextFileType } from "@/lib/types";
 
 // Check Notebook → Try to fix: files moved or renamed into another folder
@@ -511,7 +512,9 @@ type Job = { what: string; cache: boolean; /** False when it may turn out there 
  * pair only some of whose records moved is not reported moved, and a retry
  * finishes it (records an interrupted try already placed are not obstacles).
  */
-export async function applyNotebookRepair(name: string, token: string): Promise<RepairResult> {
+export const applyNotebookRepair = (name: string, token: string): Promise<RepairResult> => withNotebookOperation(name, () => applyRepair(name, token));
+
+async function applyRepair(name: string, token: string): Promise<RepairResult> {
   const notebook = assertRepairable(name);
   const { plan: current, asides } = await withReadOnlyStorage(() => plan(notebook));
   if (current.token !== token) throw new StorageError("The notebook changed since the fix was prepared. Check it again.", 409);

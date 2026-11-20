@@ -16,7 +16,7 @@ import { pathExists } from "@/lib/storage/fs-utils";
 import { readNotebookMetadata } from "@/lib/storage/notebook-metadata";
 import { readWorkspaceMetadata } from "@/lib/storage/workspace-metadata";
 import { mergeLegacyFolderState } from "@/lib/storage/directory-mode";
-import { isNotebookMigrating } from "@/lib/storage/migration-fence";
+import { isNotebookMigrating, whenNotebookIdle } from "@/lib/storage/migration-fence";
 import {
   ensureAdminRoot,
   filePathFromParts,
@@ -365,7 +365,9 @@ function maintenanceDue(notebook: string, mode: "always" | "throttled") {
   return true;
 }
 
-async function maintainNotebookSidecars(notebook: string, children: LiberaTreeNode[]) {
+const maintainNotebookSidecars = (notebook: string, children: LiberaTreeNode[]) => whenNotebookIdle(notebook, () => maintainSidecars(notebook, children));
+
+async function maintainSidecars(notebook: string, children: LiberaTreeNode[]) {
   await prunePdfTextCaches(notebook).catch(() => undefined);
   await pruneAudioSidecars(notebook).catch(() => undefined);
   await reconcilePdfSidecars(notebook, pdfFilesOf(children)).catch(() => undefined);
