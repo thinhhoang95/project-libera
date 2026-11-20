@@ -124,6 +124,8 @@ async function probeServer(serverUrl: string, fetchImpl?: FetchLike): Promise<bo
  * acknowledged must not hold every later command in the FIFO queue for good.
  */
 const COMMAND_HOLD_MAX_MS = 120_000;
+/** A PDF comment waits this long (active waiting, as above) for its document to open before it is refused, visibly, instead of retried forever. */
+const PDF_OPEN_MAX_MS = 600_000;
 
 export class CollabHost {
   /** Commands currently held back for a document's unacknowledged edits, by command row id. */
@@ -162,7 +164,7 @@ export class CollabHost {
   /** Opens the database (throws HostStoreLockedError if another host owns it). */
   start(): void {
     if (this.storeInstance) return;
-    const store = new HostStore({ path: this.options.dbPath, now: () => this.clock.now() });
+    const store = new HostStore({ path: this.options.dbPath, now: () => this.clock.now(), onLockLost: () => this.storeLockLost() });
     this.storeInstance = store;
     // Local edits a previous run could not save to SQLite are replayed first.
     replayRecoveryFiles(recoveryDirFor(this.options.dbPath), store, this.logger);
@@ -200,7 +202,21 @@ export class CollabHost {
         try {
           const reason = hub.getMeta().readOnlyReason;
           if (reason === "document-deleted" || reason === "access-revoked") throw new ApiClientError("forbidden", 403, "This PDF is no longer accessible.");
-          if (!hub.hasOpened) throw new ApiClientError("network", 0, "Waiting for the PDF document to open.");
+          if (!hub.hasOpened) {
+            // A document that never opens (for example a project at its PDF cap) must not retry forever:
+            // after a bounded wait the command is refused, which keeps it visible and recoverable.
+            const now = this.clock.now();
+            const held = this.heldCommands.get(row.id) ?? { docId: command.docId, waitedMs: 0, lastSeen: now };
+            held.waitedMs += Math.min(Math.max(0, now - held.lastSeen), 15_000);
+            held.lastSeen = now;
+            this.heldCommands.set(row.id, held);
+            if (held.waitedMs >= PDF_OPEN_MAX_MS) {
+              this.heldCommands.delete(row.id);
+              throw new ApiClientError("conflict", 409, "The PDF document did not open, so this comment could not be sent.");
+            }
+            throw new ApiClientError("network", 0, "Waiting for the PDF document to open.");
+          }
+          this.heldCommands.delete(row.id);
         } finally { this.release(command.docId); }
       },
       clock: this.clock,
@@ -260,6 +276,17 @@ export class CollabHost {
     if (this.account) this.connectAccount(this.account);
   }
 
+  /**
+   * Another process took this database's owner lock (this host missed its
+   * heartbeats, for example across a suspend). The store has fenced itself, so
+   * nothing more is written; stop the hubs and sync instead of carrying on.
+   */
+  private storeLockLost(): void {
+    this.logger.error("The collaboration database was taken over by another host; this host is stopping.");
+    this.journal.noteError({ source: "store", code: "lock-lost", message: "The database owner lock was taken over; this host stopped writing." });
+    void this.stop().catch(() => undefined);
+  }
+
   /** Flushes snapshot work, closes every hub and the database. */
   stop(): Promise<void> {
     if (!this.stopping) this.stopping = this.doStop();
@@ -274,10 +301,16 @@ export class CollabHost {
     this.outcomesInstance?.stop();
     for (const release of this.background.values()) release();
     this.background.clear();
-    await this.registryInstance?.closeAll("host-stopped");
+    // A fenced store (its lock was taken over) fails every flush: stopping must still finish.
+    const fenced = this.storeInstance?.isClosed === true;
+    await this.registryInstance?.closeAll("host-stopped").catch((error) => {
+      if (!fenced) throw error;
+    });
     for (const unregister of this.syncRegistrations.values()) unregister();
     this.syncRegistrations.clear();
-    await this.compactor?.close();
+    await this.compactor?.close().catch((error) => {
+      if (!fenced) throw error;
+    });
     this.storeInstance?.close();
     this.storeInstance = null;
     // Only a stop that got this far counts as clean (see openRunLedger).
@@ -495,9 +528,9 @@ export class CollabHost {
       // Only the command at the head of the queue, and only when it is for this
       // document and is either held by this gate or has not been tried yet: a
       // command that is failing for another reason keeps its own backoff.
-      const head = this.commandsInstance?.list()[0];
-      if (!head || !("docId" in head.command) || head.command.docId !== docId) return;
-      if (head.attempts === 0 || this.heldCommands.has(head.id)) this.commandsInstance?.retryNow();
+      const ready = this.commandsInstance?.list().some((row) =>
+        "docId" in row.command && row.command.docId === docId && (row.attempts === 0 || this.heldCommands.has(row.id)));
+      if (ready) this.commandsInstance?.retryNow();
     });
     hub.onRejected((edit) => {
       // The reason and server message only; edit.rejectedText is the user's text.

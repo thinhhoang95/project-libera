@@ -57,6 +57,28 @@ export interface HostFetchOptions {
   body?: unknown;
   config?: HostClientConfig | null;
   signal?: AbortSignal;
+  /**
+   * Gives up after this long (the request and its body). Absent means no deadline,
+   * which streaming callers (the proxy route's event streams) need. A mutation that
+   * times out may still have been applied: the error says so.
+   */
+  timeoutMs?: number;
+}
+
+/** How long a control call may take before the caller gives up on it. */
+export const HOST_CALL_TIMEOUT_MS = 60_000;
+/** Calls that legitimately take long: uploads of large files, which the host verifies and sends to the server. */
+export const HOST_UPLOAD_TIMEOUT_MS = 10 * 60_000;
+
+function timeoutError(method: string | undefined): CollabHostError {
+  const mutation = method !== undefined && method !== "GET";
+  return new CollabHostError(
+    504,
+    "collab-timeout",
+    mutation
+      ? "The collaboration service did not answer in time. The change may or may not have been applied; check before trying again."
+      : "The collaboration service did not answer in time.",
+  );
 }
 
 /**
@@ -71,15 +93,23 @@ export async function fetchCollabHost(pathAndQuery: string, options: HostFetchOp
   if (options.bodyText !== undefined && options.bodyText !== "") body = options.bodyText;
   else if (options.body !== undefined) body = JSON.stringify(options.body);
   if (body !== undefined) headers["content-type"] = "application/json";
+  const method = options.method ?? (body === undefined ? "GET" : "POST");
+  const signal =
+    options.timeoutMs === undefined
+      ? options.signal
+      : options.signal
+        ? AbortSignal.any([options.signal, AbortSignal.timeout(options.timeoutMs)])
+        : AbortSignal.timeout(options.timeoutMs);
   try {
     return await fetch(`${config.url}${pathAndQuery}`, {
-      method: options.method ?? (body === undefined ? "GET" : "POST"),
+      method,
       headers,
       body,
       cache: "no-store",
-      signal: options.signal,
+      signal,
     });
   } catch (error) {
+    if ((error as { name?: string })?.name === "TimeoutError") throw timeoutError(method);
     if ((error as { name?: string })?.name === "AbortError") throw error;
     throw new CollabHostError(503, "collab-unavailable", "The collaboration service is not running. It restarts automatically; try again shortly.");
   }
@@ -108,8 +138,15 @@ export async function unlockCollabHostAndWait(password: string): Promise<void> {
 }
 
 async function hostJson<T>(pathAndQuery: string, options: HostFetchOptions = {}): Promise<T> {
-  const response = await fetchCollabHost(pathAndQuery, options);
-  const text = await response.text();
+  const bounded = { ...options, timeoutMs: options.timeoutMs ?? HOST_CALL_TIMEOUT_MS };
+  const response = await fetchCollabHost(pathAndQuery, bounded);
+  let text: string;
+  try {
+    text = await response.text();
+  } catch (error) {
+    if ((error as { name?: string })?.name === "TimeoutError") throw timeoutError(options.method);
+    throw error;
+  }
   let parsed: unknown = undefined;
   if (text) {
     try {
@@ -236,7 +273,8 @@ export function listProjectEntries(projectId: string, config?: HostClientConfig 
 }
 
 export function fileOp(projectId: string, request: FileOpRequest, config?: HostClientConfig | null): Promise<import("./local-api").FileOpResult> {
-  return hostJson(ControlRoutes.files(projectId), { method: "POST", body: request, config });
+  const upload = "stagedFile" in request || "contentBase64" in request;
+  return hostJson(ControlRoutes.files(projectId), { method: "POST", body: request, config, ...(upload ? { timeoutMs: HOST_UPLOAD_TIMEOUT_MS } : {}) });
 }
 
 /** The shared albums on this device (empty when collaboration is off). */

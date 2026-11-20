@@ -5,6 +5,26 @@
 import { readIfExists, SLOW_READ, statIfExists } from "./fs-ops";
 
 /**
+ * Waits for `promise` for at most `ms`; SLOW_READ when it has not settled by
+ * then. The operation itself cannot be cancelled and carries on, so the caller
+ * must treat SLOW_READ as "uncertain", never as "absent" or "unchanged".
+ */
+export async function withinMs<T>(promise: Promise<T>, ms: number): Promise<T | typeof SLOW_READ> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const slow = new Promise<typeof SLOW_READ>((resolve) => {
+    timer = setTimeout(() => resolve(SLOW_READ), ms);
+    timer.unref?.();
+  });
+  // An operation given up on must not surface later as an unhandled rejection.
+  promise.catch(() => undefined);
+  try {
+    return await Promise.race([promise, slow]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * The collaboration server's default blob limit (server MAX_BLOB_BYTES). The
  * client is never told the configured value, so a larger file is refused
  * before it is read (reading an online-only file downloads it) rather than
@@ -88,8 +108,8 @@ export async function readShared(absolute: string, ms: number, observed: { size:
     // A rewrite that kept the length is invisible to the length check; the
     // stat taken after the read must still be the one the read began under.
     if (bytes && bytes !== SLOW_READ) {
-      const after = await statIfExists(absolute);
-      if (!after || after.size !== observed.size || after.mtimeMs !== observed.mtimeMs) return SLOW_READ;
+      const after = await withinMs(statIfExists(absolute), ms);
+      if (after === SLOW_READ || !after || after.size !== observed.size || after.mtimeMs !== observed.mtimeMs) return SLOW_READ;
     }
     return bytes;
   } finally {

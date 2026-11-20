@@ -78,7 +78,7 @@ import {
 } from "./fs-ops";
 import { computeLayout, entriesUnder, entryRecord, manifestEntryBytes, readManifest, splitManifestBatches } from "./layout";
 import { ManifestIntents, trackEntryWrites } from "./manifest-intents";
-import { FRESH_RETAIN_BYTES, MAX_UPLOAD_BYTES, SCAN_READ_BUDGET_BYTES, noteTruncatedWalk, quietWaitMs, readShared, scanReadState } from "./scan-reads";
+import { FRESH_RETAIN_BYTES, MAX_UPLOAD_BYTES, SCAN_READ_BUDGET_BYTES, noteTruncatedWalk, quietWaitMs, readShared, scanReadState, withinMs } from "./scan-reads";
 import { PdfCommentService } from "./pdf-comments";
 import { AUDIO_EXTENSIONS, MARKDOWN_EXTENSIONS } from "../../../src/lib/storage/constants";
 import { pythonSidecarPath } from "../../../src/lib/python/sidecar";
@@ -2506,9 +2506,10 @@ export class SharedProject {
       }
       // The upload took time: publish the new hash only if the file on disk is
       // still the snapshot that was hashed (same stat, same bytes).
-      const afterUpload = await statIfExists(absolute);
-      const reread = afterUpload && afterUpload.size === seen.size && afterUpload.mtimeMs === seen.mtimeMs ? await readIfExists(absolute) : null;
-      if (!reread || sha256(reread) !== hash) {
+      // Both waits are bounded: a provider that hangs here must not stop the project queue.
+      // readShared answers SLOW_READ when the file changed or the read did not finish; either way nothing is published.
+      const reread = await readShared(absolute, HYDRATION_WAIT_MS, seen, this);
+      if (reread === SLOW_READ || !reread || sha256(reread) !== hash) {
         this.verified.delete(fileId);
         needsRetry = true;
         continue;
@@ -3277,13 +3278,25 @@ export class SharedProject {
       throw new ControlError(400, "bad-request", "write-blob needs the staged file's name in stagedFile.");
     }
     const file = path.join(this.info.root, ...STATE_DIRECTORY, "incoming", name);
+    // The read is bounded (the staged folder can sit on a cloud provider). When it does not finish, the file is
+    // kept and nothing was written: the caller may stage it again or retry the same request.
+    const reading = fs.readFile(file);
+    let finished = false;
     try {
-      return new Uint8Array(await fs.readFile(file));
+      const bytes = await withinMs(reading, HYDRATION_WAIT_MS);
+      if (bytes === SLOW_READ) throw new ControlError(503, "offline", "The staged file is still being read from disk. Nothing was changed; retry.");
+      finished = true;
+      return new Uint8Array(bytes);
     } catch (error) {
-      if (isNotFound(error)) throw new ControlError(404, "not-found", "The staged file is gone.");
+      if (isNotFound(error)) {
+        finished = true;
+        throw new ControlError(404, "not-found", "The staged file is gone.");
+      }
+      finished = !(error instanceof ControlError && error.status === 503);
       throw error;
     } finally {
-      await fs.rm(file, { force: true }).catch(() => undefined);
+      // Removal is best effort and never awaited: it must not hold the queue either.
+      if (finished) void withinMs(fs.rm(file, { force: true }), HYDRATION_WAIT_MS).catch(() => undefined);
     }
   }
 

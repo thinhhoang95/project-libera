@@ -276,10 +276,30 @@ async function publishText(target: string, text: string) {
   }
 }
 
-export function withInkLock<T>(key: string, work: () => Promise<T>): Promise<T> {
-  const task = (locks.get(key) ?? Promise.resolve()).catch(() => undefined).then(work);
-  locks.set(key, task);
-  void task.finally(() => { if (locks.get(key) === task) locks.delete(key); }).catch(() => undefined);
+/** How long a save waits for the earlier save of the same record before it gives up (the earlier one may be stuck on a provider or the host). */
+export const INK_LOCK_WAIT_MS = 30_000;
+
+/**
+ * Runs `work` after the earlier work on `key`. A save does not wait forever
+ * behind one that is stuck: after `waitMs` it fails with a retryable 503 and
+ * nothing was changed, and the lock still covers the stuck work, so a later
+ * save never runs beside it.
+ */
+export function withInkLock<T>(key: string, work: () => Promise<T>, waitMs = INK_LOCK_WAIT_MS): Promise<T> {
+  const previous = locks.get(key);
+  const task = (async () => {
+    if (previous) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timedOut = new Promise<true>((resolve) => { timer = setTimeout(() => resolve(true), waitMs); timer.unref?.(); });
+      const outcome = await Promise.race([previous.then(() => false, () => false), timedOut]);
+      clearTimeout(timer);
+      if (outcome) throw new StorageError("An earlier save of this ink is still in progress. Nothing was changed; try again in a moment.", 503);
+    }
+    return work();
+  })();
+  const tail = Promise.allSettled([previous ?? Promise.resolve(), task]).then(() => undefined);
+  locks.set(key, tail);
+  void tail.then(() => { if (locks.get(key) === tail) locks.delete(key); });
   return task;
 }
 

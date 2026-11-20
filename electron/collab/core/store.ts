@@ -10,7 +10,7 @@
 //   that died is taken over even when the OS has given its pid to another
 //   program.
 
-import { closeSync, openSync, readFileSync, statSync, unlinkSync, utimesSync, writeSync } from "node:fs";
+import { closeSync, existsSync, linkSync, openSync, readFileSync, renameSync, statSync, unlinkSync, utimesSync, writeSync } from "node:fs";
 import { hostname } from "node:os";
 
 import type { AccountAuthority } from "./authority";
@@ -162,6 +162,8 @@ export interface HostStoreOptions {
   lockHeartbeatMs?: number;
   /** A lock not refreshed for this long is stale, whatever its pid (tests shorten it). */
   lockStaleMs?: number;
+  /** Called once when this store's owner lock was taken over; the store is already fenced (closed) by then. */
+  onLockLost?: () => void;
 }
 
 const LOCK_HEARTBEAT_MS = 5_000;
@@ -376,35 +378,110 @@ class OwnerLock {
     private readonly staleMs = LOCK_STALE_MS,
   ) {}
 
-  acquire(): void {
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+  /** Set once the lock file is found to belong to someone else (or gone): this owner must stop writing. */
+  lost = false;
+  onLost: (() => void) | null = null;
+
+  /**
+   * Publishes the lock with its payload in one atomic step: the payload is
+   * written to a private file first, then hard-linked to the lock path (which
+   * fails with EEXIST if someone holds it). A reader therefore never sees a
+   * created-but-empty lock. Where hard links are unavailable the exclusive
+   * create is used instead, and an unreadable lock is treated as held while
+   * it is fresh rather than as free.
+   */
+  private publish(): boolean {
+    const payload = JSON.stringify({ pid: process.pid, host: hostname(), token: this.token });
+    const scratch = `${this.path}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+    try {
+      const fd = openSync(scratch, "wx");
       try {
-        const fd = openSync(this.path, "wx");
-        try {
-          writeSync(fd, JSON.stringify({ pid: process.pid, host: hostname(), token: this.token }));
-        } finally {
-          closeSync(fd);
-        }
+        writeSync(fd, payload);
+      } finally {
+        closeSync(fd);
+      }
+      try {
+        linkSync(scratch, this.path);
+        return true;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "EEXIST") return false;
+        if (code !== "EPERM" && code !== "ENOSYS" && code !== "ENOTSUP" && code !== "EXDEV" && code !== "EACCES") throw error;
+      }
+    } finally {
+      try {
+        unlinkSync(scratch);
+      } catch {
+        // The scratch file is already gone.
+      }
+    }
+    try {
+      const fd = openSync(this.path, "wx");
+      try {
+        writeSync(fd, payload);
+      } finally {
+        closeSync(fd);
+      }
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+      throw error;
+    }
+  }
+
+  acquire(): void {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (this.publish()) {
         this.held = true;
         this.startHeartbeat();
         return;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       }
       const owner = this.readOwner();
       // A lock from a live process (including another store in this process)
       // is real while its owner keeps it fresh. A dead owner crashed or was
       // killed, and an old lock was left by a host whose pid now belongs to
-      // someone else: either way it is stale.
-      if (owner && processAlive(owner.pid) && !this.expired()) throw new HostStoreLockedError(this.path, owner.pid);
-      try {
-        unlinkSync(this.path);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      }
+      // someone else: either way it is stale. A lock that cannot be read is
+      // held until it too has gone stale: its writer may be mid-publish.
+      if (!this.expired() && (!owner || processAlive(owner.pid))) throw new HostStoreLockedError(this.path, owner?.pid ?? -1);
+      this.removeStale(owner?.token ?? null);
     }
     const owner = this.readOwner();
     throw new HostStoreLockedError(this.path, owner?.pid ?? -1);
+  }
+
+  /**
+   * Takes the stale lock away by renaming it (atomic, so two contenders cannot
+   * both remove "the same" file and then each other's fresh lock), then checks
+   * what was taken. If it was not the lock that was judged stale, a live
+   * owner's lock was swept up: put it back.
+   */
+  private removeStale(judgedToken: string | null): void {
+    const taken = `${this.path}.stale.${process.pid}.${Math.random().toString(36).slice(2)}`;
+    try {
+      renameSync(this.path, taken);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    let tokenTaken: string | null = null;
+    try {
+      const parsed = JSON.parse(readFileSync(taken, "utf8")) as { token?: unknown };
+      tokenTaken = typeof parsed.token === "string" ? parsed.token : null;
+    } catch {
+      tokenTaken = null;
+    }
+    if (tokenTaken !== judgedToken) {
+      try {
+        linkSync(taken, this.path);
+      } catch {
+        // Someone published meanwhile: that lock wins, and ours was a stale race loser.
+      }
+    }
+    try {
+      unlinkSync(taken);
+    } catch {
+      // Already gone.
+    }
   }
 
   release(): void {
@@ -430,14 +507,33 @@ class OwnerLock {
   }
 
   private touch(): void {
+    if (!this.held || this.lost) return;
     try {
-      // Only our own lock: one taken over after a long stall is someone else's now.
-      if (this.readOwner()?.token !== this.token) return;
+      // Only our own lock: one taken over after a long stall is someone else's now,
+      // and then this owner must stop writing, not carry on beside the new one.
+      const owner = this.readOwner();
+      if (owner && owner.token !== this.token) return this.markLost();
+      if (!owner && !existsSync(this.path)) return this.markLost();
+      if (!owner) return;
       const now = new Date();
       utimesSync(this.path, now, now);
     } catch {
       // A missed beat is harmless; the next one tries again.
     }
+  }
+
+  /** Checks the lock right now (a resume from suspend should not wait for the next beat). */
+  verify(): boolean {
+    if (this.held && !this.lost) this.touch();
+    return !this.lost;
+  }
+
+  private markLost(): void {
+    if (this.lost) return;
+    this.lost = true;
+    this.held = false;
+    this.stopHeartbeat();
+    this.onLost?.();
   }
 
   /** Whether the lock file has gone unrefreshed for longer than staleMs. */
@@ -484,12 +580,15 @@ export class HostStore {
   private readonly statements = new Map<string, StatementSync>();
   private inTransaction = false;
   private closed = false;
+  private onLockLost: (() => void) | null = null;
 
   constructor(options: HostStoreOptions) {
     this.path = options.path;
     this.now = options.now ?? Date.now;
     const memory = options.path === ":memory:";
     this.lock = memory ? null : new OwnerLock(`${options.path}.lock`, options.lockHeartbeatMs, options.lockStaleMs);
+    if (this.lock) this.lock.onLost = () => this.fence();
+    this.onLockLost = options.onLockLost ?? null;
     this.lock?.acquire();
     try {
       this.db = openDatabase(options.path);
@@ -525,6 +624,32 @@ export class HostStore {
 
   private all(sql: string, ...values: SqlValue[]) {
     return this.statement(sql).all(...values);
+  }
+
+  /**
+   * The owner lock was taken over: another host may own this database now, so
+   * this connection stops writing for good. Closing it makes every later
+   * statement throw, which the hubs already treat as a failed durable write.
+   */
+  private fence(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.statements.clear();
+    try {
+      this.db.close();
+    } catch {
+      // Already closed or mid-statement: the connection is unusable either way.
+    }
+    try {
+      this.onLockLost?.();
+    } catch {
+      // The owner's reaction must not break the fence.
+    }
+  }
+
+  /** Whether this store still owns its database (always true for an in-memory store). */
+  ownsDatabase(): boolean {
+    return !this.lock || this.lock.verify();
   }
 
   /** Runs `fn` in one IMMEDIATE transaction; returns after COMMIT. */
