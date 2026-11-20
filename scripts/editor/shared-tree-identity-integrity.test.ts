@@ -64,7 +64,10 @@ test("S1: a tree load reads no bytes and gives no id by size; an action resolves
     await assert.rejects(resolveSharedActionFileId("Shared/b.pdf", undefined, "deleted", list), (error: Error & { status?: number }) =>
       error.status === 409 && /still being brought up to date by sync, so it cannot be deleted yet/.test(error.message), "equal size is not identity");
     assert.equal(reads.mock.callCount(), 2);
-    await assert.rejects(resolveSharedActionFileId("Shared/gone.pdf", undefined, "moved", list), /still being brought up to date/);
+    assert.equal(await resolveSharedActionFileId("Shared/gone.pdf", undefined, "moved", list), undefined, "no entry: the operation's own validation reports it");
+    assert.equal(await resolveSharedActionFileId("Shared/doc.md", undefined, "moved", async () => [entryOf("doc.md", "id-doc", { kind: "doc" })]), "id-doc", "a document is not read");
+    assert.equal(reads.mock.callCount(), 2);
+    assert.equal(await resolveSharedActionFileId("Shared/absent.pdf", undefined, "moved", async () => [entryOf("absent.pdf", "id-absent", { blobHash: "x" })]), "id-absent", "not on this disk yet: the host's check guards");
     // An id the request carries is passed to the host, which does the check; nothing is listed or read.
     const listed = listings;
     assert.equal(await resolveSharedActionFileId("Shared/b.pdf", "id-seen", "deleted", list), "id-seen");

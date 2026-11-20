@@ -133,36 +133,44 @@ export async function attachSharedFileIdTo(
  * The file id a rename, move or delete from the UI acts on. A request that
  * names one (the row or tab had a verified id) is passed on: the host refuses
  * when its entry at the path is another file. Without one it is resolved here,
- * for the one file the person acted on: the manifest's entry at that path must
- * hold the bytes on disk (one listing, one read and hash), otherwise the path
- * may hold another file than the one shown and the action is refused.
+ * for the one file the person acted on, from the manifest's entry at that path:
  *
- * An online-only placeholder (macOS/Linux report no blocks for it) is not read:
- * reading downloads it. If the manifest has an entry at the path, its id is
- * taken and the host's own expectedFileId check is the guard (it refuses when
- * its entry there changed, so the action can only land on the file the host
- * holds at that path now); without an entry the action is refused. Windows
- * cannot tell a placeholder, so the one acted-on file is read.
+ * - No entry: undefined. The host has no file there, so nothing can be acted on
+ *   and the operation's own validation says why (its errors come first).
+ * - A binary file whose copy on this disk is not the entry's bytes (one listing,
+ *   one read and hash of that file; the cache spares a repeat) is refused: the
+ *   path may hold another file than the one shown, or the disk is behind sync.
+ * - A copy that has not reached this disk, or an online-only placeholder
+ *   (macOS/Linux report no blocks for it; reading downloads it): the entry's id
+ *   is taken and the host's own expectedFileId check is the guard, since it
+ *   refuses when its entry at the path changed. Nobody saw a different file in
+ *   a tree built from a disk that has no file there. Windows cannot tell a
+ *   placeholder, so there the one file acted on is read.
+ * - A document: its working copy trails the live text by design (the host
+ *   writes it after edits), so a difference proves nothing about identity and
+ *   no read is made; the entry's id is taken (a tab that opened it, or a row
+ *   verified before, sends its own id and the host checks that).
  */
 export async function resolveSharedActionFileId(
   liberaPath: string,
   given: string | undefined,
   action: string,
   list: SharedListing,
-): Promise<string> {
+): Promise<string | undefined> {
   if (given) return given;
   const refused = () => new StorageError(`${liberaPath.split("/").at(-1) || liberaPath} is still being brought up to date by sync, so it cannot be ${action} yet. Try again once sync has caught up.`, 409);
   const notebook = liberaPath.split("/")[0];
   const entry = (await list(notebook)).find((candidate) => candidate.path === liberaPath && candidate.kind !== "folder");
-  if (!entry) throw refused();
+  if (!entry) return undefined;
+  if (entry.kind !== "blob") return entry.fileId;
   const disk = filePathFromParts(notebook, liberaPath.split("/").slice(1));
   let stats;
-  try { stats = await stat(disk); } catch { throw refused(); }
-  if (!stats.isFile()) throw refused();
+  try { stats = await stat(disk); } catch { return entry.fileId; }
+  if (!stats.isFile()) return entry.fileId;
   if (process.platform !== "win32" && stats.size > 0 && stats.blocks === 0) return entry.fileId;
   const copy = { size: stats.size, changedAt: stats.ctime.toISOString() };
   if (verifiedCopies.has(copyKey(entry, copy))) return entry.fileId;
-  if (entry.kind === "blob" && (!entry.blobHash || (entry.size !== undefined && stats.size !== entry.size))) throw refused();
+  if (!entry.blobHash || (entry.size !== undefined && stats.size !== entry.size)) throw refused();
   let same = false;
   try { same = await bytesAreEntry(entry, await readFile(disk)); } catch { throw refused(); }
   if (!same) throw refused();
