@@ -7762,7 +7762,9 @@
       "unwritable": "无法写回",
       "unreadable": "无法更新该文件",
       "shared-notebook": "共享笔记本",
-      "migrating": "正在移动到另一个笔记本"
+      "migrating": "正在移动到另一个笔记本",
+      "read-only": "你的角色无法编辑此笔记",
+      "edited": "更新链接期间该笔记被编辑"
     },
     "movedLinksUnchecked": "{notebooks} 中的笔记未能全部读取，因此其中部分链接可能未随之更新。",
     "moveUnfinishedNotice": "已移动，但部分随附内容未能跟随：{steps}。检查笔记本会找到剩下的部分。",

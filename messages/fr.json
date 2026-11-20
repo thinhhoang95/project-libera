@@ -7762,7 +7762,9 @@
       "unwritable": "il ne peut pas être réécrit",
       "unreadable": "le fichier n’a pas pu être mis à jour",
       "shared-notebook": "carnet partagé",
-      "migrating": "en cours de déplacement vers un autre carnet"
+      "migrating": "en cours de déplacement vers un autre carnet",
+      "read-only": "votre rôle ne permet pas de modifier cette note",
+      "edited": "elle a été modifiée pendant la mise à jour des liens"
     },
     "movedLinksUnchecked": "Les notes de {notebooks} n’ont pas toutes pu être lues : certains de leurs liens n’ont peut-être pas suivi.",
     "moveUnfinishedNotice": "Déplacé, mais une partie de ce qui l’accompagne n’a pas suivi : {steps}. Vérifier le carnet trouve ce qui reste.",

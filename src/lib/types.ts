@@ -276,9 +276,10 @@ export type LiberaMoveStep = { step: "images" | "reviews" | "attachments" | "met
  * that would need two paths, chart data in another notebook, a LaTeX chapter
  * whose builds would need two paths, a spelling that can't be written back,
  * a note that could not be read or written, a shared notebook's note, a note
- * a migration is moving.
+ * a migration is moving, a shared note this account cannot edit (`read-only`),
+ * a shared note edited again while its links were being updated (`edited`).
  */
-export type LiberaLinkSkipReason = "shadowed" | "shared-definition" | "chart-notebook" | "latex-builds" | "unwritable" | "unreadable" | "shared-notebook" | "migrating";
+export type LiberaLinkSkipReason = "shadowed" | "shared-definition" | "chart-notebook" | "latex-builds" | "unwritable" | "unreadable" | "shared-notebook" | "migrating" | "read-only" | "edited";
 
 /** What a move did to the paths notes write (src/lib/storage/move-links.ts). */
 export type LiberaLinkRewrites = {
