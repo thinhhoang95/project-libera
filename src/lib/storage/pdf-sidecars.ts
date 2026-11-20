@@ -125,16 +125,25 @@ async function setAside(notebook: string, store: KindStore, sidecarPath: string,
  * destination; the original stays. Removals leave side-cars in place for
  * reconcilePdfSidecars, which sets aside or re-attaches them by identity.
  * A removal sets them aside only when other bytes already took the name (retireRemovedPdf).
+ * A legacy side-car (no recorded bytes) follows by legacySidecarFollows: a
+ * move this user made through the host (`explicit`) carries it, since the
+ * readers already trusted it at the old path; a collaborator's move carries it
+ * only when the PDF has not changed since the notes were saved. Otherwise it
+ * is held where it is, and listed by heldLegacyPdfSidecars (with the host's
+ * file ID when the event has one), never attributed by guess.
  * Returns how many side-cars it copied.
  */
-export async function followSharedPdfChanges(moves: Array<{ from: string; to: string }>, removed: string[]) {
+export async function followSharedPdfChanges(moves: Array<{ from: string; to: string; fileId?: string }>, removed: string[], options: { explicit?: boolean } = {}) {
+  const explicit = options.explicit === true;
   let changed = await replayPendingPdfMoves();
   // Destinations are exclusive and sources are retained. Occupied paths and
   // swaps wait for identity-based reconciliation rather than destroying work.
-  for (const { from, to } of moves) {
-    const result = await followOneMove(from, to);
+  for (const { from, to, fileId } of moves) {
+    // A second hop before the first one's PDF arrived: the first still waits, and now ends at the new path.
+    retargetPendingMoves(from, to);
+    const result = await followOneMove(from, to, explicit, fileId);
     changed += result.changed;
-    if (result.waiting) rememberPendingMove(from, to);
+    if (result.waiting) rememberPendingMove(from, to, explicit, fileId);
   }
   // A removed PDF's notes are set aside (recoverable, and put back with the same
   // bytes under the same name), so a new PDF saved at that name starts clean.
@@ -175,7 +184,7 @@ async function retireRemovedPdf(libraryPath: string) {
  * left behind only because the PDF at the destination is not there yet (or not
  * these bytes yet): a cloud folder delivers the moved file late.
  */
-async function followOneMove(from: string, to: string): Promise<{ changed: number; waiting: boolean }> {
+async function followOneMove(from: string, to: string, explicit = false, fileId?: string): Promise<{ changed: number; waiting: boolean }> {
   let changed = 0;
   let waiting = false;
   try {
@@ -185,31 +194,83 @@ async function followOneMove(from: string, to: string): Promise<{ changed: numbe
     const pdf = filePathFromParts(target.notebook, target.pathParts);
     for (const store of KINDS) {
       let mismatch = false;
-      if (await copyLifecycleSidecar(store.path(source.notebook, source.pathParts), store.path(target.notebook, target.pathParts), notebookPath(target.notebook), async (bytes) => {
+      const sidecarFrom = store.path(source.notebook, source.pathParts);
+      const held = heldKey(store.kind, from, to);
+      if (await copyLifecycleSidecar(sidecarFrom, store.path(target.notebook, target.pathParts), notebookPath(target.notebook), async (bytes) => {
         const identity = sidecarIdentity(JSON.parse(bytes.toString("utf8")));
-        const current = identity ? await cachedPdfIdentity(pdf).catch(() => null) : null;
-        const matches = current !== null && identity !== null && current.contentHash === identity.contentHash && current.size === identity.size;
+        if (!identity) {
+          // A legacy side-car: decided by the one rule, never by guess.
+          const verdict = await legacyVerdict(from, to, pdf, sidecarFrom, explicit);
+          if (verdict === "held") heldLegacy.set(held, { kind: store.kind, from, to, ...(fileId ? { fileId } : {}), at: Date.now() });
+          else if (verdict === "waits") mismatch = true;
+          return verdict === "follows";
+        }
+        const current = await cachedPdfIdentity(pdf).catch(() => null);
+        const matches = current !== null && current.contentHash === identity.contentHash && current.size === identity.size;
         if (!matches) mismatch = true;
         return matches;
-      })) changed += 1;
+      })) { changed += 1; heldLegacy.delete(held); }
       else if (mismatch) waiting = true;
     }
   } catch { /* Unavailable or ambiguous inputs stay in their original sidecar. */ }
   return { changed, waiting };
 }
 
+/**
+ * Whether a legacy PDF side-car (it records no bytes) follows its PDF to a new
+ * path: "follows", "waits" (the PDF is not there yet) or "held" (nothing says
+ * the notes are this file's, or the old name still has a PDF). The one rule,
+ * for Check Notebook to predict too. A move this user made (`explicit`) is
+ * their own act on the file the side-car sat beside. A collaborator's move
+ * carries it only with the PDF not newer than the notes (the live import's own
+ * legacy rule): a file saved after them was not annotated by them.
+ */
+export function legacySidecarFollows(input: { explicit: boolean; pdfPresent: boolean | null; oldNameHasPdf: boolean | null; pdfModifiedMs: number; notesModifiedMs: number }): "follows" | "waits" | "held" {
+  if (!input.pdfPresent) return "waits";
+  if (input.oldNameHasPdf !== false) return "held";
+  if (input.explicit) return "follows";
+  return input.pdfModifiedMs <= input.notesModifiedMs + 2_000 ? "follows" : "held";
+}
+
+async function legacyVerdict(from: string, to: string, pdf: string, sidecar: string, explicit: boolean) {
+  const existence = fileExistence();
+  const [pdfPresent, oldNameHasPdf, pdfStats, notes] = await Promise.all([existence.isFile(to), existence.isFile(from), stat(pdf).catch(() => null), stat(sidecar).catch(() => null)]);
+  return legacySidecarFollows({ explicit, pdfPresent, oldNameHasPdf, pdfModifiedMs: pdfStats?.mtimeMs ?? 0, notesModifiedMs: notes?.mtimeMs ?? 0 });
+}
+
+/** Legacy side-cars a move did not carry, kept in memory for Check Notebook and the user. */
+const HELD_LEGACY = Symbol.for("libera.heldLegacyPdfSidecars");
+type HeldLegacy = { kind: PdfSidecarKind; from: string; to: string; fileId?: string; at: number };
+const heldState = globalThis as { [HELD_LEGACY]?: Map<string, HeldLegacy> };
+const heldLegacy = heldState[HELD_LEGACY] ??= new Map<string, HeldLegacy>();
+const heldKey = (kind: PdfSidecarKind, from: string, to: string) => `${kind}\u0000${from}\u0000${to}`;
+
+/** The legacy side-cars held back after a shared move (all notebooks when `notebook` is omitted); each stays at `from`, with the host's file ID when the event had one. */
+export function heldLegacyPdfSidecars(notebook?: string) {
+  return [...heldLegacy.values()].filter((held) => notebook === undefined || splitFilePath(held.from).notebook === notebook);
+}
+
 /** Moves whose destination PDF had not arrived (or matched) when the host reported them; replayed later. */
 const PENDING_MOVES = Symbol.for("libera.pendingPdfSidecarMoves");
-type PendingMove = { from: string; to: string; at: number };
+type PendingMove = { from: string; to: string; at: number; explicit?: boolean; fileId?: string };
 const pendingState = globalThis as { [PENDING_MOVES]?: Map<string, PendingMove> };
 const pendingMoves = pendingState[PENDING_MOVES] ??= new Map<string, PendingMove>();
 const PENDING_MOVE_LIMIT = 2_000;
 const PENDING_MOVE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 
-function rememberPendingMove(from: string, to: string) {
+function rememberPendingMove(from: string, to: string, explicit = false, fileId?: string) {
   const key = `${from}\u0000${to}`;
   if (pendingMoves.size >= PENDING_MOVE_LIMIT && !pendingMoves.has(key)) return;
-  pendingMoves.set(key, { from, to, at: Date.now() });
+  pendingMoves.set(key, { from, to, at: Date.now(), ...(explicit ? { explicit } : {}), ...(fileId ? { fileId } : {}) });
+}
+
+/** A pending move into `from` (its PDF not arrived) now ends where the file went next: A to B, then B to C, is A to C. */
+function retargetPendingMoves(from: string, to: string) {
+  for (const [key, move] of [...pendingMoves]) {
+    if (move.to !== from) continue;
+    pendingMoves.delete(key);
+    if (move.from !== to) rememberPendingMove(move.from, to, move.explicit, move.fileId);
+  }
 }
 
 /**
@@ -222,7 +283,7 @@ export async function replayPendingPdfMoves(notebook?: string) {
   for (const [key, move] of [...pendingMoves]) {
     if (Date.now() - move.at > PENDING_MOVE_TTL_MS) { pendingMoves.delete(key); continue; }
     try { if (notebook !== undefined && splitFilePath(move.to).notebook !== notebook) continue; } catch { pendingMoves.delete(key); continue; }
-    const result = await followOneMove(move.from, move.to);
+    const result = await followOneMove(move.from, move.to, move.explicit === true, move.fileId);
     changed += result.changed;
     if (!result.waiting) pendingMoves.delete(key);
   }
