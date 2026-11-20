@@ -77,7 +77,7 @@ import {
 import { isTextFileType, type LiberaFileMovePayload, type LiberaMovedLink, type LiberaFilePayload, type LiberaFileType } from "@/lib/types";
 import { normalizePdfCommentThreads } from "@/lib/pdf-comments";
 import { copyInkFolder, copyInkThroughEdit, supportsInk } from "@/lib/storage/ink";
-import { existingSidecars, lostSidecarRecords, moveFileSidecars, moveFolderSidecars, removeFileSidecars, removeFolderSidecars, SIDECAR_KINDS } from "@/lib/storage/sidecars";
+import { existingSidecars, legacyAnnotationSidecars, lostSidecarRecords, moveFileSidecars, moveFolderSidecars, removeFileSidecars, removeFolderSidecars, SIDECAR_KINDS } from "@/lib/storage/sidecars";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { copyTranscript } from "@/lib/storage/transcripts";
 import { DEFINITIONS_FILE_TYPES } from "@/lib/definitions";
@@ -262,7 +262,7 @@ type FileMove = {
  */
 async function performFileMove(move: FileMove): Promise<LiberaFileMovePayload> {
   const { notebook, pathParts, nextNotebook, nextParts, currentRelativePath, nextRelativePath, currentFileType, nextFileType } = move;
-  await assertNoLeftoverRecords(nextNotebook, nextParts, nextFileType, move.caseOnly);
+  await assertNoLeftoverRecords(nextNotebook, nextParts, nextFileType, move.caseOnly, notebook === nextNotebook ? pathParts : undefined);
   await assertTypeChangeLosesNothing(notebook, pathParts, currentRelativePath, currentFileType, nextFileType);
   await assertSidecarsCanMove(nextNotebook, nextParts, currentFileType, nextFileType);
   const changedLinks = currentFileType === "markdown" && nextFileType === "markdown" ? await linksChangedByMove(currentRelativePath, nextRelativePath) : [];
@@ -463,8 +463,10 @@ const RECORD_NAMES: Record<string, string> = {
  * Caches are made again, so they may be replaced; so may an empty review,
  * which is what opening a note makes.
  */
-export async function assertNoLeftoverRecords(notebook: string, parts: string[], fileType: string, ownSidecars = false) {
+export async function assertNoLeftoverRecords(notebook: string, parts: string[], fileType: string, ownSidecars = false, moving?: string[]) {
   const names = await leftoverRecords(notebook, parts, fileType, ownSidecars);
+  // Notes in an older layout that the arriving file would be given when opened (annotations.ts inspectLegacyAnnotations).
+  if (!ownSidecars && (await legacyAnnotationSidecars(notebook, parts, fileType, moving)).length && !names.includes("annotations")) names.push("annotations");
   if (!names.length) return;
   const list = names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names[0];
   throw new StorageError(`${relativeFilePath(notebook, parts)} still has the ${list} of a file that was there before. Check the notebook to give them to a file or remove them, then move again.`, 409);

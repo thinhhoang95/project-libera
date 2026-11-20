@@ -7,6 +7,7 @@ import {
   assertPdfFileName,
   getFileType,
 } from "@/lib/storage/file-types";
+import { IMAGE_ANNOTATIONS_SUFFIX, PDF_ANNOTATIONS_SUFFIX } from "@/lib/storage/constants";
 import { copyFileIfExists, ensureParentDirectory, pathExists, writeJsonForSource } from "@/lib/storage/fs-utils";
 import { readFileSignature } from "@/lib/storage/file-signature";
 import { cachedPdfIdentity, parsePdfIdentity } from "@/lib/storage/pdf-identity";
@@ -444,6 +445,82 @@ async function migrateLegacyAnnotations(notebook: string, parts: string[], kind:
   for (const old of legacy) {
     if (await pathExists(old)) await archiveLegacyAnnotations(old, "migrated");
   }
+}
+
+/**
+ * The older annotation layouts, read without upgrading them (the migrator
+ * above renames and copies; the notebook check and the destination check must
+ * not): the legacy files saved for a file name, and the files of the notebook
+ * that name could belong to, matched as the migrator matches (same name, any
+ * case, `path` excluded). One owner means the migrator would attach the notes
+ * to it; none or several, it would not. `namesakes` is null when the notebook
+ * can't be listed.
+ */
+export async function inspectLegacyAnnotations(notebook: string, parts: string[], kind: "pdf" | "image"): Promise<{ files: string[]; namesakes: string[][] | null }> {
+  const name = parts.at(-1)!;
+  const files: string[] = [];
+  for (const candidate of kind === "pdf" ? [legacyFlatPdfAnnotationsPath(notebook, name), legacyPdfAnnotationsPath(notebook, name)] : [legacyFlatImageAnnotationsPath(notebook, name), legacyImageAnnotationsPath(notebook, name)]) {
+    if (await pathExists(candidate)) files.push(candidate);
+  }
+  if (!files.length) return { files, namesakes: [] };
+  try {
+    const own = parts.join("/").toLowerCase();
+    return { files, namesakes: (await annotationFilePaths(notebook, [], kind)).filter((file) => file.at(-1)?.toLowerCase() === name.toLowerCase() && file.join("/").toLowerCase() !== own) };
+  } catch {
+    return { files, namesakes: null };
+  }
+}
+
+export type LegacyAnnotationFile = {
+  /** "pdf" or "image". */
+  kind: "pdf" | "image";
+  /** The file name the notes were saved under; older layouts hold no folder. */
+  name: string;
+  /** Where they are on disk. */
+  files: string[];
+  /** The files of the notebook with that name; the migrator attaches the notes only when there is exactly one. */
+  owners: string[][];
+};
+
+/**
+ * Every annotation file still in an older layout in a notebook (the flat
+ * `.libera/annotations/<kind>/<name>.json` and the dot file beside the files),
+ * with the files that could own it. Read only. `unreadable` is set when the
+ * notebook's files or those folders can't be listed.
+ */
+export async function listLegacyAnnotations(notebook: string): Promise<{ legacy: LegacyAnnotationFile[]; unreadable: boolean }> {
+  const found = new Map<string, LegacyAnnotationFile>();
+  let unreadable = false;
+  const list = async (directory: string) => {
+    try { return await readdir(directory); }
+    catch (error) {
+      if (!["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) unreadable = true;
+      return [];
+    }
+  };
+  for (const kind of ["pdf", "image"] as const) {
+    const flat = kind === "pdf" ? legacyFlatPdfAnnotationsPath : legacyFlatImageAnnotationsPath;
+    const dotted = kind === "pdf" ? PDF_ANNOTATIONS_SUFFIX : IMAGE_ANNOTATIONS_SUFFIX;
+    const add = (name: string, file: string) => {
+      const entry = found.get(`${kind}/${name}`) ?? { kind, name, files: [], owners: [] };
+      entry.files.push(file);
+      found.set(`${kind}/${name}`, entry);
+    };
+    const flatDirectory = path.dirname(flat(notebook, "x"));
+    for (const entry of await list(flatDirectory)) if (entry.endsWith(".json") && entry.length > 5) add(entry.slice(0, -5), path.join(flatDirectory, entry));
+    const root = notebookPath(notebook);
+    for (const entry of await list(root)) if (entry.startsWith(".") && entry.endsWith(dotted) && entry.length > 1 + dotted.length) add(entry.slice(1, -dotted.length), path.join(root, entry));
+  }
+  if (!found.size) return { legacy: [], unreadable };
+  for (const kind of ["pdf", "image"] as const) {
+    if (![...found.values()].some((entry) => entry.kind === kind)) continue;
+    let files: string[][] = [];
+    try { files = await annotationFilePaths(notebook, [], kind); } catch { unreadable = true; }
+    for (const entry of found.values()) {
+      if (entry.kind === kind) entry.owners = files.filter((file) => file.at(-1)?.toLowerCase() === entry.name.toLowerCase());
+    }
+  }
+  return { legacy: [...found.values()], unreadable };
 }
 
 export async function migratePdfAnnotationDirectory(notebook: string, parts: string[]) {
