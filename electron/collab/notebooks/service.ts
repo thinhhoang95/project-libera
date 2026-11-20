@@ -152,6 +152,8 @@ export interface JoinResult {
   role: Role;
   /** Every file was written before the answer (false: the rest arrive in the background). */
   materialized: boolean;
+  /** Why the files are not all placed, when a placement failed (an actionable sentence). */
+  materializationError?: string;
   alreadyJoined: boolean;
 }
 
@@ -2091,7 +2093,9 @@ export class NotebookServiceImpl implements NotebookService {
     const known = this.projects.get(project.id);
     const kind: ProjectKind = project.kind === "album" ? "album" : "notebook";
     if (known && !known.revoked) {
-      return { projectId: project.id, kind, name: known.name, notebook: known.notebook, role: known.role, materialized: known.runtime?.isMaterialized() ?? false, alreadyJoined: true };
+      const joined = known.runtime?.isMaterialized() ?? false;
+      const problem = joined ? null : known.runtime?.placementProblem() ?? null;
+      return { projectId: project.id, kind, name: known.name, notebook: known.notebook, role: known.role, materialized: joined, ...(problem ? { materializationError: problem } : {}), alreadyJoined: true };
     }
 
     // An album joins the gallery as one of its folders; a notebook joins the library.
@@ -2172,7 +2176,8 @@ export class NotebookServiceImpl implements NotebookService {
     // (the rest of the work continues in the background either way).
     if (runtime && materialized) await runtime.whenIdle(this.joinTimeoutMs);
     this.deps.emit({ t: "project-changed", projectId: project.id });
-    return { projectId: project.id, kind, name: project.name, notebook, role: project.role, materialized, alreadyJoined: false };
+    const placementProblem = !materialized ? runtime?.placementProblem() ?? null : null;
+    return { projectId: project.id, kind, name: project.name, notebook, role: project.role, materialized, ...(placementProblem ? { materializationError: placementProblem } : {}), alreadyJoined: false };
   }
 
   /** Creates `<base>/<name>`, or "<name> (2)" and so on when the name is taken (case-insensitively). */
