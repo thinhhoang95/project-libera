@@ -34,6 +34,19 @@ function rememberCopy(entry: FileListEntry, copy: CopyStat) {
   verifiedCopies.add(copyKey(entry, copy));
 }
 
+/**
+ * Whether the listing's entry is the identity a tree row stands for, without
+ * reading anything. A shared document is shown and opened from the host's live
+ * text, never from its disk copy, so what the person acts on is the manifest's
+ * entry at that path when the tree was listed: its id is stamped directly. A row
+ * that goes stale (another document takes the path later) keeps the old id, and
+ * the host's expectedFileId check refuses the action. Binaries are shown from the
+ * disk copy, so their id waits for a verified copy (isVerifiedCopy).
+ */
+function isIdentifiedRow(entry: FileListEntry, node: LiberaFileNode): boolean {
+  return entry.kind === "doc" || isVerifiedCopy(entry, node);
+}
+
 /** Whether this copy of the node's file was already shown to be the entry, and has not changed since. */
 export function isVerifiedCopy(entry: FileListEntry, node: LiberaFileNode): boolean {
   return node.changedAt !== undefined && verifiedCopies.has(copyKey(entry, { size: node.size, changedAt: node.changedAt }));
@@ -62,7 +75,7 @@ export async function attachSharedFileIdsTo(
   const signal = { live: true };
   try {
     await Promise.race([
-      list(notebook).then((entries) => { if (signal.live) attachFileIds(nodes, entries, isVerifiedCopy); }),
+      list(notebook).then((entries) => { if (signal.live) attachFileIds(nodes, entries, isIdentifiedRow); }),
       new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("timeout")), timeoutMs); }),
     ]);
   } catch {
@@ -109,7 +122,7 @@ export async function attachSharedFileIdTo(
     const entry = (await list(file.notebook)).find((candidate) => candidate.path === file.path && candidate.kind !== "folder");
     if (!signal.live) return;
     if (!entry) { file.fileIdState = "mismatch"; return; }
-    let verified = isVerifiedCopy(entry, file);
+    let verified = isIdentifiedRow(entry, file);
     if (!verified && content !== undefined) {
       verified = await bytesAreEntry(entry, Buffer.from(content, "utf8"));
       if (!signal.live) return;

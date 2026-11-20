@@ -131,7 +131,8 @@ test("finding 1: file ids attach only where the listing agrees with the node, an
     return find(book.children);
   };
   // A tree load reads no bytes (see shared-tree-identity-integrity.test.ts), so no row is given an id by size or name.
-  for (const name of ["Shared/a.pdf", "Shared/b.pdf", "Shared/doc.md", "Shared/sub/c.png"]) assert.equal(byPath(name)?.fileId, undefined, name);
+  for (const name of ["Shared/a.pdf", "Shared/b.pdf", "Shared/sub/c.png"]) assert.equal(byPath(name)?.fileId, undefined, name);
+  assert.equal(byPath("Shared/doc.md")?.fileId, "id-doc", "a document row carries the listing's entry id");
   assert.equal(byPath("Shared/a.pdf")?.fileIdState, "unknown");
 
   const offline = notebookNode("Shared", [file("Shared", "a.pdf", { size: 5 })]);

@@ -84,6 +84,31 @@ test("S1: a tree load reads no bytes and gives no id by size; an action resolves
   });
 });
 
+test("S1: a document row carries the manifest entry's id from the listing, so a stale row cannot act on the document that replaced it", async () => {
+  const manifest = new Map<string, string>([["Shared/notes.md", "id-A"]]);
+  const list = async () => [...manifest].map(([p, id]) => entryOf(p.split("/")[1], id, { kind: "doc" }));
+  const row = [file("notes.md", { fileType: "markdown" })];
+  await attachSharedFileIds([book(row)], list, () => true);
+  assert.equal(row[0].fileId, "id-A", "a document is identified by the listing, with no read");
+  // Another document takes the name.
+  manifest.set("Shared/notes.md", "id-B");
+  // The stub host compares expectedFileId with its entry at the path, as the real host does.
+  const host = (path: string, expectedFileId: string | undefined) => {
+    if (expectedFileId !== undefined && expectedFileId !== manifest.get(path)) throw Object.assign(new Error("This file changed since it was read."), { status: 409 });
+    return "deleted";
+  };
+  const sent = await resolveSharedActionFileId("Shared/notes.md", row[0].fileId, "deleted", list);
+  assert.throws(() => host("Shared/notes.md", sent), (error: Error & { status?: number }) => error.status === 409);
+  // A later listing replaces the id with the new occupant's.
+  await attachSharedFileIds([book(row)], list, () => true);
+  assert.equal(row[0].fileId, "id-B");
+  // An unanswered listing keeps the id the row had.
+  const kept = [file("notes.md", { fileType: "markdown" })];
+  await attachSharedFileIds([book(kept)], async () => { throw new Error("offline"); }, () => true);
+  assert.equal(kept[0].fileIdState, "unknown");
+  assert.equal((mergeTree(treeOf(book([file("notes.md", { fileId: "id-A" })])), treeOf(book(kept))).notebooks[0].children[0] as LiberaFileNode).fileId, "id-A");
+});
+
 test("S1: opening a file verifies the bytes that read already returned; a listing timeout or a file read without bytes stays unknown", async () => {
   const entries = [entryOf("a.md", "id-a", { kind: "blob", size: 5, blobHash: sha("hello") }), entryOf("b.md", "id-b", { kind: "blob", size: 5, blobHash: sha("other") })];
   const list = async () => entries;
