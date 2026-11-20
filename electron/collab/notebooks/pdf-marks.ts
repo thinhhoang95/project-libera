@@ -31,7 +31,12 @@ interface CopyOptions {
   local?: boolean;
   /** The app is stopping: the copy waiting for its delay is written now. */
   final?: boolean;
+  /** A takedown's export: the server's current comments are required, never replaced by what the sidecar already holds. */
+  strict?: boolean;
 }
+
+/** How long a takedown export waits for one PDF's comments before it fails (one bounded pass, no retry loop). */
+const STRICT_COMMENTS_MS = 15_000;
 
 async function hashFile(file: string): Promise<string> {
   const hash = createHash("sha256");
@@ -545,6 +550,18 @@ export class PdfMarksRuntime {
 
   /** The threads for the copy; null keeps the ones it has, as when the server cannot answer. */
   private async commentsForCopy(doc: PdfDoc, options: CopyOptions): Promise<unknown[] | null> {
+    if (options.strict) {
+      // A takedown deletes the only server copy of these comments: an answer that failed or came late fails the export.
+      if (!this.ctx.listComments) throw new Error(`The comments on ${doc.path} could not be read.`);
+      const list = async (docId: string) => {
+        const answer = await this.ctx.listComments!(docId);
+        if (answer === null) throw new Error(`The comments on ${doc.path} could not be read.`);
+        return answer;
+      };
+      let strictTimer: ReturnType<typeof setTimeout> | undefined;
+      const tooLate = new Promise<never>((_resolve, reject) => { strictTimer = setTimeout(() => reject(new Error(`The comments on ${doc.path} did not arrive in time.`)), STRICT_COMMENTS_MS); });
+      return Promise.race([list(doc.docId), tooLate]).finally(() => clearTimeout(strictTimer));
+    }
     const threads = this.ctx.listComments?.(doc.docId).catch(() => null) ?? Promise.resolve(null);
     if (!options.final) return threads;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -603,7 +620,7 @@ export class PdfMarksRuntime {
    * answer for the threads. Failures propagate so the takedown is not carried on.
    */
   async exportLocal(): Promise<void> {
-    await Promise.all([...this.docs.values()].map((doc) => this.writeCopy(doc, { local: true, final: true })));
+    await Promise.all([...this.docs.values()].map((doc) => this.writeCopy(doc, { local: true, final: true, strict: true })));
   }
 
   async seed(fileId: string, relative: string, input: PdfImportRequest): Promise<void> {

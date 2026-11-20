@@ -132,6 +132,8 @@ export interface VersionResponse {
   guardedProjectDeletion?: boolean;
   /** Server can fence a project's writes for a takedown (ApiRoutes.projectClosing). */
   takedownFence?: boolean;
+  /** Server checks the takedown's recovery report before deleting, and keeps final binaries downloadable for the former members for a while. */
+  takedownRecovery?: boolean;
   /** Server makes PDF documents on `open`. Live PDFs need it, and older servers refuse those opens. */
   livePdfs?: boolean;
   protocolVersion: number;
@@ -174,6 +176,19 @@ export interface FolderLeaseRequest {
 /** What a takedown fence froze: every live document of the project and its final sequence. */
 export interface ProjectClosingResponse {
   docs: Array<{ docId: string; kind: DocKind | "manifest" | "pdf"; serverSeq: number }>;
+}
+
+/**
+ * What the owner's device recovered from the fenced project before asking for its deletion: counts of the
+ * comment threads, their messages, suggestions and reviews it wrote to the notebook's local archive. The
+ * server refuses the deletion when it holds more than that, unless `incomplete` says the owner accepted a partial export.
+ */
+export interface TakedownRecovery {
+  threads: number;
+  messages: number;
+  suggestions: number;
+  reviews: number;
+  incomplete?: boolean;
 }
 
 export interface FolderLease {
@@ -732,6 +747,11 @@ export const ApiRoutes = {
    * fence when the takedown is abandoned.
    */
   projectClosing: (projectId: string) => `/v1/projects/${encodeURIComponent(projectId)}/closing`,
+  /**
+   * GET → the bytes of a binary a taken-down project held, for a former member, for a limited time after
+   * the takedown (the project and its normal blob route are gone by then).
+   */
+  takedownRecoveryBlob: (projectId: string, hash: string) => `/v1/takedown-recoveries/${encodeURIComponent(projectId)}/blobs/${encodeURIComponent(hash)}`,
   /** POST AlbumActivityRequest → 204: tells the album's other members about new photos. */
   albumActivity: (projectId: string) => `/v1/projects/${encodeURIComponent(projectId)}/album-activity`,
   commands: "/v1/commands",

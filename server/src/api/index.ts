@@ -17,6 +17,7 @@ import { registerReviewRoutes } from "./reviews.js";
 import { registerRevisionRoutes } from "./revisions.js";
 import { registerSuggestionRoutes } from "./suggestions.js";
 import { registerSystemRoutes } from "./system.js";
+import { registerTakedownRecoveryRoutes } from "./takedown-recovery.js";
 import { registerThreadRoutes } from "./threads.js";
 
 export async function registerApi(app: FastifyInstance, context: ServerContext): Promise<void> {
@@ -27,6 +28,7 @@ export async function registerApi(app: FastifyInstance, context: ServerContext):
   registerDocumentRoutes(app, context);
   registerPdfRoutes(app, context);
   registerBlobRoutes(app, context);
+  registerTakedownRecoveryRoutes(app, context);
   registerAlbumRoutes(app, context);
   registerThreadRoutes(app, context);
   registerRevisionRoutes(app, context);

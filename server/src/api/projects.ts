@@ -6,6 +6,7 @@ import { z } from "zod";
 
 import { requireProjectAction, writeAudit } from "../auth/access.js";
 import { recordOrphanedBlobs } from "../blobs/gc.js";
+import { retainTakedownRecovery } from "./takedown-recovery.js";
 import type { ServerContext } from "../context.js";
 import type { DB } from "../db/types.js";
 import { HttpError } from "../http/errors.js";
@@ -24,6 +25,7 @@ import {
   type ProjectKind,
   type ProjectSummary,
   type Role,
+  type TakedownRecovery,
 } from "../protocol.js";
 import { aiHintSchema, iso, notifyRooms, pathId, publish, requireAccount, route } from "./common.js";
 
@@ -143,6 +145,24 @@ export function announceMembership(context: ServerContext, projectId: string, ac
   }
 }
 
+/** What the server holds that only it holds: live threads and their messages, suggestions and reviews. */
+async function requireRecovery(trx: Kysely<DB>, projectId: string, reported: TakedownRecovery | undefined): Promise<void> {
+  const total = async (query: Promise<{ n: string | number | bigint }>) => Number((await query).n);
+  const held = {
+    threads: await total(trx.selectFrom("threads").select((eb) => eb.fn.countAll().as("n")).where("project_id", "=", projectId).where("deleted_at", "is", null).executeTakeFirstOrThrow()),
+    messages: await total(trx.selectFrom("messages as m").innerJoin("threads as t", "t.id", "m.thread_id").select((eb) => eb.fn.countAll().as("n"))
+      .where("t.project_id", "=", projectId).where("t.deleted_at", "is", null).where("m.deleted_at", "is", null).executeTakeFirstOrThrow()),
+    suggestions: await total(trx.selectFrom("suggestions").select((eb) => eb.fn.countAll().as("n")).where("project_id", "=", projectId).executeTakeFirstOrThrow()),
+    reviews: await total(trx.selectFrom("reviews").select((eb) => eb.fn.countAll().as("n")).where("project_id", "=", projectId).executeTakeFirstOrThrow()),
+  };
+  if (held.threads + held.messages + held.suggestions + held.reviews === 0) return;
+  if (!reported) throw new HttpError("conflict", "This notebook has comments, suggestions or reviews that were not exported. Update the app and take it down again.");
+  if (reported.incomplete) return;
+  if (reported.threads < held.threads || reported.messages < held.messages || reported.suggestions < held.suggestions || reported.reviews < held.reviews) {
+    throw new HttpError("conflict", "Some comments, suggestions or reviews were not exported before the takedown. The notebook was kept; take it down again.");
+  }
+}
+
 export function registerProjectRoutes(app: FastifyInstance, context: ServerContext): void {
   const { db } = context;
 
@@ -204,7 +224,11 @@ export function registerProjectRoutes(app: FastifyInstance, context: ServerConte
     const { projectId } = projectParams.parse(request.params);
     const actor = bindActor(accountId, undefined);
     await requireProjectAction(db, projectId, accountId, "delete-project", actor);
-    const body = z.object({ expectedManifestSeq: z.number().int().nonnegative().optional() }).parse(request.body ?? {});
+    const count = z.number().int().nonnegative();
+    const body = z.object({
+      expectedManifestSeq: z.number().int().nonnegative().optional(),
+      recovery: z.object({ threads: count, messages: count, suggestions: count, reviews: count, incomplete: z.boolean().optional() }).optional(),
+    }).parse(request.body ?? {});
     const { docs, members } = await db.transaction().execute(async (trx) => {
       // Lock order, shared with persistUpdate (sync/store.ts): every document
       // row first (the manifest's included), then memberships. The manifest
@@ -225,6 +249,12 @@ export function registerProjectRoutes(app: FastifyInstance, context: ServerConte
           throw new HttpError("conflict", "The notebook changed after its local export. Export its current files before taking it down.");
         }
       }
+      // Comment threads, suggestions and reviews live only here. A fenced takedown deletes them, so the owner's
+      // device must report having exported at least what the server holds (or say the export is incomplete).
+      if (fence?.closing_at) await requireRecovery(trx, projectId, body.recovery);
+      // Final binaries stay downloadable by the former members for a while (takedown-recovery.ts).
+      const named = await trx.selectFrom("projects").select("name").where("id", "=", projectId).executeTakeFirst();
+      await retainTakedownRecovery(trx, projectId, named?.name ?? "");
       // Reviews reference revisions without ON DELETE CASCADE. Remove them
       // first, then let the project's foreign keys erase all dependent rows.
       await trx.deleteFrom("reviews").where("project_id", "=", projectId).execute();

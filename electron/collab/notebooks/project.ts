@@ -14,7 +14,7 @@ import type * as Y from "yjs";
 
 import type { FileBlobResponse, FileListEntry, FileListResponse, FileOpRequest, FileOpResult, HostEvent, LocalAlbum, LocalAlbumPhoto, Reconciliation, UpdateAlbumRequest } from "../../../src/lib/collab/local-api";
 import type { Provenance } from "../../../src/lib/collab/protocol/actor";
-import type { ProjectClosingResponse } from "../../../src/lib/collab/protocol/api";
+import type { ProjectClosingResponse, TakedownRecovery } from "../../../src/lib/collab/protocol/api";
 import type { Role } from "../../../src/lib/collab/protocol/roles";
 import { roleAtLeast } from "../../../src/lib/collab/protocol/roles";
 import {
@@ -643,7 +643,7 @@ export class SharedProject {
    * sequence; everything is exported from state taken after that, so no late
    * change can exist only on the server. Returns the manifest sequence to delete against.
    */
-  prepareLocalConversion(beginFence: () => Promise<ProjectClosingResponse>): Promise<number> {
+  prepareLocalConversion(beginFence: () => Promise<ProjectClosingResponse>, options: { acceptIncompleteExport?: boolean } = {}): Promise<{ sequence: number; recovery: TakedownRecovery }> {
     return this.enqueueExplicit(async () => {
       const hub = this.manifestHub;
       if (!hub || !this.manifestReady() || !hub.getStatus().connected || hub.pendingCount > 0) {
@@ -702,9 +702,59 @@ export class SharedProject {
         this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: could not flush the exported files to disk`, error);
         throw new ControlError(503, "offline", "Could not make the exported files durable. The shared project was kept.");
       }
+      // The comment stores only the server holds (threads, suggestions, reviews, PDF comments): one pass, after the fence.
+      const recovery = await this.exportCommentStores(fence, layout.paths, guard, options.acceptIncompleteExport === true);
       if (!await current()) throw new ControlError(409, "conflict", "The notebook changed during its local export. Retry taking it down.");
-      return sequence;
+      return { sequence, recovery };
     });
+  }
+
+  /**
+   * Writes every thread (with its messages), suggestion and review of every document the fence froze, PDF comments
+   * included, to `_archive/shared-takedown-comments.json` in the notebook, and counts them: the server compares the
+   * counts with what it holds before it deletes. A store that cannot be read stops the takedown, unless the owner
+   * accepted an incomplete export, which is then recorded in the file and reported to the server.
+   * One bounded pass: nothing is retried here.
+   */
+  private async exportCommentStores(fence: ProjectClosingResponse, paths: ReadonlyMap<string, string>, guard: WriteGuard, acceptIncomplete: boolean): Promise<TakedownRecovery> {
+    const api = this.ctx.host.api;
+    if (!api) throw new ControlError(503, "offline", "Connect and sync this notebook before taking it down.");
+    const pathOfDoc = new Map<string, string>();
+    for (const [fileId, relative] of paths) {
+      const record = this.state.layout[fileId];
+      if (record?.docId) pathOfDoc.set(record.docId, relative);
+    }
+    const recovery: TakedownRecovery = { threads: 0, messages: 0, suggestions: 0, reviews: 0 };
+    const documents: Array<Record<string, unknown>> = [];
+    const unreadable: string[] = [];
+    for (const doc of fence.docs) {
+      if (doc.kind === "manifest") continue;
+      const label = pathOfDoc.get(doc.docId) ?? doc.docId;
+      try {
+        const threads = await api.listThreads(doc.docId);
+        // A PDF has comment threads but no suggestions or reviews.
+        const suggestions = doc.kind === "pdf" ? [] : await api.listSuggestions(doc.docId);
+        const reviews = doc.kind === "pdf" ? [] : await api.listReviews(doc.docId);
+        recovery.threads += threads.length;
+        recovery.messages += threads.reduce((sum, thread) => sum + thread.messages.length, 0);
+        recovery.suggestions += suggestions.length;
+        recovery.reviews += reviews.length;
+        if (threads.length || suggestions.length || reviews.length) documents.push({ docId: doc.docId, kind: doc.kind, path: label, threads, suggestions, reviews });
+      } catch (error) {
+        if (!acceptIncomplete) throw new ControlError(503, "offline", `Could not export the comments on ${label}. The shared project was kept; retry taking it down.`);
+        this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: the comments on ${label} could not be exported`, error);
+        unreadable.push(label);
+      }
+    }
+    if (unreadable.length) recovery.incomplete = true;
+    if (documents.length || unreadable.length) {
+      const body = { version: 1, exportedAt: new Date().toISOString(), project: this.info.projectId, ...(unreadable.length ? { incomplete: unreadable } : {}), documents };
+      const target = await resolveInside(this.info.root, `${ARCHIVE_DIRECTORY}/shared-takedown-comments.json`);
+      await ensureDirectory(path.dirname(target), guard);
+      await writeFileAtomic(target, Buffer.from(`${JSON.stringify(body, null, 2)}\n`, "utf8"), guard);
+      await flushToDisk([target], []).catch(() => { throw new ControlError(503, "offline", "Could not make the exported comments durable. The shared project was kept."); });
+    }
+    return recovery;
   }
 
   /** Waits until every document this device holds open has the updates the takedown fence froze on the server. */
@@ -766,7 +816,7 @@ export class SharedProject {
         const disk = await readIfExists(target);
         const expected = disk === null ? null : sha256(disk);
         if (expected === entry.blobHash) continue;
-        const bytes = await this.blobBytes(entry.blobHash);
+        const bytes = await this.terminalBlobBytes(entry.blobHash);
         if (!bytes || sha256(bytes) !== entry.blobHash) { missing.push(relative); continue; }
         if (disk && !this.info.album) await this.archive(relative, contentGuard(target, expected, guard));
         await writeFileAtomic(target, bytes, contentGuard(target, disk && !this.info.album ? null : expected, guard));
@@ -775,6 +825,23 @@ export class SharedProject {
       }
     }
     return missing;
+  }
+
+  /**
+   * The bytes of a binary after the project was taken down: what this device already holds, else the server's
+   * recovery copy for former members. One attempt each, no retry timer: access is gone, and the recovery window is bounded.
+   */
+  private async terminalBlobBytes(hash: string): Promise<Uint8Array | null> {
+    const uploaded = this.uploadedBlobs.get(hash);
+    if (uploaded) return uploaded;
+    const cached = this.ctx.host.store.getBlob(hash);
+    if (cached) {
+      const bytes = await readWithin(cached.localPath, HYDRATION_WAIT_MS).catch(() => null);
+      if (bytes && bytes !== SLOW_READ && sha256(bytes) === hash) return bytes;
+    }
+    const api = this.ctx.host.api;
+    if (!api) return null;
+    return api.downloadRecoveryBlob(this.info.projectId, hash).catch(() => null);
   }
 
   /** True once every manifest entry has been placed on disk (join waits on this). */

@@ -1347,7 +1347,7 @@ export class NotebookServiceImpl implements NotebookService {
   }
 
   /** Deletes the server copy and returns the owner's folder to a local notebook. */
-  takeDown(projectId: string): Promise<void> {
+  takeDown(projectId: string, options: { acceptIncompleteExport?: boolean } = {}): Promise<void> {
     return this.locked(`project:${projectId}`, async () => {
       const api = this.requireApi();
       const handle = this.projects.get(projectId);
@@ -1359,16 +1359,16 @@ export class NotebookServiceImpl implements NotebookService {
         throw new ControlError(503, "unavailable", "This notebook is still syncing changes. Retry taking it down in a moment.");
       }
       const version = await api.version();
-      if (!version.guardedProjectDeletion || !version.takedownFence) throw new ControlError(409, "update-required", "Update the collaboration server before taking down this notebook safely.");
+      if (!version.guardedProjectDeletion || !version.takedownFence || !version.takedownRecovery) throw new ControlError(409, "update-required", "Update the collaboration server before taking down this notebook safely.");
       if (!handle.runtime) throw new ControlError(503, "offline", "Open and sync this notebook before taking it down.");
       // The server stops accepting document and comment writes once the fence
       // is up; if the takedown is abandoned from here on, the fence is lifted.
       let fenced = false;
       let deleted = false;
       try {
-        const sequence = await handle.runtime.prepareLocalConversion(() => { fenced = true; return api.closeProject(projectId); });
+        const { sequence, recovery } = await handle.runtime.prepareLocalConversion(() => { fenced = true; return api.closeProject(projectId); }, options);
         try {
-          await api.deleteProject(projectId, sequence);
+          await api.deleteProject(projectId, sequence, recovery);
         } catch (error) {
           // A lost response or a local cleanup failure can be retried safely.
           if (!(error instanceof ApiClientError)) throw error;
@@ -2334,7 +2334,7 @@ export class NotebookServiceImpl implements NotebookService {
       body: await this.albumOriginal(request.params.projectId, (request.body as { name?: unknown } | undefined)?.name),
     })));
     router.add("DELETE", decodeURIComponent(ControlRoutes.project(":projectId")), wrap(async (request) => {
-      await this.takeDown(request.params.projectId);
+      await this.takeDown(request.params.projectId, { acceptIncompleteExport: (request.body as { acceptIncompleteExport?: unknown } | undefined)?.acceptIncompleteExport === true });
       return { status: 204 };
     }));
     router.add(
