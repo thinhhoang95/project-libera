@@ -17,7 +17,7 @@ import { assertSafeSegment, getAdminRoot, notebookPath, notebookSystemDirectoryP
 import { refreshNotebookCitations } from "@/lib/storage/reference-citations";
 import { readReferenceLibrary, updateReferenceLibrary } from "@/lib/storage/references";
 import { assertRepairable, planNotebookRepair, type RepairPlan } from "@/lib/storage/repair";
-import { withNotebookOperation } from "@/lib/storage/migration-fence";
+import { assertLifecycleReservation, withNotebookOperation } from "@/lib/storage/migration-fence";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { SIDECAR_KINDS } from "@/lib/storage/sidecars";
 import { readWorkspaceMetadata, setFileTagsForPath, setStarredFilePath } from "@/lib/storage/workspace-metadata";
@@ -567,6 +567,8 @@ async function applyCleanup(name: string, token: string, options: CleanupOptions
   const held = new Map<string, string>();
   const incomplete = new Set<string>();
   for (const action of ordered) {
+    // A share that took the notebook over since this run began stops it before it removes anything more.
+    assertLifecycleReservation();
     const unit = inkUnit(action);
     try {
       if (unit && !held.has(unit) && !isInkRecord(action)) { const hold = await staleness(notebook, action); if (hold) held.set(unit, hold.message); }

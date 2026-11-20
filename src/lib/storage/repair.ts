@@ -24,7 +24,7 @@ import { listSidecars, SIDECAR_KINDS } from "@/lib/storage/sidecars";
 import { inventoryComplete, listNotebookInventory } from "@/lib/storage/integrity";
 import { readWorkspaceMetadata, renameFileMetadataPaths } from "@/lib/storage/workspace-metadata";
 import { StorageError } from "@/lib/storage/errors";
-import { withNotebookOperation } from "@/lib/storage/migration-fence";
+import { assertLifecycleReservation, withNotebookOperation } from "@/lib/storage/migration-fence";
 import { isTextFileType } from "@/lib/types";
 
 // Check Notebook → Try to fix: files moved or renamed into another folder
@@ -546,6 +546,8 @@ async function applyRepair(name: string, token: string): Promise<RepairResult> {
   const status = new Map<RepairMove, Map<string, RepairOutcome["status"]>>();
   const completed: RepairMove[] = [];
   for (const move of current.moves) {
+    // A share that took the notebook over since this run began stops it before it moves anything more.
+    assertLifecycleReservation();
     const done = new Map<string, RepairOutcome["status"]>();
     status.set(move, done);
     // All of the pair is in the try: one reserved segment must not stop the other pairs after some side files moved.

@@ -9,6 +9,7 @@
 import { promises as fs, type Dirent } from "node:fs";
 import path from "node:path";
 import { readNotebookBinding, readNotebookLifecycle, recordNotebookBinding, recordNotebookLifecycle, sameNotebookIdentity } from "../../../src/lib/collab/local-notebook-state";
+import { reserveLifecycle, ReservationConflictError, type Reservation } from "../../../src/lib/collab/lifecycle-reservation";
 
 import type {
   AlbumOriginalResponse,
@@ -47,7 +48,7 @@ import { ControlError, type ControlDeps, type ControlHandler, type ControlRouter
 import { classifyFile, createSharedDocument, mimeForPath } from "./documents";
 import { ARCHIVE_DIRECTORY, SHARE_PENDING_FILE, SHARED_MARKER_FILE, PathRefusedError, WriteCancelledError, checkWriteGuard, contentGuard, isActiveSqliteDatabase, randomId, readIfExists, isNotFound, sha256, statIfExists, walkNotebook, writeFileAtomic, type WriteGuard } from "./fs-ops";
 import { entryRecord, manifestEntryBytes, splitManifestBatches } from "./layout";
-import { convertLocalTranscripts } from "./transcript-conversion";
+import { convertLocalTranscripts, removableSidecars } from "./transcript-conversion";
 import { isPdfDocId, isPdfPath, PDF_LIVE_SETTING } from "../../../src/lib/collab/protocol/pdf";
 import { DEFAULT_TIMINGS, SharedProject, hubHasState, type IndexedDoc, type ProjectContext, type Timings } from "./project";
 import {
@@ -207,6 +208,8 @@ function newHandle(projectId: string, name: string, root: string, role: Role, ma
 const LOCAL_REVIEW_NOTE =
   "Local review comments stay on this device for now; they move to the shared notebook when shared comments arrive.";
 const ARCHIVE_NOTE = "The _archive folder stays local and is not shared.";
+const keptTranscriptsNote = (recordings: string[]) =>
+  `${recordings.length === 1 ? "The transcript of" : `The transcripts of ${recordings.length} recordings, starting with`} ${recordings[0]} differ${recordings.length === 1 ? "s" : ""} from the shared copy. The shared one was kept, and your local version stays on this computer.`;
 
 const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$/i;
 
@@ -1716,12 +1719,22 @@ export class NotebookServiceImpl implements NotebookService {
 
   private async doShare(target: ShareTarget, requestedName: string | undefined): Promise<ShareResult> {
     this.pendingRoots.add(target.root);
-    try { return await this.shareAttempt(target, requestedName); }
+    // Reserved before the share reads anything, until the marker is installed (or the attempt ends): a migration, Try to fix
+    // or Acknowledge in Next's process is refused meanwhile, and one that is running refuses to go on past this point.
+    let reservation: Reservation | undefined;
+    try {
+      try { reservation = reserveLifecycle(this.lifecycleDirectory, [target.root], "share"); }
+      catch (error) {
+        if (error instanceof ReservationConflictError) throw new ControlError(409, "notebook-busy", "A migration or repair is working on this notebook. Try again when it has finished.");
+        throw error;
+      }
+      return await this.shareAttempt(target, requestedName, reservation);
+    }
     catch (error) { throw toControlError(error); }
-    finally { this.pendingRoots.delete(target.root); }
+    finally { reservation?.release(); this.pendingRoots.delete(target.root); }
   }
 
-  private async shareAttempt(target: ShareTarget, requestedName: string | undefined): Promise<ShareResult> {
+  private async shareAttempt(target: ShareTarget, requestedName: string | undefined, reservation: Reservation): Promise<ShareResult> {
     const api = this.requireApi();
     const { root, notebook, album } = target;
     const originalRoot = await fs.lstat(root);
@@ -1752,6 +1765,7 @@ export class NotebookServiceImpl implements NotebookService {
     let checkpointed = false;
     let finished = false;
     let installedMarker: SharedMarker | null = null;
+    const keptTranscripts: string[] = [];
     const guard: WriteGuard = { root, canCommit: async () => {
       if (!this.started || this.releasing || this.deps.host.api !== api || this.deps.host.accountId !== accountId) return false;
       const currentRoot = await statIfExists(root);
@@ -2002,6 +2016,9 @@ export class NotebookServiceImpl implements NotebookService {
           }
         }
         await writeState(root, state, guard);
+        // Our reservation must still stand: a lapsed lease means a local operation may have taken the notebook over.
+        try { reservation.revalidate(); }
+        catch { throw new ControlError(409, "notebook-busy", "The notebook was changed by another operation while it was being shared. The checkpoint was preserved; try again."); }
         const marker: SharedMarker = {
           projectId,
           serverUrl: api.baseUrl,
@@ -2014,10 +2031,17 @@ export class NotebookServiceImpl implements NotebookService {
         };
         await writeMarker(root, marker, guard);
         installedMarker = marker;
+        // The marker now keeps local operations away, so the reservation ends here, not after the rest of the share.
+        reservation.release();
         await checkWriteGuard(guard);
         this.deps.host.store.upsertProject({ projectId, name, localRoot: root, role: "owner" });
-        // Their transcripts are shared companions now; a stale local copy must not outrank later edits.
-        for (const sidecar of transcripts?.sidecars ?? []) await fs.rm(sidecar, { force: true }).catch(() => undefined);
+        // Their transcripts are shared companions now; a local copy must not outrank later edits. But only a copy whose version
+        // the uploaded companion is confirmed to hold goes; a different or newer one stays here, beside the shared one.
+        if (transcripts) {
+          const removal = await removableSidecars(transcripts, new Map(files.map((file) => [file.path, file])));
+          for (const sidecar of removal.remove) await fs.rm(sidecar, { force: true }).catch(() => undefined);
+          keptTranscripts.push(...transcripts.conflicts, ...removal.kept);
+        }
       } finally {
         this.deps.host.release(manifestDocId);
       }
@@ -2056,7 +2080,7 @@ export class NotebookServiceImpl implements NotebookService {
         folders: files.filter((file) => file.kind === "folder").length,
         skipped,
         synced,
-        notes: album ? [] : [LOCAL_REVIEW_NOTE, ARCHIVE_NOTE],
+        notes: album ? [] : [LOCAL_REVIEW_NOTE, ARCHIVE_NOTE, ...(keptTranscripts.length ? [keptTranscriptsNote(keptTranscripts)] : [])],
       };
     } catch (error) {
       // Completions are only journaled while sharing; compact them into the
