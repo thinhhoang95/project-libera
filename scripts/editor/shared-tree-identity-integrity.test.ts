@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { FileListEntry } from "../../src/lib/collab/local-api";
-import { attachSharedFileIds, diskMatchesEntry } from "../../src/lib/collab/tree-file-ids";
+import { attachSharedFileIdTo, attachSharedFileIds, resolveSharedActionFileId } from "../../src/lib/collab/tree-file-ids";
 import { createMoveFollower, keepFileIdentity, replaceNotebook, type MovedFileRead } from "../../src/lib/collab/ui/tree-changes";
 import { applyFileMetadata, mergeTree } from "../../src/lib/tree-merge";
 import type { LiberaFileNode, LiberaNotebookNode, LiberaTree } from "../../src/lib/types";
@@ -37,45 +37,73 @@ async function withSharedDisk<T>(files: Record<string, string>, run: () => Promi
   }
 }
 
-test("S1: a row gets the manifest id only when its bytes are that entry's, never by equal size", async () => {
-  await withSharedDisk({ "a.pdf": "AAAAA", "b.pdf": "BBBBB", "c.pdf": "CC" }, async () => {
-    // a: the disk holds the listed bytes. b: another file of the same size holds the name. c: a different size.
-    const nodes = [file("a.pdf", { size: 5 }), file("b.pdf", { size: 5 }), file("c.pdf", { size: 2 })];
-    const notebook = book(nodes);
-    const listing = async () => [
+function spyOnReads(t: test.TestContext) {
+  // tree-file-ids reads through node:fs/promises; count the reads it makes.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const fsp = require("node:fs/promises") as typeof import("node:fs/promises");
+  return t.mock.method(fsp, "readFile");
+}
+
+test("S1: a tree load reads no bytes and gives no id by size; an action resolves the id from the bytes of that one file", async (t) => {
+  await withSharedDisk({ "a.pdf": "AAAAA", "b.pdf": "BBBBB" }, async () => {
+    const reads = spyOnReads(t);
+    const entries = [
       entryOf("a.pdf", "id-a", { size: 5, blobHash: sha("AAAAA") }),
-      entryOf("b.pdf", "id-b", { size: 5, blobHash: sha("OTHER") }),
-      entryOf("c.pdf", "id-c", { size: 9, blobHash: sha("CCCCCCCCC") }),
+      entryOf("b.pdf", "id-b", { size: 5, blobHash: sha("OTHER") }), // the manifest's b is another file of the same size
     ];
-    await attachSharedFileIds([notebook], listing, () => true, undefined, diskMatchesEntry);
-    assert.equal(nodes[0].fileId, "id-a");
-    assert.equal(nodes[1].fileId, undefined, "equal size alone does not identify the file");
-    assert.equal(nodes[1].fileIdState, "mismatch");
-    assert.equal(nodes[2].fileId, undefined);
-    assert.equal(nodes[2].fileIdState, "mismatch");
+    let listings = 0;
+    const list = async () => { listings++; return entries; };
+    const nodes = [file("a.pdf", { size: 5 }), file("b.pdf", { size: 5 })];
+    await attachSharedFileIds([book(nodes)], list, () => true);
+    assert.equal(reads.mock.callCount(), 0, "a tree load reads no file");
+    assert.deepEqual(nodes.map((node) => [node.fileId, node.fileIdState]), [[undefined, "unknown"], [undefined, "unknown"]]);
+
+    // An action without an id: the one file is read once and checked against the manifest entry at its path.
+    assert.equal(await resolveSharedActionFileId("Shared/a.pdf", undefined, "deleted", list), "id-a");
+    assert.equal(reads.mock.callCount(), 1);
+    await assert.rejects(resolveSharedActionFileId("Shared/b.pdf", undefined, "deleted", list), (error: Error & { status?: number }) =>
+      error.status === 409 && /still being brought up to date by sync, so it cannot be deleted yet/.test(error.message), "equal size is not identity");
+    assert.equal(reads.mock.callCount(), 2);
+    await assert.rejects(resolveSharedActionFileId("Shared/gone.pdf", undefined, "moved", list), /still being brought up to date/);
+    // An id the request carries is passed to the host, which does the check; nothing is listed or read.
+    const listed = listings;
+    assert.equal(await resolveSharedActionFileId("Shared/b.pdf", "id-seen", "deleted", list), "id-seen");
+    assert.equal(listings, listed);
+    assert.equal(reads.mock.callCount(), 2);
+
+    // The checked copy is remembered: the next tree load shows its id without reading, and the next action does not read again.
+    const stats = await stat(path.join(process.env.LIBERA_DATA_DIR!, "users/admin/Shared/a.pdf"));
+    const again = [file("a.pdf", { size: 5, changedAt: stats.ctime.toISOString() })];
+    await attachSharedFileIds([book(again)], list, () => true);
+    assert.equal(again[0].fileId, "id-a");
+    assert.equal(await resolveSharedActionFileId("Shared/a.pdf", undefined, "moved", list), "id-a");
+    assert.equal(reads.mock.callCount(), 2);
   });
 });
 
-test("S1: a document is verified against the host's live text; a listing timeout or failed check marks the row unknown", async () => {
-  const listed = [entryOf("a.pdf", "id-a", { size: 1, blobHash: "x" })];
-  const hung = [file("a.pdf")];
-  await attachSharedFileIds([book(hung)], () => new Promise<FileListEntry[]>(() => undefined), () => true, 20);
-  assert.equal(hung[0].fileId, undefined);
-  assert.equal(hung[0].fileIdState, "unknown");
-
+test("S1: opening a file verifies the bytes that read already returned; a listing timeout or a file read without bytes stays unknown", async () => {
+  const entries = [entryOf("a.md", "id-a", { kind: "blob", size: 5, blobHash: sha("hello") }), entryOf("b.md", "id-b", { kind: "blob", size: 5, blobHash: sha("other") })];
+  const list = async () => entries;
+  const matching = file("a.md", { fileType: "markdown", size: 5, changedAt: "t1" });
+  await attachSharedFileIdTo(matching, "hello", list);
+  assert.equal(matching.fileId, "id-a");
+  const replaced = file("b.md", { fileType: "markdown", size: 5, changedAt: "t2" });
+  await attachSharedFileIdTo(replaced, "hello", list);
+  assert.deepEqual([replaced.fileId, replaced.fileIdState], [undefined, "mismatch"], "another file of the same size holds the name");
+  const pdf = file("a.pdf");
+  await attachSharedFileIdTo(pdf, undefined, async () => [entryOf("a.pdf", "id-pdf", { blobHash: "x" })]);
+  assert.deepEqual([pdf.fileId, pdf.fileIdState], [undefined, "unknown"], "no bytes were read, none are read now");
+  const hung = file("a.md");
+  await attachSharedFileIdTo(hung, "hello", () => new Promise<FileListEntry[]>(() => undefined), 20);
+  assert.deepEqual([hung.fileId, hung.fileIdState], [undefined, "unknown"]);
   const offline = [file("a.pdf")];
   await attachSharedFileIds([book(offline)], async () => { throw new Error("host offline"); }, () => true);
   assert.equal(offline[0].fileIdState, "unknown");
-
-  const unreadable = [file("a.pdf")];
-  await attachSharedFileIds([book(unreadable)], async () => listed, () => true, undefined, async () => { throw new Error("cannot read"); });
-  assert.deepEqual([unreadable[0].fileId, unreadable[0].fileIdState], [undefined, "unknown"]);
-
-  // A verification finishing after the wait is over changes nothing in the sent tree.
-  let release: (value: boolean) => void = () => undefined;
+  // A listing that answers after the wait is over changes nothing in the sent tree.
+  let release: (value: FileListEntry[]) => void = () => undefined;
   const late = [file("a.pdf")];
-  await attachSharedFileIds([book(late)], async () => listed, () => true, 20, () => new Promise<boolean>((resolve) => { release = resolve; }));
-  release(true);
+  await attachSharedFileIds([book(late)], () => new Promise<FileListEntry[]>((resolve) => { release = resolve; }), () => true, 20);
+  release([entryOf("a.pdf", "id-a")]);
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual([late[0].fileId, late[0].fileIdState], [undefined, "unknown"]);
 });

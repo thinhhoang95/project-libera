@@ -629,46 +629,28 @@ function fileNodesOf(nodes: LiberaTreeNode[], into: LiberaFileNode[] = []) {
   return into;
 }
 
-/** Whether the working copy's bytes at a node's path are the bytes of the listed entry; throws when that cannot be told. */
-export type VerifyEntryBytes<E> = (entry: E, node: LiberaFileNode) => Promise<boolean>;
-
 /**
- * Gives each file node the shared file id the host listed for its path, only
- * where the node's bytes are verified to be that entry. The tree is read from
- * the working copy, which cloud sync can leave behind the manifest: the same
- * size is no proof that this path still holds the file the listing names, so
- * `verify` compares the bytes. A node that is not verified carries no id
- * (fileIdState "mismatch": the listing answered and the path does not hold the
- * entry; "unknown": the check could not be made) and the actions that need an
- * identity are refused for it. Nothing is written once `signal.live` is false
- * (the caller gave up waiting), so a late answer cannot change a sent tree.
+ * Gives each file node the shared file id the host listed for its path, but
+ * only where `isVerified` already knows the node's bytes to be that entry (a
+ * copy checked earlier and unchanged since). Nothing is read here: a tree load
+ * must not read, hash or fetch the text of every file. A node the listing has
+ * an entry for but nobody has verified has no id and fileIdState "unknown" (the
+ * row keeps the id it had, and the id is verified when the file is opened or
+ * acted on); a node the listing has no entry for is "mismatch". The tree is read
+ * from the working copy, which cloud sync can leave behind the manifest, so the
+ * listing's entry at a path is never taken for the file on disk by size or name.
  */
-export async function attachFileIds<E extends { path: string; fileId: string; kind: "doc" | "blob" | "folder" }>(
+export function attachFileIds<E extends { path: string; fileId: string; kind: "doc" | "blob" | "folder" }>(
   nodes: LiberaTreeNode[],
   entries: readonly E[],
-  verify: VerifyEntryBytes<E>,
-  signal: { live: boolean } = { live: true },
-  concurrency = 6,
+  isVerified: (entry: E, node: LiberaFileNode) => boolean,
 ) {
   const byPath = new Map(entries.filter((entry) => entry.kind !== "folder").map((entry) => [entry.path, entry]));
-  const files = fileNodesOf(nodes);
-  let next = 0;
-  const worker = async () => {
-    while (signal.live) {
-      const node = files[next++];
-      if (!node) return;
-      const entry = byPath.get(node.path);
-      let verified = false;
-      let state: "mismatch" | "unknown" = "mismatch";
-      if (entry) {
-        try { verified = await verify(entry, node); } catch { state = "unknown"; }
-      }
-      if (!signal.live) return;
-      if (verified && entry) { node.fileId = entry.fileId; delete node.fileIdState; }
-      else { delete node.fileId; node.fileIdState = state; }
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(concurrency, files.length) }, worker));
+  for (const node of fileNodesOf(nodes)) {
+    const entry = byPath.get(node.path);
+    if (entry && isVerified(entry, node)) { node.fileId = entry.fileId; delete node.fileIdState; }
+    else { delete node.fileId; node.fileIdState = entry ? "unknown" : "mismatch"; }
+  }
 }
 
 /** Marks the file nodes that have no verified id as unknown (no listing came in time). */
