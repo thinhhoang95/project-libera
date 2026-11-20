@@ -159,6 +159,8 @@ async function collect(notebook: string, repair: RepairPlan, options: CleanupOpt
   const notes: string[] = [];
   if (held) notes.push(`${plural(held, "record")} left out: more than one file has the name of the file ${held === 1 ? "it was" : "they were"} kept for, so ${held === 1 ? "it" : "they"} may belong to one of them.`);
   if (heldPartial) notes.push(`${plural(heldPartial, "finding")} left out: a check that ran only in part can't tell what is stale.`);
+  // A check the budget kept from starting has no findings to hold back; the plan still says it is not the whole picture.
+  else if (partial.size) notes.push(`${plural(partial.size, "check")} ran only in part, so what ${partial.size === 1 ? "it" : "they"} could not look at is not offered.`);
   const remaining = report.findings.length - clearable.length + reduced;
   return { report, clearable, actions: [...actions.values()], token, remaining, notes };
 }

@@ -4583,6 +4583,7 @@
         "notesLeftOut": "{count, plural, one {# ghi chú} other {# ghi chú}} đã bị bỏ qua (giới hạn đọc {megabytes} MB).",
         "latexPartlyRead": "Các dự án LaTeX lớn chỉ được đọc một phần.",
         "latexUnchecked": "{count, plural, one {# tham chiếu LaTeX} other {# tham chiếu LaTeX}} không thể kiểm tra.",
+        "filesUnchecked": "Không thể kiểm tra {count, plural, one {# tệp} other {# tệp}} (không có quyền truy cập hoặc ổ đĩa chưa được kết nối), nên những gì phụ thuộc vào {count, plural, one {tệp đó} other {các tệp đó}} chưa được đánh giá.",
         "kind": {
           "pdf-annotations": "Chú thích PDF",
           "pdf-outline": "dàn ý PDF",

@@ -160,6 +160,58 @@ test("budgets make a check partial, and a cancelled check stops between reads", 
   assert.ok(!cancelled.checks.some((check) => check.id === "links"), "no check runs after the cancel");
 }));
 
+test("the budget covers the walks, the first oversized note, and the check dispatcher", () => withLibrary(async () => {
+  // An oversized first note is never read: its size is known before the read.
+  await file("Nb/big.md", "x".repeat(10_000));
+  const reads: string[] = [];
+  const originalRead = fsp.readFile;
+  mock.method(fsp, "readFile", (...args: Parameters<typeof originalRead>) => { reads.push(String(args[0])); return originalRead(...args); });
+  try {
+    const oversized = await verifyNotebook("Nb", { limits: { bytes: 500 } });
+    assert.ok(!reads.some((target) => target.endsWith("big.md")), "the note over the byte limit is not read");
+    assert.equal(oversized.counts.notes, 1);
+    assert.equal(oversized.completeness, "partial");
+    assert.ok(oversized.statistics.bytesRead <= 500);
+  } finally { mock.restoreAll(); }
+
+  // A large tree without notes: the walk stops with the entry limit, and no check starts on a spent budget.
+  for (let index = 0; index < 40; index += 1) await file(`Nb/folder-${String(index).padStart(2, "0")}/deep/x.png`, "png");
+  const listings: string[] = [];
+  const originalList = fsp.readdir;
+  mock.method(fsp, "readdir", ((target: string, ...rest: unknown[]) => { listings.push(String(target)); return (originalList as (...args: unknown[]) => unknown)(target, ...rest); }) as typeof fsp.readdir);
+  try {
+    const progress: string[] = [];
+    const report = await verifyNotebook("Nb", { limits: { entries: 5 }, onProgress: (step) => progress.push(step.check) });
+    assert.ok(listings.filter((target) => /folder-\d\d/.test(target)).length < 10, `the walk stopped (${listings.length} listings)`);
+    assert.equal(report.completeness, "partial");
+    for (const check of report.checks) {
+      assert.equal(check.status, "incomplete", check.id);
+      assert.equal(check.notes?.[0]?.code, "stoppedAt", `${check.id} did not start`);
+    }
+    assert.equal(progress.length, report.checks.length, "each check is still announced");
+  } finally { mock.restoreAll(); }
+}));
+
+test("a stop ends the hashing of candidates between chunks, and no further candidate is read", () => withLibrary(async () => {
+  const recorded = "%PDF-recorded-0";
+  await raw(pdfAnnotationsPath("Nb", ["gone.pdf"]), JSON.stringify({ annotations: [], comments: [], source: { size: recorded.length, contentHash: sha256(recorded) } }));
+  // Candidates of the recorded size, none of its content: each would have to be hashed.
+  for (const name of ["c1", "c2", "c3"]) await file(`Nb/${name}.pdf`, `${recorded.slice(0, -1)}${name.slice(1)}`);
+  const stop = new AbortController();
+  const opened: string[] = [];
+  const original = fs.createReadStream;
+  mock.method(fs, "createReadStream", ((target: fs.PathLike, ...rest: unknown[]) => {
+    opened.push(String(target));
+    stop.abort();
+    return (original as (...args: unknown[]) => unknown)(target, ...rest);
+  }) as typeof fs.createReadStream);
+  try {
+    const report = await verifyNotebook("Nb", { signal: stop.signal });
+    assert.equal(report.cancelled, true);
+    assert.equal(opened.length, 1, `only the first candidate was opened (${opened.join(", ")})`);
+  } finally { mock.restoreAll(); }
+}));
+
 // node:sqlite, as search/database.ts loads it (this Node's type declarations predate it).
 type Sqlite = { DatabaseSync: new (file: string) => { exec(sql: string): void; prepare(sql: string): { run(...values: unknown[]): unknown }; close(): void } };
 const { DatabaseSync } = createRequire(__filename)("node:sqlite") as Sqlite;

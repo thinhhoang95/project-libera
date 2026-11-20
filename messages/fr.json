@@ -4583,6 +4583,7 @@
         "notesLeftOut": "{count, plural, one {# note a été exclue} other {# notes ont été exclues}} (limite de {megabytes} Mo lus).",
         "latexPartlyRead": "Les gros projets LaTeX ne sont lus qu’en partie.",
         "latexUnchecked": "{count, plural, one {# renvoi LaTeX n’a pas pu être vérifié} other {# renvois LaTeX n’ont pas pu être vérifiés}}.",
+        "filesUnchecked": "{count, plural, one {# fichier n’a pas pu être vérifié} other {# fichiers n’ont pas pu être vérifiés}} (autorisation manquante ou disque non connecté) : ce qui en dépend n’est donc pas jugé.",
         "kind": {
           "pdf-annotations": "annotations PDF",
           "pdf-outline": "plan PDF",

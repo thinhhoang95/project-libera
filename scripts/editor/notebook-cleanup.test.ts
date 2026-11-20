@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, rename, rm, stat, symlink } from "node:fs/promises";
+import fsp, { mkdir, mkdtemp, readdir, rename, rm, stat, symlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { mock } from "node:test";
 import { DEFINITIONS_VERSION } from "../../src/lib/definitions";
 import { pythonSidecarPath } from "../../src/lib/python/sidecar";
 import { applyNotebookCleanup, planNotebookCleanup } from "../../src/lib/storage/cleanup";
+import { verifyNotebook, type IntegrityReport } from "../../src/lib/storage/integrity";
 import { addReviewThreads, deleteReviewKey, findReview } from "../../src/lib/storage/markdown-reviews";
 import { emptyInkAuthorFile } from "../../src/lib/ink/codec";
 import { inkFolderPath, reconcileInkFolders } from "../../src/lib/storage/ink";
@@ -245,9 +246,34 @@ test("what a check that ran only in part found is not offered", () => withTempor
   const options = { limits: { entries: 0 } };
   const partial = await planNotebookCleanup("Nb", options);
   assert.deepEqual(partial.items, []);
-  assert.ok(partial.remaining >= 1);
+  // The budget was gone before the checks started: they did not run, and the plan says so.
   assert.match(partial.notes.join("\n"), /ran only in part/);
   const result = await applyNotebookCleanup("Nb", partial.token, options);
   assert.equal(result.cleared, 0);
   assert.deepEqual((await readWorkspaceMetadata()).starredFilePaths, ["Nb/a.md"]);
+}));
+
+test("code whose owning note was not in the listing is not offered for removal, and its check is partial", () => withTemporaryLibrary(["Nb"], async () => {
+  const code = "Nb/_assets/old/a.md/a.py";
+  await writeAt(path.join(getAdminRoot(), ...pythonSidecarPath("Nb/old/a.md").split("/")), "print('hi')\n");
+  // No note of its name: the code is stale, and Acknowledge may remove it.
+  const orphan = (report: IntegrityReport) => report.findings.find((finding) => finding.check === "assets" && finding.path === code);
+  assert.equal(orphan(await verifyNotebook("Nb"))?.clear?.length, 1);
+
+  // The note that would own it is in a folder the tree listing could not read (the notes themselves are read later).
+  await writeLibraryFile("Nb/later/a.md", "# A\n");
+  const original = fsp.readdir;
+  let denied = false;
+  mock.method(fsp, "readdir", ((target: string, ...rest: unknown[]) => {
+    if (!denied && path.basename(String(target)) === "later") { denied = true; return Promise.reject(Object.assign(new Error("EACCES"), { code: "EACCES" })); }
+    return (original as (...args: unknown[]) => unknown)(target, ...rest);
+  }) as typeof fsp.readdir);
+  try {
+    const report = await verifyNotebook("Nb");
+    assert.ok(denied, "the listing hit the unreadable folder");
+    assert.equal(orphan(report)?.clear, undefined, "no deletion is offered on an input that was not listed");
+    const assets = report.checks.find((check) => check.id === "assets");
+    assert.equal(assets?.status, "incomplete");
+    assert.ok(assets?.notes?.some((note) => note.code === "foldersUnreadable"));
+  } finally { mock.restoreAll(); }
 }));
