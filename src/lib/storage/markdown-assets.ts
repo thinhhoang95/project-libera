@@ -217,17 +217,37 @@ function ownedPrefixes(documentPath: string) {
 }
 
 /**
- * Library paths (lowercased) that notes of the other local notebooks embed by
- * their `/api/files/raw/` address. Null when one of those notebooks could not
- * be read in full.
+ * The library paths a note embeds by address rather than by its own relative
+ * path: `/api/files/raw/...`, and `/api/markdown-assets/raw?document=` naming
+ * a note of another notebook (the way a note keeps showing an image that
+ * stayed behind when it moved there).
  */
-export async function rawEmbedsInOtherNotebooks(notebook: string) {
+function libraryAddressedPaths(documentPath: string, markdown: string) {
+  const paths = new Set(referencedRawFilePaths(markdown));
+  for (const source of markdownImageSources(markdown)) {
+    if (!source.startsWith("/api/markdown-assets/raw")) continue;
+    try {
+      const target = markdownAssetSourceTarget(documentPath, source);
+      const owner = target && splitFilePath(target.documentPath).notebook;
+      if (target && owner !== splitFilePath(documentPath).notebook) paths.add(`${owner}/${target.assetPath}`);
+    } catch { /* A malformed address shows nothing. */ }
+  }
+  return paths;
+}
+
+/**
+ * Library paths (lowercased) that notes of the other local notebooks embed by
+ * address (see libraryAddressedPaths). `includeOwn` adds the notebook's own
+ * notes, whose raw addresses its relative-path scan doesn't see. Null when one
+ * of those notebooks could not be read in full.
+ */
+export async function rawEmbedsInOtherNotebooks(notebook: string, { includeOwn = false }: { includeOwn?: boolean } = {}) {
   const embeds = new Set<string>();
   for (const other of await libraryNotebookNames()) {
-    if (other === notebook) continue;
+    if (other === notebook && !includeOwn) continue;
     const { documents, complete } = await readMarkdownAssetDocuments(other).catch(() => ({ documents: [] as MarkdownDocument[], complete: false }));
     if (!complete) return null;
-    for (const document of documents) for (const raw of referencedRawFilePaths(document.content)) embeds.add(raw.toLowerCase());
+    for (const document of documents) for (const raw of libraryAddressedPaths(document.documentPath, document.content)) embeds.add(raw.toLowerCase());
   }
   return embeds;
 }

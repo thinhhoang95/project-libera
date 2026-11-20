@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { getStateRoot } from "./paths";
 import { StorageError } from "./errors";
 import { findReviewDocument, isSafeReviewId, readReviewDocument, readReviewDocuments, withReviewTransaction, type ReviewTransaction } from "./review-files";
@@ -168,9 +168,27 @@ export async function moveReviewPaths(moves: ReadonlyMap<string, string>, option
 export async function deleteReviewPath(key: string) {
   return transaction((tx) => { for (const [id, stored] of tx.keys()) if (under(stored, key)) tx.remove(id); });
 }
-/** The review of exactly this path; reviews of files under a folder of the same name are kept. */
-export async function deleteReviewKey(key: string) {
-  return transaction((tx) => { for (const [id, stored] of tx.keys()) if (stored === key) tx.remove(id); });
+/** A review's content as one short string: it changes with every comment, reply or setting. */
+export const reviewVersion = (doc: ReviewDocument) => createHash("sha256").update(JSON.stringify(doc)).digest("hex").slice(0, 24);
+/**
+ * The review of exactly this path; reviews of files under a folder of the same
+ * name are kept. With `expectedVersion` (Acknowledge), the review is compared
+ * and removed in one transaction: a review that changed since it was shown is
+ * kept (`changed`). `absent` when there was none.
+ */
+export async function deleteReviewKey(key: string, expectedVersion?: string): Promise<"removed" | "absent" | "changed"> {
+  return transaction(async (tx) => {
+    const found = [...tx.keys()].filter(([, stored]) => stored === key);
+    if (!found.length) return "absent";
+    if (expectedVersion !== undefined) {
+      for (const [id] of found) {
+        const doc = await tx.getIfPresent(id);
+        if (!doc || reviewVersion(doc) !== expectedVersion) return "changed";
+      }
+    }
+    for (const [id] of found) tx.remove(id);
+    return "removed";
+  });
 }
 /** `snapshot` maps the copied review's text (a copy that cites other keys in its notebook). */
 export async function copyReviewPath(from: string, to: string, snapshot?: (text: string) => string) {
