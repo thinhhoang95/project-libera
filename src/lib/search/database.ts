@@ -130,14 +130,17 @@ export function truncateVector(vector: Float32Array, dimensions: number) {
   return truncated;
 }
 
+/** What the notebook check reads of a library row: where it is, what it was indexed from, and whether indexing succeeded. */
+export type IndexedLibraryRow = { path: string; signature: string; status: string };
+
 /**
- * The library paths the index holds for one notebook, read without opening it
+ * The library rows the index holds for one notebook, read without opening it
  * for writing (no schema check or upgrade, no checkpoint), for the notebook
  * check. Null when there is no index or it can't be read that way: a WAL
  * index that no one has open has no shared-memory file, and a read-only
  * connection would create one.
  */
-export function readIndexedLibraryPaths(filePath: string, notebook: string): string[] | null {
+export function readIndexedLibraryRows(filePath: string, notebook: string): IndexedLibraryRow[] | null {
   try {
     if (!existsSync(filePath) || statSync(filePath).size < 100) return null;
     const header = Buffer.alloc(20);
@@ -148,7 +151,7 @@ export function readIndexedLibraryPaths(filePath: string, notebook: string): str
     const { DatabaseSync } = loadSqlite();
     const db = new DatabaseSync(filePath, { readOnly: true });
     try {
-      return (db.prepare("SELECT path FROM files WHERE source = 'library' AND notebook = ?").all(notebook) as { path: string }[]).map((row) => row.path);
+      return db.prepare("SELECT path, signature, status FROM files WHERE source = 'library' AND notebook = ?").all(notebook) as IndexedLibraryRow[];
     } finally { db.close(); }
   } catch {
     return null;

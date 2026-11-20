@@ -4463,6 +4463,8 @@
         "chartDataMissingFix": "Remettez le fichier en place, ou indiquez au graphique son emplacement actuel.",
         "citationIndexOutOfDate": "L’index des citations n’est pas à jour pour {count, plural, one {# fichier} other {# fichiers}} ; il sera mis à jour la prochaine fois que les citations seront listées.",
         "entryLimitReached": "la limite de {count} entrées",
+        "globalSearchChanged": "La recherche globale conserve le texte d'un ancien fichier pour {count, plural, one {# chemin} other {# chemins}} ; elle se mettra à jour à sa prochaine exécution.",
+        "globalSearchMissing": "La recherche globale n'a pas encore d'entrée pour {count, plural, one {# fichier} other {# fichiers}} ; elle se mettra à jour à sa prochaine exécution.",
         "globalSearchStale": "La recherche globale liste encore {count, plural, one {# fichier} other {# fichiers}} qui ne font plus partie du carnet ; elle se mettra à jour à sa prochaine exécution.",
         "globalSearchSkipped": "La recherche globale n’a pas été comparée au carnet : son index n’a pas pu être lu sans l’ouvrir en écriture.",
         "imageAddressUnreadable": "L’adresse de l’image \"{source}\" ne peut pas être lue.",

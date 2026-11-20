@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { extractMarkdownLinkOccurrences } from "@/lib/markdown-link-occurrences";
 import { resolveMarkdownFileLink } from "@/lib/markdown-file-links";
@@ -46,6 +46,14 @@ export async function readLinkIndex(indexPath: string): Promise<LinkIndex> {
     // Missing, old or partially synced indexes can be rebuilt from saved files.
   }
   return { version: 2, files: {} };
+}
+
+/** Notes whose known entry the last rebuild kept because they could not be read (not because they are gone), per index. */
+const incompleteRebuilds = new Map<string, number>();
+
+/** How many notes the notebook's last link rebuild could not read and kept the known entry for; 0 when it was complete. */
+export function linkIndexUnverified(notebook: string) {
+  return incompleteRebuilds.get(linkIndexPath(notebook)) ?? 0;
 }
 
 const rebuilds = new Map<string, Promise<LinkIndex["files"]>>();
@@ -111,6 +119,14 @@ async function rebuildDestinations(notebook: LiberaNotebookNode, files: LiberaFi
   const known = readCache.get(indexPath);
   const seen = new Map<string, ReadEntry>();
   const now = clock();
+  let unverified = 0;
+  /** An unreadable note keeps what the index knew of it: only its absence retires the entry. */
+  const keepKnown = (filePath: string) => {
+    const kept = previous.files[filePath];
+    if (!kept) return;
+    next.files[filePath] = kept;
+    unverified += 1;
+  };
   for (const file of files) {
     if (file.fileType !== "markdown") continue;
     const absolute = filePathFromParts(notebook.name, file.path.split("/").slice(1));
@@ -131,7 +147,9 @@ async function rebuildDestinations(notebook: LiberaNotebookNode, files: LiberaFi
       }
     } catch (error) {
       // A file may disappear, become unreadable, or change during a tree scan.
-      if (["ENOENT", "EACCES", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "") || (error as { status?: number }).status === 409) continue;
+      const code = (error as NodeJS.ErrnoException).code ?? "";
+      if (code === "ENOENT" || code === "ENOTDIR") continue;
+      if (code === "EACCES" || code === "EPERM" || (error as { status?: number }).status === 409) { keepKnown(file.path); continue; }
       throw error;
     }
     seen.set(file.path, entry);
@@ -139,6 +157,14 @@ async function rebuildDestinations(notebook: LiberaNotebookNode, files: LiberaFi
     next.files[file.path] = cached?.contentHash === entry.contentHash ? cached
       : { contentHash: entry.contentHash, destinations: entry.destinations };
   }
+  // A note the tree did not list (a folder it could not read) is retired only once its file is confirmed absent.
+  const listed = new Set(files.map((file) => file.path));
+  for (const filePath of Object.keys(previous.files)) {
+    if (listed.has(filePath)) continue;
+    try { await stat(filePathFromParts(notebook.name, filePath.split("/").slice(1))); }
+    catch (error) { if (["EACCES", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "")) keepKnown(filePath); }
+  }
+  incompleteRebuilds.set(indexPath, unverified);
   readCache.set(indexPath, seen);
   const sorted = (files: LinkIndex["files"]) => Object.fromEntries(Object.entries(files).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
   next.files = sorted(next.files);

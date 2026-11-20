@@ -293,7 +293,8 @@ async function perform(notebook: string, action: CleanupAction) {
       return;
     }
     case "bib-mirror": await regenerateBibMirror(notebook, await readReferenceLibrary(notebook)); return;
-    case "citations": await refreshNotebookCitations(notebook); return;
+    // With the archive in the walk: a hidden archive keeps its old entries, and the finding is about them too.
+    case "citations": await refreshNotebookCitations(notebook, { includeArchive: true }); return;
   }
 }
 

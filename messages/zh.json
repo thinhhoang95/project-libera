@@ -4464,6 +4464,8 @@
         "citationIndexOutOfDate": "{count, plural, one {# 个文件} other {# 个文件}}的引用索引已过时；下次列出引用时将更新。",
         "entryLimitReached": "已达到 {count} 个条目的上限",
         "globalSearchStale": "全局搜索仍列出 {count, plural, one {# 个不再属于此笔记本的文件} other {# 个不再属于此笔记本的文件}}；下次运行时将同步。",
+        "globalSearchChanged": "全局搜索为 {count, plural, one {# 个路径} other {# 个路径}} 保存的仍是旧文件的文本；下次运行时将同步。",
+        "globalSearchMissing": "全局搜索尚未收录 {count, plural, one {# 个文件} other {# 个文件}}；下次运行时将同步。",
         "globalSearchSkipped": "全局搜索尚未与笔记本进行比较：无法在不以写入方式打开其索引的情况下读取它。",
         "imageAddressUnreadable": "无法读取图片地址“{source}”。",
         "imageLeftBehind": "没有任何笔记显示此图片，但有一条笔记显示了同名的缺失图片：很可能就是此图片，在笔记移动时被留下了。",

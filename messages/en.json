@@ -4464,6 +4464,8 @@
         "citationIndexOutOfDate": "The citation index is out of date for {count, plural, one {# file} other {# files}}; it is brought up to date the next time citations are listed.",
         "entryLimitReached": "the limit of {count} entries",
         "globalSearchStale": "Global Search still lists {count, plural, one {# file} other {# files}} no longer in the notebook; it catches up the next time it runs.",
+        "globalSearchChanged": "Global Search holds the text of an earlier file for {count, plural, one {# path} other {# paths}}; it catches up the next time it runs.",
+        "globalSearchMissing": "Global Search has no entry yet for {count, plural, one {# file} other {# files}}; it catches up the next time it runs.",
         "globalSearchSkipped": "Global Search was not compared with the notebook: its index could not be read without opening it for writing.",
         "imageAddressUnreadable": "The image address \"{source}\" can't be read.",
         "imageLeftBehind": "An image no note shows, but a note shows a missing image of this name: probably this one, left behind when the note moved.",

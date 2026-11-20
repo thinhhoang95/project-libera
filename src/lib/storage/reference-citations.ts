@@ -1,5 +1,5 @@
 import type { Dirent } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { lstat, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { citedKeys } from "@/lib/references/citation-syntax";
 import { isLatexCitingPath, latexCitedKeys } from "@/lib/references/latex-cite-syntax";
@@ -38,8 +38,12 @@ export type NotebookCitations = {
   byKey: Record<string, string[]>;
 };
 
-/** `read` counts files parsed for citations, excluding byte checks of cached entries. */
-export type CitationIndexStats = { files: number; read: number; written: boolean };
+/**
+ * `read` counts files parsed for citations, excluding byte checks of cached
+ * entries. `unverified` counts known entries kept because their file or folder
+ * could not be read this time (not because it is gone): the rebuild is incomplete.
+ */
+export type CitationIndexStats = { files: number; read: number; written: boolean; unverified: number };
 
 /** The tree's cap for linked folders, which may be large projects rather than notebooks. */
 const LINKED_FOLDER_ENTRY_LIMIT = 20_000;
@@ -82,13 +86,18 @@ async function citingFiles(notebook: string, includeArchive: boolean) {
   const linked = Boolean(getLinkedFolder(notebook));
   const budget = { remaining: LINKED_FOLDER_ENTRY_LIMIT };
   const files: { relativePath: string; absolutePath: string }[] = [];
+  /** Folders that could not be listed (library-relative): what is under them is not known to be gone. */
+  const unreadable: string[] = [];
   const walk = async (directory: string, parts: string[]) => {
     let entries: Dirent[];
     try { entries = await readdir(directory, { withFileTypes: true }); } catch (error) {
       const code = (error as NodeJS.ErrnoException).code ?? "";
       if (!parts.length && code === "ENOENT") throw new StorageError("Notebook was not found.", 404);
       // A folder deleted or locked during the walk is skipped, as the tree does.
-      if (parts.length && ["ENOENT", "EACCES", "EPERM", "ENOTDIR"].includes(code)) return;
+      if (parts.length && ["ENOENT", "EACCES", "EPERM", "ENOTDIR"].includes(code)) {
+        if (code !== "ENOENT" && code !== "ENOTDIR") unreadable.push([notebook, ...parts].join("/"));
+        return;
+      }
       throw error;
     }
     for (const entry of entries) {
@@ -102,7 +111,13 @@ async function citingFiles(notebook: string, includeArchive: boolean) {
     }
   };
   await walk(root, []);
-  return files;
+  return { files, unreadable };
+}
+
+/** True only when the path is confirmed absent; an access error or any other failure leaves it unknown. */
+async function confirmedAbsent(absolutePath: string) {
+  try { await lstat(absolutePath); return false; }
+  catch (error) { return ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? ""); }
 }
 
 async function forEachLimited<T>(items: T[], fn: (item: T) => Promise<void>) {
@@ -116,16 +131,17 @@ async function rebuild(notebook: string, includeArchive: boolean) {
   const root = notebookPath(notebook);
   const identity = await readDirectorySignature(root);
   const previous = await readCitationIndex(indexPath);
-  const files = await citingFiles(notebook, includeArchive);
+  const { files, unreadable } = await citingFiles(notebook, includeArchive);
   const next: CitationIndex = { version: CITATION_INDEX_VERSION, files: {} };
   // Without the archive in the walk, its files are neither checked nor dropped.
   if (!includeArchive) {
     for (const [file, entry] of Object.entries(previous.files)) if (isArchived(file)) next.files[file] = entry;
   }
   let read = 0;
+  const unread = new Set<string>();
   await forEachLimited(files, async ({ relativePath, absolutePath }) => {
     let snapshot;
-    try { snapshot = await readTextSnapshot(absolutePath); } catch { return; }
+    try { snapshot = await readTextSnapshot(absolutePath); } catch { unread.add(relativePath); return; }
     const cached = previous.files[relativePath];
     if (cached && cached.contentHash === snapshot.contentHash) {
       next.files[relativePath] = cached;
@@ -134,13 +150,22 @@ async function rebuild(notebook: string, includeArchive: boolean) {
     read += 1;
     next.files[relativePath] = { contentHash: snapshot.contentHash, keys: isLatexCitingPath(relativePath) ? latexCitedKeys(snapshot.content) : citedKeys(snapshot.content, { allNarrative: true }) };
   });
+  // A note that could not be read, or sits in a folder that could not be listed, keeps its known entry until its absence is confirmed.
+  let unverified = 0;
+  for (const [file, entry] of Object.entries(previous.files)) {
+    if (file in next.files || (!includeArchive && isArchived(file))) continue;
+    if (!unread.has(file) && !unreadable.some((folder) => file.startsWith(`${folder}/`))) continue;
+    if (await confirmedAbsent(path.join(root, ...file.split("/").slice(1)))) continue;
+    next.files[file] = entry;
+    unverified += 1;
+  }
   // Stable order keeps the comparison and the file independent of read timing.
   next.files = Object.fromEntries(Object.entries(next.files).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
   const sortedPrevious = Object.fromEntries(Object.entries(previous.files).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
   const changed = JSON.stringify(sortedPrevious) !== JSON.stringify(next.files);
   if (changed) await writeJsonAtomically(indexPath, next, () => assertDirectorySignature(root, identity));
   const visible = Object.entries(next.files).filter(([file]) => includeArchive || !isArchived(file));
-  return { visible, stats: { files: files.length, read, written: changed } satisfies CitationIndexStats };
+  return { visible, stats: { files: files.length, read, written: changed, unverified } satisfies CitationIndexStats };
 }
 
 const IN_FLIGHT = Symbol.for("libera.referenceCitationRebuilds");
