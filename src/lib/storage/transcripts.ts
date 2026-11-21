@@ -137,6 +137,18 @@ async function readSidecarFile(file: string): Promise<{ transcript: Transcript; 
   }
 }
 
+/**
+ * Whether a correction kept on this computer was made for the recording that
+ * is at its path now (its size and, when recorded, its content). A replacement
+ * recording at a reused path is not the one the correction was made for: the
+ * sidecar stays on disk, but is not read as this recording's pending state.
+ */
+async function pendingIsFor(transcript: Transcript, audio: string, size: number) {
+  if (transcript.audio.size !== size) return false;
+  if (!transcript.audio.contentHash) return true;
+  return readCachedFileContentHash(audio).then((hash) => hash === transcript.audio.contentHash, () => false);
+}
+
 /** The transcript, and whether the audio changed since it was made. */
 export async function readTranscript(relativePath: string): Promise<{ transcript: Transcript | null; stale: boolean; shared: boolean; pending?: boolean }> {
   const { audio, sidecar, companion, companionFile } = locate(relativePath);
@@ -146,8 +158,10 @@ export async function readTranscript(relativePath: string): Promise<{ transcript
   });
   if (!stats?.isFile()) return { transcript: null, stale: false, shared: false };
   // A correction that could not be shared stays visible until it is shared or discarded.
-  const local = await readSidecarFile(sidecar);
-  const pending = Boolean(companion && local?.pending);
+  const found = await readSidecarFile(sidecar);
+  const pending = Boolean(companion && found?.pending && await pendingIsFor(found.transcript, audio, stats.size));
+  // A pending correction made for another recording (this path was reused) is not this one's, in any role.
+  const local = companion && found?.pending && !pending ? null : found;
   const fromCompanion = companion && !pending ? await readTranscriptFile(companion) : null;
   let transcript = pending ? local!.transcript : fromCompanion ?? local?.transcript ?? null;
   if (!transcript && !companion) {
@@ -200,6 +214,8 @@ export async function writeTranscript(relativePath: string, transcript: Transcri
   // A file a notebook migration is moving is written after the migration.
   await assertNotMigrating(relativePath);
   const { audio, sidecar, companion } = locate(relativePath);
+  // The recording as the manifest has it when the save starts: the shared write is bound to this file.
+  const ownerFileId = companion && !(options.sharedBase && "offline" in options.sharedBase) ? await (await import("@/lib/collab/shared-owner")).sharedOwnerFileId(relativePath) : undefined;
   const signature = options.expectedSignature ?? await readFileSignature(audio);
   await assertFileSignature(audio, signature);
   if (options.expectedContentHash && await readFileContentHash(audio) !== options.expectedContentHash) {
@@ -217,7 +233,7 @@ export async function writeTranscript(relativePath: string, transcript: Transcri
     try {
       const { writeSharedBlob } = await import("@/lib/collab/shared-writes");
       // An edit replaces only the exact shared version it was made from.
-      const precondition = base ? ("create" in base ? { createOnly: true } : { expectedFileId: base.fileId, expectedBlobHash: base.blobHash }) : {};
+      const precondition = { ...(base ? ("create" in base ? { createOnly: true } : { expectedFileId: base.fileId, expectedBlobHash: base.blobHash }) : {}), ...(ownerFileId ? { ownerFileId } : {}) };
       await writeSharedBlob(transcriptCompanionPath(relativePath), new TextEncoder().encode(JSON.stringify(transcript)), precondition);
       shared = true;
       // The shared copy supersedes one kept here before.
@@ -272,12 +288,12 @@ async function mutateTranscript(relativePath: string, apply: (transcript: Transc
 }
 
 async function loadForEdit(relativePath: string): Promise<{ transcript: Transcript | null; base?: SharedBase }> {
-  const { companion, sidecar } = locate(relativePath);
+  const { companion, sidecar, audio } = locate(relativePath);
   const current = await readTranscript(relativePath);
   if (!companion) return { transcript: current.transcript };
   // A correction kept here continues from the version it was made on.
   const local = await readSidecarFile(sidecar);
-  if (local?.pending) return { transcript: local.transcript, base: local.pending };
+  if (local?.pending && await pendingIsFor(local.transcript, audio, (await stat(audio).catch(() => null))?.size ?? -1)) return { transcript: local.transcript, base: local.pending };
   if (!current.transcript && !(await stat(locate(relativePath).audio).then((s) => s.isFile(), () => false))) return { transcript: null };
   try {
     const { readSharedBlob } = await import("@/lib/collab/shared-writes");
@@ -421,6 +437,19 @@ function rememberPendingAudioMove(from: string, to: string) {
 }
 
 /**
+ * A pending move into `from` (its recording not arrived) now ends where the
+ * recording went next: A to B, then B to C before the copy to B, is A to C.
+ * The correction's base (companion file ID and blob) travels with the bytes.
+ */
+function retargetPendingAudioMoves(from: string, to: string) {
+  for (const [key, move] of [...pendingAudioMoves]) {
+    if (move.to !== from) continue;
+    pendingAudioMoves.delete(key);
+    if (move.from !== to) rememberPendingAudioMove(move.from, to);
+  }
+}
+
+/**
  * Copies the sidecars of one moved recording. `waiting` is true when a
  * transcript was left behind only because the recording at the destination is
  * not there yet (or not these bytes yet): a cloud folder delivers it late.
@@ -483,6 +512,7 @@ export async function followSharedAudioChanges(moves: Array<{ from: string; to: 
   }
   let changed = await replayPendingAudioMoves();
   for (const { from, to } of moves) {
+    retargetPendingAudioMoves(from, to);
     const result = await followOneAudioMove(from, to);
     changed += result.changed;
     if (result.waiting) rememberPendingAudioMove(from, to);

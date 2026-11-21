@@ -118,6 +118,17 @@ export interface ProjectState {
    * Files written before the stamp existed have none and are accepted once.
    */
   identity?: StateIdentity;
+  /**
+   * Local-only files archived because an incoming entry claimed their path: the
+   * identity-bound mapping that lets path-keyed records follow them (S47).
+   */
+  displaced?: Array<{ fileId: string; from: string; to: string; at: number }>;
+  /**
+   * Entries whose current manifest spelling arrived from a remote rename that
+   * changed only the Unicode normalization form. This device does not rename
+   * them back when its own disk keeps the other form (S39); bounded.
+   */
+  remoteRespells?: Record<string, { path: string; at: number }>;
 }
 
 export interface StateIdentity {

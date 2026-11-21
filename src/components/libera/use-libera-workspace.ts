@@ -24,7 +24,7 @@ import type {
   LiberaTreeNode,
   PdfAnnotationsPayload,
 } from "@/lib/types";
-import { apiRequest, committedMove, emptyTree, encodeFilePath, type CommittedMove } from "@/components/libera/api-client";
+import { apiRequest, committedMove, emptyTree, encodeFilePath, sharedCommitted, type CommittedMove } from "@/components/libera/api-client";
 import { monitorSessionExpiration } from "./session-expiration";
 import { pendingSaves } from "@/components/libera/pending-saves";
 import { createSaveQueue, linkRewriteByPath, pathsUnderMovedFolder, planRetargets, reconcileMovedText, rewriteOpenText, saveBase } from "./tab-retarget";
@@ -123,7 +123,7 @@ import { getSharedDocRegistry, type SharedDocSession } from "@/lib/collab/client
 import { isTabDirty, journalTab, mayTakeContentFromDisk, readTabDraft, type DraftWriteOptions } from "@/lib/collab/client/workspace";
 import { aiSuggestionNotice, suggestAiOnSharedTab } from "@/lib/collab/client/suggestions-ai";
 import { subscribeHostEvents } from "@/lib/collab/ui/bridge";
-import { isIdentityConflict, notebooksToRefresh, replaceNotebook, subscribeSharedTreeChanges, withBackoff, type FileMove, type RefreshScope } from "@/lib/collab/ui/tree-changes";
+import { isIdentityConflict, notebooksToRefresh, replaceNotebook, subscribeSharedTreeChanges, createMoveFollower, keepFileIdentity, type ConfirmedMove, type MovedFileRead, type RefreshScope } from "@/lib/collab/ui/tree-changes";
 import type { SnapshotEdit } from "@/lib/collab/suggestions/model";
 import { rewriteCitationKeys } from "@/lib/references/citation-syntax";
 import { useTranslations } from "next-intl";
@@ -1597,7 +1597,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     const follow = baseline === undefined || draft === baseline || draft === content;
     if (follow) rememberTabDraft(path, content);
     updateTab(path, (current) => ({
-      ...current, file: payload.file, saved: content, draft: follow ? content : current.draft,
+      ...current, file: keepFileIdentity(current.file, payload.file), saved: content, draft: follow ? content : current.draft,
       status: (follow ? content : draft) === content ? "clean" : "dirty", error: undefined,
     }));
     return { content, keptDraft: !follow };
@@ -3305,10 +3305,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         const baseVersion = await textVersion(basis.base);
         const payload = await workspaceFileRequest<LiberaFilePayload>("/api/files", {
           method: "PATCH",
-          body: JSON.stringify({ path: tab.file.path, content: draft, baseVersion }),
+          body: JSON.stringify({ path: tab.file.path, content: draft, baseVersion, fileId: tab.file.fileId }),
         }, (payload) => ({ paths: [payload.file.path] }));
         const latestDraft = getTabDraft(tab);
-        patch((current) => ({ ...current, file: payload.file, saved: draft, diskConflict: undefined, status: latestDraft === draft ? "clean" : "dirty" }));
+        patch((current) => ({ ...current, file: keepFileIdentity(current.file, payload.file), saved: draft, diskConflict: undefined, status: latestDraft === draft ? "clean" : "dirty" }));
         return "saved";
       } catch (error) {
         if ((error as { status?: number }).status === 409) {
@@ -3905,6 +3905,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         }),
       }, (payload) => ({ paths: [payload.file.path] }));
       await refreshTree(payload.file.notebook);
+      // What did not copy (records, images) is reported, as after a move.
+      if ((payload as LiberaFileMovePayload).unfinished) reportMoveOutcome({ notebook: payload.file.notebook, unfinished: (payload as LiberaFileMovePayload).unfinished });
       updateExpanded((current) => {
         const next = new Set(current);
         next.add(destinationDirectory.split("/")[0] ?? destinationDirectory);
@@ -4012,20 +4014,66 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     setClosedViewStates((current) => remapClosedViewStates(current, (path) => byFrom.get(path)?.file.path ?? path));
   }
 
+  /** Remote moves saved workspaces could not take yet (the workspace library was loading or switching). */
+  const savedMovesRetry = useRef<{ from: string; to: string; fileId?: string }[]>([]);
+
+  /**
+   * Saved workspaces learn confirmed remote moves through the durable change
+   * path explicit moves use (runFileChange). A saved tab known to be another
+   * file than the one that moved stays where it is.
+   */
+  async function updateSavedWorkspaces(moves: { from: string; to: string; fileId?: string }[]) {
+    const all = [...savedMovesRetry.current, ...moves];
+    savedMovesRetry.current = [];
+    const follows = workspaceManager.movesForSavedWorkspaces(all).filter((move) => move.from !== move.to);
+    if (!follows.length) return;
+    try {
+      await workspaceManager.runFileChange(async () => follows, (moved) => ({ moved: moved.map(({ from, to }) => ({ from, to })) }));
+    } catch {
+      savedMovesRetry.current = follows;
+    }
+  }
+
+  /**
+   * Moves of a collaborator whose destination is verified to be the moved file:
+   * its open tab, unsaved draft and ink follow, and so do saved workspaces. A
+   * tab that is known to be another file than the one that moved is left alone.
+   */
+  function followConfirmedMoves(confirmed: ConfirmedMove<LiberaFilePayload>[]) {
+    const own = confirmed.filter(({ from, fileId }) => {
+      const known = tabsRef.current.find((tab) => tab.file.path === from)?.file.fileId;
+      return !(known && fileId && known !== fileId);
+    });
+    if (own.length) retargetOpenTabs(own);
+    return updateSavedWorkspaces(confirmed.map(({ from, fileId, payload }) => ({ from, to: payload.file.path, fileId })));
+  }
+
   // Shared working-copy writes can change links without changing the file layout.
   // Refresh for both host event types, and follow open tabs whose file moved.
-  const latestTreeChange = useRef({ refreshNotebooks, refreshFiles, retargetOpenTabs });
+  const latestTreeChange = useRef({ refreshNotebooks, refreshFiles, followConfirmedMoves, updateSavedWorkspaces });
   useLayoutEffect(() => {
-    latestTreeChange.current = { refreshNotebooks, refreshFiles, retargetOpenTabs };
+    latestTreeChange.current = { refreshNotebooks, refreshFiles, followConfirmedMoves, updateSavedWorkspaces };
   });
   useEffect(() => {
     if (!authenticated) return;
     let active = true;
-    // Moves run strictly in the order they happened, each after the previous fetch settled.
-    let movesDone: Promise<void> = Promise.resolve();
+    // A moved file is found by its identity, never by the path alone: the destination must be verified to hold that file.
+    const read: MovedFileRead<LiberaFilePayload> = {
+      atPath: (path) => apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(path)}`),
+      byId: (fileId, notebook) => apiRequest<LiberaFilePayload>(`/api/files?notebook=${encodeURIComponent(notebook)}&fileId=${encodeURIComponent(fileId)}`)
+        .catch((error) => { if ((error as { status?: number })?.status === 410) return null; throw error; }),
+    };
+    // Moves run strictly in the order they happened. One whose destination has not arrived (or is not verified yet)
+    // is kept by file id and tried again when an event or a manifest read follows (no timer).
+    const follower = createMoveFollower<LiberaFilePayload>({
+      read,
+      apply: (confirmed) => latestTreeChange.current.followConfirmedMoves(confirmed),
+      isActive: () => active,
+    });
+    const afterChange = () => { void follower.retry(); void latestTreeChange.current.updateSavedWorkspaces([]); };
     // Tabs follow their files first, but a move lookup that hangs must not freeze the file list.
     const afterMoves = async () => {
-      await Promise.race([movesDone, new Promise((resolve) => setTimeout(resolve, 10_000))]);
+      await Promise.race([follower.settled(), new Promise((resolve) => setTimeout(resolve, 10_000))]);
       return active;
     };
     const stop = subscribeSharedTreeChanges(
@@ -4035,34 +4083,20 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         // Only the notebooks the events touched, and only those this window shows; an identical result is not applied, so nothing re-renders.
         try { await latestTreeChange.current.refreshNotebooks(scope); }
         catch (error) { setWorkspaceError(error instanceof Error ? error.message : tRef.current("refreshTreeError")); }
+        afterChange();
       },
-      (moves: FileMove[]) => {
-        movesDone = movesDone.then(async () => {
-          // All destinations are looked up first, then every tab is retargeted in one step.
-          // A lookup that fails while the cloud is still delivering the file is retried a few times.
-          const found = await Promise.all(moves.map(async (move) => {
-            try {
-              const payload = await withBackoff(() => apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(move.to)}`));
-              return { from: move.from, payload };
-            } catch {
-              // The file is gone; one failed move must not stop the others.
-              return null;
-            }
-          }));
-          if (!active) return;
-          const items = found.filter((item): item is { from: string; payload: LiberaFilePayload } => item !== null);
-          if (items.length) latestTreeChange.current.retargetOpenTabs(items);
-        });
-      },
+      (moves) => { void follower.follow(moves); },
       undefined,
       async (paths) => {
         if (!await afterMoves()) return;
         try { await latestTreeChange.current.refreshFiles(paths); }
         catch (error) { setWorkspaceError(error instanceof Error ? error.message : tRef.current("refreshTreeError")); }
+        afterChange();
       },
     );
     return () => {
       active = false;
+      follower.stop();
       stop();
     };
   }, [authenticated]);
@@ -4225,13 +4259,25 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       });
       // Each moved file's payload carries its own rewrite, for its tab; the batch's one links step rewrote the rest,
       // which open notes get once here (the moved files' tabs already have theirs).
-      for (const item of result.moved) if (item.payload) followFileMove(item.from, item.payload);
+      for (const item of result.moved) {
+        if (item.payload) { followFileMove(item.from, item.payload); continue; }
+        // Moved, but the server has no result for it (a step after the move stayed behind, or its result could not be read):
+        // its tab follows it anyway, as for a single move the host committed.
+        const file = moving.find((candidate) => candidate.path === item.from);
+        const payload = await apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(item.to)}`).catch(() => null)
+          ?? (file ? { file: { ...file, path: item.to, name: item.to.split("/").at(-1)!, notebook: item.to.split("/")[0] } } : null);
+        if (payload) followFileMove(item.from, { ...payload, moved: { from: item.from, to: item.to } });
+      }
       applyLinkRewritesToTabs(result.links, result.moved.map((item) => item.to));
       if (result.links || result.unfinished) reportMoveOutcome({ notebook: files[0].notebook, links: result.links, unfinished: result.unfinished });
-      if (result.failed) {
-        setWorkspaceError(tRef.current("batchMovePartialError", {
-          moved: result.moved.length, total: moving.length, name: result.failed.path.split("/").at(-1) ?? result.failed.path, message: result.failed.error,
-        }));
+      const stayedBehind = batchUnfinishedMessage(result.moved.flatMap((item) => item.unfinished?.length ? [{ path: item.to, steps: item.unfinished }] : []));
+      if (result.failed || stayedBehind) {
+        setWorkspaceError([
+          result.failed ? tRef.current("batchMovePartialError", {
+            moved: result.moved.length, total: moving.length, name: result.failed.path.split("/").at(-1) ?? result.failed.path, message: result.failed.error,
+          }) : "",
+          stayedBehind,
+        ].filter(Boolean).join(" "));
       }
       await refreshTree(files[0].notebook);
       updateExpanded((current) => {
@@ -4253,6 +4299,13 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     setWorkspaceConfirmDialog({ mode: "delete-files", files, unsavedNames: unsavedNamesAmong(files) });
   }
 
+  /** What stayed behind after files the host already moved or deleted (they cannot be taken back), as one sentence; "" when nothing did. */
+  function batchUnfinishedMessage(entries: { path: string; steps: string[] }[]) {
+    if (!entries.length) return "";
+    const shown = entries.slice(0, 3).map((item) => `${item.path.split("/").at(-1)} (${item.steps.join("; ")})`).join("; ");
+    return tRef.current("batchUnfinishedNotice", { count: entries.length, details: entries.length > 3 ? `${shown}; …` : shown });
+  }
+
   /** Deletes the files one by one on the server; tabs close and drafts are forgotten for each that went, as for a single delete. */
   async function deleteFileNodes(files: LiberaFileNode[]) {
     try {
@@ -4264,9 +4317,13 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       tabs.forEach((tab) => { if (deleted.has(tab.file.path)) forgetTabDraft(tab.id); });
       setTabs((currentTabs) => currentTabs.filter((currentTab) => !deleted.has(currentTab.file.path)));
       setActiveTabId((current) => (deleted.has(current) ? "" : current));
-      if (result.failed.length) {
+      const stayedBehind = batchUnfinishedMessage(result.unfinished ?? []);
+      if (result.failed.length || stayedBehind) {
         const shown = result.failed.slice(0, 3).map((item) => `${item.path.split("/").at(-1)} (${item.error})`).join("; ");
-        setWorkspaceError(tRef.current("batchDeletePartialError", { deleted: result.deleted.length, total: files.length, failures: result.failed.length > 3 ? `${shown}; …` : shown }));
+        setWorkspaceError([
+          result.failed.length ? tRef.current("batchDeletePartialError", { deleted: result.deleted.length, total: files.length, failures: result.failed.length > 3 ? `${shown}; …` : shown }) : "",
+          stayedBehind,
+        ].filter(Boolean).join(" "));
       }
       await refreshTree(files[0].notebook);
     } catch (error) {
@@ -4579,6 +4636,16 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       setActiveTabId((current) => (current === file.path ? "" : current));
       await refreshTree(file.notebook);
     } catch (error) {
+      // A shared file the host deleted although a step after it failed: it is gone (tab closed, saved workspaces told); the message says what stayed.
+      if (sharedCommitted(error)) {
+        await workspaceManager.runFileChange(async () => undefined, () => ({ removed: [file.path] })).catch(() => undefined);
+        forgetTabDraft(file.path);
+        setTabs((currentTabs) => currentTabs.filter((currentTab) => currentTab.file.path !== file.path));
+        setActiveTabId((current) => (current === file.path ? "" : current));
+        await refreshTree(file.notebook).catch(() => undefined);
+        setWorkspaceError(error instanceof Error ? error.message : tRef.current("deleteFileError"));
+        return;
+      }
       setWorkspaceError(isIdentityConflict(error) ? tRef.current("fileChangedUnderYouError") : error instanceof Error ? error.message : tRef.current("deleteFileError"));
       // The path now belongs to another file: show what is there instead of the stale list.
       if (isIdentityConflict(error)) await refreshTree().catch(() => undefined);
@@ -4621,6 +4688,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     const parentPath = folder.path.split("/").slice(0, -1).join("/");
     const nextPath = `${parentPath}/${name}`;
 
+    // Set when the host renamed the folder but a step after it failed: the rename stands, and this says what stayed behind.
+    let stayedBehind = "";
     try {
       const nextTree = await workspaceFileRequest<LiberaFolderMovePayload>("/api/folders", {
         method: "PATCH",
@@ -4631,6 +4700,11 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       }, (result) => {
         const rewrite = linkRewriteByPath(result.links);
         return { moved: { from: folder.path, to: nextPath }, ...(rewrite ? { rewrite } : {}) };
+      }).catch(async (error): Promise<LiberaFolderMovePayload> => {
+        if (!sharedCommitted(error)) throw error;
+        stayedBehind = error instanceof Error ? error.message : tRef.current("renameFolderError");
+        await workspaceManager.runFileChange(async () => undefined, () => ({ paths: [nextPath], moved: { from: folder.path, to: nextPath } })).catch(() => undefined);
+        return apiRequest<LiberaTree>("/api/tree?includeArchive=true");
       });
       pendingSaves.moveUnsaved(folder.path, nextPath, { prefix: true });
       await applyCompleteTree(nextTree);
@@ -4694,6 +4768,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       // Open files whose links followed the folder, inside it or not, get the same rewrite; the notice says so.
       applyLinkRewritesToTabs(nextTree.links);
       reportMoveOutcome({ notebook: folder.path.split("/")[0], links: nextTree.links, unfinished: nextTree.unfinished });
+      if (stayedBehind) setWorkspaceError(stayedBehind);
     } catch (error) {
       // Show what is on disk now, whatever the failure left.
       await refreshTree().catch(() => undefined);
@@ -4801,12 +4876,19 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   }
 
   async function deleteFolder(folder: LiberaFolderNode) {
+    // Set when the host deleted the folder but a step after it failed: it is gone, and this says what stayed behind.
+    let stayedBehind = "";
     try {
       const nextTree = await workspaceFileRequest<LiberaTree>(
         `/api/folders?path=${encodeURIComponent(folder.path)}`,
         { method: "DELETE" },
         () => ({ removed: [folder.path] }),
-      );
+      ).catch(async (error): Promise<LiberaTree> => {
+        if (!sharedCommitted(error)) throw error;
+        stayedBehind = error instanceof Error ? error.message : tRef.current("deleteFolderError");
+        await workspaceManager.runFileChange(async () => undefined, () => ({ removed: [folder.path] })).catch(() => undefined);
+        return apiRequest<LiberaTree>("/api/tree?includeArchive=true");
+      });
       await applyCompleteTree(nextTree);
       updateExpanded((current) =>
         new Set(
@@ -4825,6 +4907,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         currentTabs.filter((currentTab) => !currentTab.file.path.startsWith(`${folder.path}/`)),
       );
       setActiveTabId((current) => (current.startsWith(`${folder.path}/`) ? "" : current));
+      if (stayedBehind) setWorkspaceError(stayedBehind);
     } catch (error) {
       setWorkspaceError(error instanceof Error ? error.message : tRef.current("deleteFolderError"));
     }

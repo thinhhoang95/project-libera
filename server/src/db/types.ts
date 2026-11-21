@@ -221,9 +221,11 @@ export interface CommandsTable {
   account_id: string;
   id: string;
   kind: string;
-  status: number;
+  /** Null while the command is claimed and its handler has not finished (migrations/012_command_claims.sql). */
+  status: number | null;
   result: Json<unknown>;
   created_at: CreatedAt;
+  claimed_at: CreatedAt;
 }
 
 export interface AuditLogTable {
@@ -309,6 +311,9 @@ export interface DB {
   revisions: RevisionsTable;
   blobs: BlobsTable;
   blob_orphans: BlobOrphansTable;
+  takedown_recoveries: { project_id: string; name: string; created_at: CreatedAt; expires_at: ColumnType<Date, Date | string, Date | string> };
+  takedown_recovery_members: { project_id: string; account_id: string };
+  takedown_recovery_blobs: { project_id: string; hash: string; size: number; mime: string };
   threads: ThreadsTable;
   messages: MessagesTable;
   suggestions: SuggestionsTable;

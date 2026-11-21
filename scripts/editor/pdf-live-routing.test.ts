@@ -86,6 +86,7 @@ test("PDF authority routing and copy", async (t) => {
       await writeFile(sidecar, original);
       const seen: FileOpRequest[] = [];
       const hostVersion = Buffer.from("%PDF-1.4 the host's version");
+      const listed: Array<{ fileId: string; path: string; kind: "blob"; blobHash: string }> = [{ fileId: "fil_source", path: "source.pdf", kind: "blob", blobHash: "hash_host" }];
       globalThis.fetch = async (input, init) => {
         const url = new URL(String(input));
         if (url.pathname === "/pdf-docs/resolve") return Response.json({ docId: "pdf_live", projectId: "prj_test", fileId: "fil_source", accountId: "acc_me", path: "Shared/source.pdf" });
@@ -93,11 +94,14 @@ test("PDF authority routing and copy", async (t) => {
         if (url.pathname === "/projects") return Response.json([{ projectId: "prj_test", notebook: "Shared", pdfLive: true }]);
         // A copy is made from the host's version of the file, not from this device's working copy.
         if (url.pathname === "/projects/prj_test/file-blob") return Response.json({ fileId: "fil_source", blobHash: "hash_host", contentBase64: hostVersion.toString("base64") });
+        // The manifest a copy checks before and after it publishes (the destination's name and companions, then that the copy is still its own).
+        if (url.pathname === "/projects/prj_test/file-entries") return Response.json({ entries: listed });
         if (url.pathname.endsWith("/files")) {
           const operation = JSON.parse(String(init?.body)) as FileOpRequest;
           seen.push(operation);
           await writeFile(filePathFromParts("Shared", operation.path.split("/")), Buffer.from(operation.contentBase64!, "base64"));
-          return Response.json({ paths: [`Shared/${operation.path}`] });
+          listed.push({ fileId: "fil_copy", path: operation.path, kind: "blob", blobHash: "hash_copy" });
+          return Response.json({ paths: [`Shared/${operation.path}`], fileId: "fil_copy" });
         }
         throw new Error(`Unexpected host call: ${url}`);
       };

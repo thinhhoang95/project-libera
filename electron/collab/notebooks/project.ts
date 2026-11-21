@@ -12,9 +12,9 @@ import path from "node:path";
 
 import type * as Y from "yjs";
 
-import type { FileBlobResponse, FileListEntry, FileListResponse, FileOpRequest, FileOpResult, HostEvent, LocalAlbum, LocalAlbumPhoto, Reconciliation, UpdateAlbumRequest } from "../../../src/lib/collab/local-api";
+import type { FileBlobResponse, FileListEntry, FileListResponse, FileOpMove, FileOpRequest, FileOpResult, HostEvent, LocalAlbum, LocalAlbumPhoto, Reconciliation, UpdateAlbumRequest } from "../../../src/lib/collab/local-api";
 import type { Provenance } from "../../../src/lib/collab/protocol/actor";
-import type { ProjectClosingResponse } from "../../../src/lib/collab/protocol/api";
+import type { ProjectClosingResponse, TakedownRecovery } from "../../../src/lib/collab/protocol/api";
 import type { Role } from "../../../src/lib/collab/protocol/roles";
 import { roleAtLeast } from "../../../src/lib/collab/protocol/roles";
 import {
@@ -37,7 +37,7 @@ import type { DocHub } from "../core/doc-hub";
 import type { CollabHost } from "../core/host";
 import { ControlError } from "../control/types";
 import { classifyFile, createSharedDocument, mimeForPath } from "./documents";
-import { clearMoveJournal, placeStagedMoves, recoverInterruptedMoves, writeMoveJournal } from "./move-journal";
+import { clearMoveJournal, placeStagedMoves, writeMoveJournal } from "./move-journal";
 import {
   ARCHIVE_DIRECTORY,
   PathRefusedError,
@@ -76,9 +76,10 @@ import {
   type NotebookWalk,
   type WriteGuard,
 } from "./fs-ops";
-import { computeLayout, entriesUnder, entryRecord, manifestEntryBytes, readManifest, splitManifestBatches } from "./layout";
+import { MANIFEST_BATCH_BYTES, computeLayout, entriesUnder, entryRecord, manifestEntryBytes, readManifest, splitManifestBatches } from "./layout";
 import { ManifestIntents, trackEntryWrites } from "./manifest-intents";
-import { FRESH_RETAIN_BYTES, MAX_UPLOAD_BYTES, SCAN_READ_BUDGET_BYTES, noteTruncatedWalk, quietWaitMs, readShared, scanReadState } from "./scan-reads";
+import { FRESH_RETAIN_BYTES, MAX_UPLOAD_BYTES, SCAN_READ_BUDGET_BYTES, noteTruncatedWalk, quietWaitMs, readShared, scanReadState, withinMs } from "./scan-reads";
+import { ScanFairness } from "./scan-fairness";
 import { PdfCommentService } from "./pdf-comments";
 import { AUDIO_EXTENSIONS, MARKDOWN_EXTENSIONS } from "../../../src/lib/storage/constants";
 import { pythonSidecarPath } from "../../../src/lib/python/sidecar";
@@ -87,6 +88,39 @@ import { PDF_LIVE_SETTING } from "../../../src/lib/collab/protocol/pdf";
 import { emptyState, isStaleCopy, isUncertainCopy, readBase, readMarker, readState, setMaterialized, writeBase, writeMarker, writeState, deleteBase, type LayoutRecord, type ProjectState } from "./state";
 import { diffText } from "./text-diff";
 import { chunkTextEdits } from "./text-edit-chunks";
+import { diffManifestPaths, type RecordedPath } from "./transition-log";
+
+/** Scans a pairing of a missing file with a new one is held back for an uncertain absence before the usual restore-and-import applies. */
+const MAX_RENAME_DEFERRALS = 8;
+
+/** The scanner's per-project bookkeeping, created on first use (a project built without its field initializers has it too). */
+interface ScanScratch {
+  fairness: ScanFairness;
+  respellSeen: Map<string, string>;
+  respellLogged: Set<string>;
+  ownRespells: Set<string>;
+  renameDeferrals: Map<string, number>;
+  /** The latest renames the scanner paired, for a folder whose files pair across scans (S43). */
+  recentMoves: Array<{ from: string; to: string; at?: number }>;
+}
+const scanScratches = new WeakMap<object, ScanScratch>();
+function scanScratch(owner: object): ScanScratch {
+  let scratch = scanScratches.get(owner);
+  if (!scratch) {
+    scratch = { fairness: new ScanFairness(), respellSeen: new Map(), respellLogged: new Set(), ownRespells: new Set(), renameDeferrals: new Map(), recentMoves: [] };
+    scanScratches.set(owner, scratch);
+  }
+  return scratch;
+}
+
+/** Entries remembered as spelled by a remote normalization-only rename. */
+const MAX_REMOTE_RESPELLS = 200;
+
+/** How long a paired rename is remembered for recognizing a moved folder. */
+const RECENT_MOVE_MS = 5 * 60_000;
+
+/** Renames remembered across scans to recognize a moved folder. */
+const MAX_RECENT_MOVES = 500;
 
 /** Where a notebook keeps its files' ink (INK_DIR in src/lib/storage/constants.ts). */
 const INK_DIRECTORY = "_ink";
@@ -362,13 +396,30 @@ export class SharedProject {
   /** The state.json text last written (or found unchanged), so an identical state is not written again. */
   private savedState: string | null = null;
   /** Hubs (by document id) that heard the server's answer since this runtime started: a writer does no disk work before that (finding 2). */
-  private readonly caughtUp = new Set<string>();
+  private readonly caughtUp = new Map<string, number>();
+  /** The manifest change this runtime made is in memory only (SQLite refused it): disk work waits for the hub's retry (S54). */
+  private durableWaiting = false;
+  /** While a manifest pass runs: the catch-up generation its disk writes are bound to (S53). */
+  private epochFence: { hub: DocHub; generation: number } | null = null;
+  /** Folder paths whose placement on disk this runtime confirmed, and why the others could not be placed (S52). */
+  private readonly placedFolders = new Set<string>();
+  private readonly folderErrors = new Map<string, string>();
   /** Documents whose write was skipped because their move is still pending; written once it is placed. */
   private readonly moveDeferred = new Set<string>();
   /** state.json is behind the in-memory state; kept until a write succeeds. */
   private stateDirty = false;
   private saveFailures = 0;
   private readonly missingSince = new Map<string, number>();
+  /** Files a scan left out or failed to read, so the next scans serve them first; counted in scan passes (S49). */
+  private get scanFairness(): ScanFairness { return scanScratch(this).fairness; }
+  /** The disk spelling of a known name that another program changed (case, Unicode form), until it is seen at two scans in a row (S39). */
+  private get respellSeen(): Map<string, string> { return scanScratch(this).respellSeen; }
+  /** Entries already logged as keeping a remote normalization spelling (S39). */
+  private get respellLogged(): Set<string> { return scanScratch(this).respellLogged; }
+  /** Entries this host's own scan respelled in the manifest: not a remote rename when they come back through the manifest. */
+  private get ownRespells(): Set<string> { return scanScratch(this).ownRespells; }
+  /** Scans a missing file's pairing with a new file was held back because its absence was uncertain (S41). */
+  private get renameDeferrals(): Map<string, number> { return scanScratch(this).renameDeferrals; }
   private readonly refusedLogged = new Set<string>();
   /** Blobs that could not be downloaded: failures so far and the earliest next try (finding 35). */
   private readonly blobFailures = new Map<string, { count: number; nextAt: number }>();
@@ -392,6 +443,8 @@ export class SharedProject {
   private readonly verified = new Map<string, { ctimeMs: number | undefined; at: number; pending?: boolean }>();
   /** Retired path keys, each with the content hashes known for it. */
   private readonly retired: Map<string, Set<string>>;
+  /** Where each manifest entry was last recorded in the host's transition log (a restart reads it back from the store). */
+  private recordedPaths: Map<string, RecordedPath>;
   private observedEntries = new Map<string, ManifestEntry>();
   /** Field changes this host made to entries until the server has them: a concurrent whole-entry write must not undo them (see manifest-intents.ts). */
   private readonly manifestIntents = new ManifestIntents();
@@ -403,6 +456,7 @@ export class SharedProject {
     this.info = info;
     this.state = state;
     this.retired = ctx.host.store.retiredPaths(info.projectId);
+    this.recordedPaths = ctx.host.store.manifestPaths(info.projectId);
     this.pdfs = new PdfMarksRuntime({
       host: ctx.host,
       logger: ctx.logger,
@@ -437,14 +491,9 @@ export class SharedProject {
     }
     if (project.state.externalAdoptionRequired) ctx.host.store.requireExternalAdoption(info.projectId);
     if (ctx.host.store.requiresExternalAdoption(info.projectId)) project.state.externalAdoptionRequired = true;
-    if (!project.follower && !info.album) {
-      // Staged bytes of a move an earlier run never finished (STALE-3).
-      const recovered = await recoverInterruptedMoves(info.root, project.diskGuard()).catch((error) => {
-        ctx.logger.warn(`Shared notebook ${info.notebook}: could not resolve interrupted moves`, error);
-        return [];
-      });
-      for (const move of recovered) if (move.outcome === "archived") ctx.logger.warn(`Shared notebook ${info.notebook}: an interrupted move's file was kept in the archive as ${move.archivedAs}`);
-    }
+    // Staged bytes of a move an earlier run never finished (STALE-3) stay under .libera/collab/moving/ until a
+    // caught-up manifest pass (placeStagedMoves) supplies the entry's current destination or confirms its removal:
+    // resolving them here, against the journal's possibly obsolete destination, consumed them too early (S48).
     if (!info.follower) {
       // State/marker can arrive ahead of files through a cloud provider.
       // Absence at startup or takeover is not an observed user deletion.
@@ -495,7 +544,11 @@ export class SharedProject {
     // Eligibility is asked again after the marker read: a lease that expired
     // (or a role that changed) during a slow provider read never commits.
     const eligible = () => finalizing || (!this.stopped && !this.follower);
-    return { root: this.info.root, canCommit: async () => eligible() && await this.rootAvailable() && eligible() };
+    // A pass of disk work is bound to the manifest generation it started under: a reconnect or a
+    // rollback in between sends it back to wait for the replacement state (S53).
+    const fence = this.epochFence;
+    const current = () => finalizing || !fence || (!fence.hub.isClosed && fence.hub.caughtUp && fence.hub.catchUpGeneration === fence.generation);
+    return { root: this.info.root, canCommit: async () => eligible() && current() && await this.rootAvailable() && eligible() && current() };
   }
 
   // ------------------------------------------------------------ lifecycle
@@ -523,6 +576,12 @@ export class SharedProject {
       }),
       hub.onStatus(() => {
         this.scheduleIntents();
+        // The retry that saved a change which was only in memory: its disk work may run now (no timer of its own).
+        if (this.durableWaiting && hub.unpersistedCount === 0) {
+          this.durableWaiting = false;
+          this.scheduleManifest(30);
+          this.scheduleScan(30);
+        }
         if (this.noteCaughtUp(hub)) {
           // The manifest is the gate for every document's write too, and for the scan.
           this.scheduleManifest(30);
@@ -643,7 +702,7 @@ export class SharedProject {
    * sequence; everything is exported from state taken after that, so no late
    * change can exist only on the server. Returns the manifest sequence to delete against.
    */
-  prepareLocalConversion(beginFence: () => Promise<ProjectClosingResponse>): Promise<number> {
+  prepareLocalConversion(beginFence: () => Promise<ProjectClosingResponse>, options: { acceptIncompleteExport?: boolean } = {}): Promise<{ sequence: number; recovery: TakedownRecovery }> {
     return this.enqueueExplicit(async () => {
       const hub = this.manifestHub;
       if (!hub || !this.manifestReady() || !hub.getStatus().connected || hub.pendingCount > 0) {
@@ -702,9 +761,59 @@ export class SharedProject {
         this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: could not flush the exported files to disk`, error);
         throw new ControlError(503, "offline", "Could not make the exported files durable. The shared project was kept.");
       }
+      // The comment stores only the server holds (threads, suggestions, reviews, PDF comments): one pass, after the fence.
+      const recovery = await this.exportCommentStores(fence, layout.paths, guard, options.acceptIncompleteExport === true);
       if (!await current()) throw new ControlError(409, "conflict", "The notebook changed during its local export. Retry taking it down.");
-      return sequence;
+      return { sequence, recovery };
     });
+  }
+
+  /**
+   * Writes every thread (with its messages), suggestion and review of every document the fence froze, PDF comments
+   * included, to `_archive/shared-takedown-comments.json` in the notebook, and counts them: the server compares the
+   * counts with what it holds before it deletes. A store that cannot be read stops the takedown, unless the owner
+   * accepted an incomplete export, which is then recorded in the file and reported to the server.
+   * One bounded pass: nothing is retried here.
+   */
+  private async exportCommentStores(fence: ProjectClosingResponse, paths: ReadonlyMap<string, string>, guard: WriteGuard, acceptIncomplete: boolean): Promise<TakedownRecovery> {
+    const api = this.ctx.host.api;
+    if (!api) throw new ControlError(503, "offline", "Connect and sync this notebook before taking it down.");
+    const pathOfDoc = new Map<string, string>();
+    for (const [fileId, relative] of paths) {
+      const record = this.state.layout[fileId];
+      if (record?.docId) pathOfDoc.set(record.docId, relative);
+    }
+    const recovery: TakedownRecovery = { threads: 0, messages: 0, suggestions: 0, reviews: 0 };
+    const documents: Array<Record<string, unknown>> = [];
+    const unreadable: string[] = [];
+    for (const doc of fence.docs) {
+      if (doc.kind === "manifest") continue;
+      const label = pathOfDoc.get(doc.docId) ?? doc.docId;
+      try {
+        const threads = await api.listThreads(doc.docId);
+        // A PDF has comment threads but no suggestions or reviews.
+        const suggestions = doc.kind === "pdf" ? [] : await api.listSuggestions(doc.docId);
+        const reviews = doc.kind === "pdf" ? [] : await api.listReviews(doc.docId);
+        recovery.threads += threads.length;
+        recovery.messages += threads.reduce((sum, thread) => sum + thread.messages.length, 0);
+        recovery.suggestions += suggestions.length;
+        recovery.reviews += reviews.length;
+        if (threads.length || suggestions.length || reviews.length) documents.push({ docId: doc.docId, kind: doc.kind, path: label, threads, suggestions, reviews });
+      } catch (error) {
+        if (!acceptIncomplete) throw new ControlError(503, "offline", `Could not export the comments on ${label}. The shared project was kept; retry taking it down.`);
+        this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: the comments on ${label} could not be exported`, error);
+        unreadable.push(label);
+      }
+    }
+    if (unreadable.length) recovery.incomplete = true;
+    if (documents.length || unreadable.length) {
+      const body = { version: 1, exportedAt: new Date().toISOString(), project: this.info.projectId, ...(unreadable.length ? { incomplete: unreadable } : {}), documents };
+      const target = await resolveInside(this.info.root, `${ARCHIVE_DIRECTORY}/shared-takedown-comments.json`);
+      await ensureDirectory(path.dirname(target), guard);
+      await writeFileAtomic(target, Buffer.from(`${JSON.stringify(body, null, 2)}\n`, "utf8"), guard);
+      await flushToDisk([target], []).catch(() => { throw new ControlError(503, "offline", "Could not make the exported comments durable. The shared project was kept."); });
+    }
+    return recovery;
   }
 
   /** Waits until every document this device holds open has the updates the takedown fence froze on the server. */
@@ -766,7 +875,7 @@ export class SharedProject {
         const disk = await readIfExists(target);
         const expected = disk === null ? null : sha256(disk);
         if (expected === entry.blobHash) continue;
-        const bytes = await this.blobBytes(entry.blobHash);
+        const bytes = await this.terminalBlobBytes(entry.blobHash);
         if (!bytes || sha256(bytes) !== entry.blobHash) { missing.push(relative); continue; }
         if (disk && !this.info.album) await this.archive(relative, contentGuard(target, expected, guard));
         await writeFileAtomic(target, bytes, contentGuard(target, disk && !this.info.album ? null : expected, guard));
@@ -777,6 +886,24 @@ export class SharedProject {
     return missing;
   }
 
+  /**
+   * The bytes of a binary after the project was taken down: what this device already holds, else the server's
+   * recovery copy for former members. One attempt each, no retry timer: access is gone, and the recovery window is bounded.
+   */
+  private async terminalBlobBytes(hash: string): Promise<Uint8Array | null> {
+    const uploaded = this.uploadedBlobs.get(hash);
+    if (uploaded) return uploaded;
+    const cached = this.ctx.host.store.getBlob(hash);
+    if (cached) {
+      const bytes = await readWithin(cached.localPath, HYDRATION_WAIT_MS).catch(() => null);
+      if (bytes && bytes !== SLOW_READ && sha256(bytes) === hash) return bytes;
+    }
+    const api = this.ctx.host.api;
+    if (!api) return null;
+    // Still a member (removed, or the takedown is not through yet): the normal route; once the project is gone, the recovery copy.
+    return api.downloadBlob(this.info.projectId, hash).catch(() => api.downloadRecoveryBlob(this.info.projectId, hash)).catch(() => null);
+  }
+
   /** True once every manifest entry has been placed on disk (join waits on this). */
   isMaterialized(): boolean {
     if (!this.manifestReady()) return false;
@@ -784,12 +911,21 @@ export class SharedProject {
     if (this.follower) return this.manifestWasReady && this.awaitedOnDisk.size === 0;
     if (!this.manifestCaughtUp()) return false;
     const layout = computeLayout(this.readEntries().values());
-    for (const fileId of layout.paths.keys()) {
+    for (const [fileId, directory] of layout.paths) {
       const record = this.state.layout[fileId];
       if (!record) return false;
-      if (record.kind !== "folder" && !record.hash) return false;
+      if (record.kind === "folder" ? !this.placedFolders.has(directory) : !record.hash) return false;
     }
+    for (const directory of layout.directories) if (this.folderErrors.has(directory)) return false;
     return true;
+  }
+
+  /** Why a folder of the manifest could not be placed on disk, in a sentence the user can act on (S52). */
+  placementProblem(): string | null {
+    for (const [directory, reason] of this.folderErrors) {
+      return `Could not create the folder "${directory}" in this notebook's folder (${reason}). Check that the location is writable and has free space; Libera tries again by itself.`;
+    }
+    return null;
   }
 
   /**
@@ -863,14 +999,15 @@ export class SharedProject {
    * and a cache older than them must not be taken for the baseline (finding 2).
    */
   private noteCaughtUp(hub: DocHub): boolean {
-    if (hub.isClosed || this.caughtUp.has(hub.docId) || !hub.hasOpened) return false;
-    this.caughtUp.add(hub.docId);
+    // Caught up for the hub's current generation only: a new connection, a rollback or a lost update starts over (S53).
+    if (hub.isClosed || !hub.caughtUp || this.caughtUp.get(hub.docId) === hub.catchUpGeneration) return false;
+    this.caughtUp.set(hub.docId, hub.catchUpGeneration);
     return true;
   }
 
   private hubCaughtUp(hub: DocHub): boolean {
     this.noteCaughtUp(hub);
-    return this.caughtUp.has(hub.docId);
+    return !hub.isClosed && hub.caughtUp;
   }
 
   /** The manifest has caught up with the server: until then a writer does no disk work. */
@@ -894,7 +1031,18 @@ export class SharedProject {
 
   /** Makes the folder match the manifest: removals, moves, folders, new and changed files. */
   private async applyManifest(): Promise<void> {
+    const hub = this.manifestHub;
+    if (hub && !this.follower && hub.caughtUp) this.epochFence = { hub, generation: hub.catchUpGeneration };
+    try { await this.applyManifestPass(); } finally { this.epochFence = null; }
+  }
+
+  private async applyManifestPass(): Promise<void> {
     if (!this.manifestReady()) return;
+    // A change the manifest holds only in memory is neither materialized nor followed up until SQLite has it (S54).
+    if (this.manifestHub && !this.manifestHub.flushDurable()) {
+      this.durableWaiting = true;
+      return;
+    }
     this.manifestWasReady = true;
     const pdfLive = this.pdfs.enabled;
     if (pdfLive !== this.pdfLiveSnapshot) {
@@ -914,6 +1062,7 @@ export class SharedProject {
     }
     this.entries = this.readEntries();
     const layout = computeLayout(this.entries.values());
+    this.recordTransitions(layout);
     for (const refused of layout.refused) {
       if (this.refusedLogged.has(refused.fileId)) continue;
       this.refusedLogged.add(refused.fileId);
@@ -930,7 +1079,7 @@ export class SharedProject {
     const stagedMoves = new Map<string, "placed" | "archived">();
     const stagedWaiting = new Set<string>();
     if (!this.info.album) {
-      const results = await placeStagedMoves(this.info.root, layout.paths, this.diskGuard()).catch((error) => {
+      const results = await placeStagedMoves(this.info.root, layout.paths, this.diskGuard(), { listed: new Set(this.entries.keys()) }).catch((error) => {
         this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: could not retry staged moves`, error);
         return null;
       });
@@ -1014,9 +1163,10 @@ export class SharedProject {
         const staging = path.join(this.info.root, ...STATE_DIRECTORY, "moving", `${fileId}-${randomId("move")}`);
         const journalled = !this.info.album;
         // Journal first: a crash after staging must not leave bytes with no record of where they were going.
-        if (journalled) await writeMoveJournal(this.info.root, { fileId, source: record.path, destination: desired, staged: path.basename(staging), ...(record.hash ? { hash: record.hash } : {}), stagedAt: Date.now() }, this.diskGuard());
+        if (journalled) await writeMoveJournal(this.info.root, { fileId, source: record.path, destination: desired, staged: path.basename(staging), hash: owner.hash, stagedAt: Date.now() }, this.diskGuard());
         try {
-          await movePath(source, staging, this.diskGuard());
+          // Fenced to the source that was verified: replaced since (same name, other bytes), nothing moves.
+          await movePath(source, staging, this.sourceGuard(source, owner.key));
         } catch (error) {
           if (journalled) await clearMoveJournal(this.info.root, path.basename(staging)).catch(() => undefined);
           throw error;
@@ -1037,7 +1187,7 @@ export class SharedProject {
         const target = await resolveInside(this.info.root, desired);
         // A file whose own move failed still sits there: it is not ours to archive.
         if (occupied.has(desired)) throw new DestinationTakenError(target);
-        if (await statIfExists(target)) await this.archive(desired);
+        if (await statIfExists(target)) this.displacedPath(desired, await this.archive(desired));
         await movePathExclusive(staging, target, this.diskGuard());
         if (!this.info.album) await clearMoveJournal(this.info.root, path.basename(staging)).catch(() => undefined);
         next[fileId] = { ...record, path: desired };
@@ -1058,12 +1208,19 @@ export class SharedProject {
       try {
         const absolute = await resolveInside(this.info.root, directory);
         const stats = await statIfExists(absolute);
-        if (stats && !stats.isDirectory()) await this.archive(directory);
+        if (stats && !stats.isDirectory()) this.displacedPath(directory, await this.archive(directory));
         if (!stats || !stats.isDirectory()) {
           await ensureDirectory(absolute, this.diskGuard());
+          if (!(await statIfExists(absolute))?.isDirectory()) throw new Error("the folder was not created");
           touched.add(directory);
         }
+        this.placedFolders.add(directory);
+        this.folderErrors.delete(directory);
       } catch (error) {
+        // Placement is confirmed, never assumed: the join status and isMaterialized see this.
+        this.placedFolders.delete(directory);
+        this.folderErrors.set(directory, error instanceof Error ? error.message : String(error));
+        if (!(error instanceof PathRefusedError)) needsRetry = true;
         this.refuse(directory, error);
       }
     }
@@ -1124,8 +1281,10 @@ export class SharedProject {
    * the disk is left to the writer (its files arrive through the sync client).
    */
   private followManifest(): void {
+    const previousEntries = this.entries;
     this.entries = this.readEntries();
     const layout = computeLayout(this.entries.values());
+    this.recordTransitions(layout);
     const previous = this.state.layout;
     const next: Record<string, LayoutRecord> = {};
     for (const [fileId, desired] of layout.paths) {
@@ -1133,7 +1292,14 @@ export class SharedProject {
       next[fileId] = entry.kind === "doc" ? { path: desired, kind: "doc", docId: entry.docId, docKind: entry.docKind } : { path: desired, kind: entry.kind };
     }
     for (const [fileId, record] of Object.entries(previous)) {
-      if (!next[fileId] || next[fileId].path !== record.path) this.retirePath(record.path, knownHashes(record));
+      if (!next[fileId] || next[fileId].path !== record.path) {
+        // A follower's record holds no hashes: the retired bytes are what the
+        // manifest said and what the shared text held, so that a later
+        // replacement is not taken for the removed file coming back (S44).
+        const runtime = record.docId ? this.docs.get(record.docId) : undefined;
+        const text = runtime && hubHasState(this.ctx.host, runtime.hub, "content") ? runtime.hub.getText("content") : null;
+        this.retirePath(record.path, retirementHashes(record, previousEntries.get(fileId), text));
+      }
       // Released, not tombstoned: only the server's document-deleted answer ends a document (finding 3).
       if (record.docId && next[fileId]?.docId !== record.docId) this.releaseDoc(record.docId);
     }
@@ -1354,7 +1520,9 @@ export class SharedProject {
       // An online-only file nobody explains (existingHash undefined) is archived like any unexplained one.
       if (existingHash !== null && existingHash !== record.hash && !(existingHash !== undefined && existingStats && isStaleCopy(record, existingHash, existingStats.mtimeMs))) {
         this.baselineMissing.add(entry.fileId);
-        await this.archive(record.path, guard);
+        const archived = await this.archive(record.path, guard);
+        // An entry never placed here claiming a path: what was there is a local file that was not shared.
+        if (!record.hash) this.displacedPath(record.path, archived);
         expected = null;
       }
       const stats = await writeFileAtomic(target, bytes, guard);
@@ -1418,21 +1586,54 @@ export class SharedProject {
    * every member's computer (members keep a photo by saving it to their
    * gallery, which copies it out of the album).
    */
-  private async archive(relative: string, guard = this.diskGuard()): Promise<void> {
+  private async archive(relative: string, guard = this.diskGuard()): Promise<string | null> {
     let source: string;
     try {
       source = await resolveInside(this.info.root, relative);
     } catch {
-      return;
+      return null;
     }
-    if (!(await statIfExists(source))) return;
+    if (!(await statIfExists(source))) return null;
     if (!(await guard.canCommit())) throw new WriteCancelledError();
     if (this.info.album) {
       await fs.rm(source, { recursive: true, force: true });
-      return;
+      return null;
     }
     const archiveRoot = path.join(this.info.root, ARCHIVE_DIRECTORY);
-    await movePathUnique(source, archiveRoot, path.posix.basename(relative), guard);
+    const archived = await movePathUnique(source, archiveRoot, path.posix.basename(relative), guard);
+    return path.relative(this.info.root, archived).split(path.sep).join("/");
+  }
+
+  /**
+   * A file nobody had shared (not yet imported) was archived because an incoming
+   * entry claims its path (S47). The path-keyed records of the displaced file
+   * (annotations, tags, sidecars) must not stay behind for the new occupant: the
+   * file's identity is its archive path, so a move from the claimed path to it is
+   * recorded in state.json and told to Next as a tree move under a synthetic file
+   * id, which Next's follow-up moves the records along with.
+   */
+  private displacedPath(relative: string, archived: string | null): void {
+    if (!archived) return;
+    const fileId = `displaced-${sha256(new TextEncoder().encode(archived)).slice(0, 24)}`;
+    this.state.displaced = [...(this.state.displaced ?? []), { fileId, from: relative, to: archived, at: Date.now() }].slice(-100);
+    this.saveSoon();
+    // Also in the durable transition log, before the tree event (as recordTransitions does): Next moves this computer's records at the claimed path to the archived file on the next drain, and a crash or a lost event does not lose it.
+    if (!this.info.album) {
+      try {
+        this.ctx.host.store.commitManifestPaths(this.info.projectId, { upserts: [], removals: [], transitions: [{ fileId, kind: "file", from: relative, to: archived, at: Date.now() }] });
+      } catch (error) {
+        this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: could not record the move of the displaced file ${relative}`, error);
+      }
+    }
+    this.ctx.emit({
+      t: "tree-changed", projectId: this.info.projectId, notebook: this.info.notebook,
+      added: [], moves: [{ from: this.liberaPath(relative), to: this.liberaPath(archived), fileId }], removed: [],
+    });
+  }
+
+  private sourceGuard(source: string, verifiedKey: string): WriteGuard {
+    const base = this.diskGuard();
+    return { root: base.root, canCommit: async () => await base.canCommit() && statsKey(await statIfExists(source)) === verifiedKey };
   }
 
   /**
@@ -1440,20 +1641,24 @@ export class SharedProject {
    * placed or adopted (any earlier one too), or for a document its base text.
    * A file the entry never had there is someone else's.
    */
-  private async holdsOwnBytes(source: string, record: LayoutRecord): Promise<boolean | typeof SLOW_READ> {
+  private async holdsOwnBytes(source: string, record: LayoutRecord): Promise<{ hash: string; key: string } | false | typeof SLOW_READ> {
     const known = new Set(knownHashes(record));
     if (record.docId) {
       const base = await readBase(this.info.root, record.docId).catch(() => null);
       if (base !== null) known.add(sha256(encodeText(base)));
     }
     if (known.size === 0) return false;
-    const stats = await statIfExists(source);
-    if (!stats) return false;
-    // Hashing a large file needs a read; the stats this host recorded answer first.
-    if (record.hash && record.size === stats.size && record.mtimeMs === stats.mtimeMs) return true;
+    const before = await statIfExists(source);
+    // An online-only placeholder is never read (downloaded) just to check it: not provably ours, so it stays put.
+    if (!before || isDataless(before)) return false;
+    // Same size and mtime prove nothing (S46): the bytes are hashed, once; the caller fences the move to this stat.
     const bytes = await readWithin(source, HYDRATION_WAIT_MS).catch(() => null);
     if (bytes === SLOW_READ) return SLOW_READ;
-    return bytes !== null && known.has(sha256(bytes));
+    if (bytes === null) return false;
+    const after = await statIfExists(source);
+    if (!after || statsKey(after) !== statsKey(before)) return false;
+    const hash = sha256(bytes);
+    return known.has(hash) ? { hash, key: statsKey(after) as string } : false;
   }
 
   /** Keep the latest CRDT text as well as any distinct on-disk version. */
@@ -1489,12 +1694,16 @@ export class SharedProject {
     this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: ${relative}`, error);
   }
 
-  private async writeManifest(fn: (files: Y.Map<unknown>, doc: Y.Doc) => void, provenance: Provenance): Promise<void> {
+  /** Commits a manifest change; returns the bytes of its (single) update. A control caller gets an error, not success, for a change SQLite did not take (S54). */
+  private async writeManifest(fn: (files: Y.Map<unknown>, doc: Y.Doc) => void, provenance: Provenance): Promise<number> {
     if (provenance.source === "external-file" && this.follower) throw new WriteCancelledError();
     const hub = this.manifestHub;
     if (!hub) throw new Error("The manifest is not open.");
+    // An automatic import commits only against a manifest that has heard the server (S53).
+    if (provenance.source === "external-file" && !this.manifestCaughtUp()) throw new WriteCancelledError();
+    let bytes = 0;
     // Every entry write goes through here, so this is where field changes are noted as intents.
-    trackEntryWrites(this.manifestDoc().getMap<unknown>(ManifestKeys.files), this.manifestIntents, () => hub.applyLocalChange("manifest", (doc) => {
+    trackEntryWrites(this.manifestDoc().getMap<unknown>(ManifestKeys.files), this.manifestIntents, () => { bytes = hub.applyLocalChange("manifest", (doc) => {
       const files = doc.getMap<unknown>(ManifestKeys.files);
       fn(files, doc);
       // A removed photo takes its details with it; a new one gets a record.
@@ -1508,8 +1717,31 @@ export class SharedProject {
           if (photo.addedBy) photos.set(fileId, { ...photo });
         }
       }
-    }, provenance));
+    }, provenance)?.length ?? 0; });
     this.entries = this.readEntries();
+    if (!hub.flushDurable()) {
+      // The change is applied in memory and retried by the hub on a backoff, but a crash now would lose it.
+      this.durableWaiting = true;
+      if (provenance.source !== "external-file") {
+        throw new ControlError(503, "not-saved", "The change could not be saved on this computer yet (the collaboration database is busy or unavailable). Files and records were not changed. Libera keeps trying to save it; check the notebook before repeating the action.");
+      }
+    }
+    return bytes;
+  }
+
+  /**
+   * Writes operations in groups whose real encoded size stays near the batch
+   * budget (S50): each group's actual update size sets the next group's length,
+   * so thousands of long-path entries never become one oversized update.
+   */
+  private async writeManifestOperations(operations: Array<(map: Y.Map<unknown>, doc: Y.Doc) => void>, provenance: Provenance): Promise<void> {
+    let group = 256;
+    for (let index = 0; index < operations.length;) {
+      const slice = operations.slice(index, index + group);
+      const bytes = await this.writeManifest((map, doc) => { for (const operation of slice) operation(map, doc); }, provenance);
+      index += slice.length;
+      if (bytes > 0) group = Math.max(1, Math.min(1024, Math.floor(MANIFEST_BATCH_BYTES / Math.max(1, bytes / slice.length))));
+    }
   }
 
   /** After a merge (or an acknowledgement): writes again a field change that a concurrent whole-entry write reverted. */
@@ -1626,7 +1858,11 @@ export class SharedProject {
   private ensureDoc(docId: string, fileId: string): void {
     const existing = this.docs.get(docId);
     if (existing) {
-      existing.fileId = fileId;
+      // A document belongs to one file id. A second entry naming it is a malformed manifest: keep the first binding.
+      if (existing.fileId !== fileId) {
+        this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: document ${docId} is listed under file ${fileId} but belongs to ${existing.fileId}; keeping the first`);
+        return;
+      }
       existing.hub.reviveDeleted();
       return;
     }
@@ -1746,7 +1982,7 @@ export class SharedProject {
         return;
       }
       if (!record.hash) {
-        try { await this.archive(record.path, contentGuard(target, expected, this.diskGuard())); }
+        try { this.displacedPath(record.path, await this.archive(record.path, contentGuard(target, expected, this.diskGuard()))); }
         catch (error) {
           if (!(error instanceof WriteCancelledError)) throw error;
           this.scheduleScan(0); this.scheduleRetry(); return;
@@ -2321,6 +2557,12 @@ export class SharedProject {
     const fileKeys = new Map<string, WalkEntry>();
     for (const entry of files.values()) fileKeys.set(manifestPathKey(entry.relative), fileKeys.get(manifestPathKey(entry.relative)) ?? entry);
     const directoryKeys = new Set([...directories.values()].map((entry) => manifestPathKey(entry.relative)));
+    // How many spellings of a name the disk holds: with two (a case-sensitive
+    // volume) nothing says which one a manifest name became.
+    const fileVariants = new Map<string, number>();
+    for (const entry of files.values()) fileVariants.set(manifestPathKey(entry.relative), (fileVariants.get(manifestPathKey(entry.relative)) ?? 0) + 1);
+    const directoryByKey = new Map<string, WalkEntry[]>();
+    for (const entry of directories.values()) directoryByKey.set(manifestPathKey(entry.relative), [...(directoryByKey.get(manifestPathKey(entry.relative)) ?? []), entry]);
     const skipped = new Set(walked.skipped.map(manifestPathKey));
     // Compared as manifest keys: fs.watch can spell a name differently
     // (Unicode normalization, case) from the walk on the same volume.
@@ -2348,24 +2590,60 @@ export class SharedProject {
     let quietDeferMs = Infinity;
     /** Bytes still to read this scan, tracked files and new ones alike. */
     let readBudget = SCAN_READ_BUDGET_BYTES;
+    const fair = this.scanFairness;
+    fair.beginPass();
+    /** Known names another program spelled differently on disk (case, Unicode form): they take the disk's spelling and keep their ID (S39). */
+    const respelled: Array<{ fileId: string; record: LayoutRecord; to: string }> = [];
+    const noteRespelling = (fileId: string, record: LayoutRecord, variants: WalkEntry[] | undefined) => {
+      const to = variants?.length === 1 ? variants[0].relative : null;
+      if (!to || to === record.path || !isShareablePath(to)) {
+        this.respellSeen.delete(fileId);
+        return;
+      }
+      // A normalization-only difference (no case change) in an entry another device spelled that way: this disk or sync client keeps the other form, and renaming it back would start a rename back and forth between devices.
+      if (to.normalize("NFC") === record.path.normalize("NFC") && this.state.remoteRespells?.[fileId]?.path === record.path) {
+        if (!this.respellLogged.has(fileId)) {
+          this.respellLogged.add(fileId);
+          this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: ${record.path} is spelled differently on this computer's disk (Unicode form). The shared name stays as another device set it.`);
+        }
+        this.respellSeen.delete(fileId);
+        return;
+      }
+      // A rename in progress, or the volume's own spelling of a name Libera just wrote, settles by the next scan (the usual cadence; no timer of its own).
+      if (this.respellSeen.get(fileId) !== to) {
+        this.respellSeen.set(fileId, to);
+        return;
+      }
+      respelled.push({ fileId, record, to });
+    };
 
-    for (const [fileId, record] of Object.entries(this.state.layout)) {
+    for (const [fileId, record] of fair.order(Object.entries(this.state.layout), ([id]) => id)) {
       const recordKey = manifestPathKey(record.path);
       if ([...skipped].some((item) => recordKey === item || recordKey.startsWith(`${item}/`))) {
         this.missingSince.delete(fileId);
         continue;
       }
       if (record.kind === "folder") {
-        if (directoryKeys.has(recordKey)) this.missingSince.delete(fileId);
-        else missing.push(fileId);
+        if (directoryKeys.has(recordKey)) {
+          this.missingSince.delete(fileId);
+          this.renameDeferrals.delete(fileId);
+          this.renameDeferrals.delete(`unsettled:${fileId}`);
+          if (directories.has(record.path)) this.respellSeen.delete(fileId);
+          else noteRespelling(fileId, record, directoryByKey.get(recordKey));
+        } else missing.push(fileId);
         continue;
       }
-      const seen = files.get(record.path) ?? fileKeys.get(recordKey);
+      const exact = files.get(record.path);
+      const seen = exact ?? fileKeys.get(recordKey);
       if (!seen) {
         if (record.hash && !this.baselineMissing.has(fileId)) missing.push(fileId);
         continue;
       }
       this.missingSince.delete(fileId);
+      this.renameDeferrals.delete(fileId);
+      this.renameDeferrals.delete(`unsettled:${fileId}`);
+      if (exact) this.respellSeen.delete(fileId);
+      else noteRespelling(fileId, record, fileVariants.get(recordKey) === 1 ? [seen] : undefined);
       // Finder is replacing this file: its bytes are not the new version yet.
       if (isFinderCopy(seen)) continue;
       // Stat equality is an optimization, never permanent proof of equality:
@@ -2397,8 +2675,12 @@ export class SharedProject {
         }
         continue;
       }
-      // One scan reads a bounded amount in all; the rest waits for the next.
+      // A path whose read failed sits out some scans, so it cannot take the budget at every one.
+      if (fair.skipped(fileId)) continue;
+      // One scan reads a bounded amount in all; the rest waits for the next
+      // and goes first there.
       if (seen.size > readBudget) {
+        fair.leftOut(fileId);
         needsRetry = true;
         continue;
       }
@@ -2407,9 +2689,11 @@ export class SharedProject {
       const absolute = await resolveInside(this.info.root, seen.relative).catch(() => null);
       const read = absolute ? await readShared(absolute, HYDRATION_WAIT_MS, seen, this) : null;
       if (read === SLOW_READ) {
+        fair.failed(fileId);
         needsRetry = true;
         continue;
       }
+      fair.served(fileId);
       let bytes: Uint8Array | null = read;
       if (!bytes || !absolute) continue;
       // Pending until what it found is handled; see settleVerification.
@@ -2506,9 +2790,10 @@ export class SharedProject {
       }
       // The upload took time: publish the new hash only if the file on disk is
       // still the snapshot that was hashed (same stat, same bytes).
-      const afterUpload = await statIfExists(absolute);
-      const reread = afterUpload && afterUpload.size === seen.size && afterUpload.mtimeMs === seen.mtimeMs ? await readIfExists(absolute) : null;
-      if (!reread || sha256(reread) !== hash) {
+      // Both waits are bounded: a provider that hangs here must not stop the project queue.
+      // readShared answers SLOW_READ when the file changed or the read did not finish; either way nothing is published.
+      const reread = await readShared(absolute, HYDRATION_WAIT_MS, seen, this);
+      if (reread === SLOW_READ || !reread || sha256(reread) !== hash) {
         this.verified.delete(fileId);
         needsRetry = true;
         continue;
@@ -2529,6 +2814,30 @@ export class SharedProject {
     // Other roles cannot change the manifest; their local changes stay local.
     if (!this.canEdit) return;
 
+    // A known name another program spelled differently (case, Unicode form)
+    // is a rename to the spelling on disk: the ID stays, and the manifest,
+    // the tree and Check Notebook's exact-name rule agree (S39). Same name
+    // key, so nothing is retired.
+    for (const { fileId, record, to } of respelled) {
+      const from = record.path;
+      const folder = record.kind === "folder";
+      this.respellSeen.delete(fileId);
+      this.ownRespells.add(fileId);
+      touched.add(from).add(to);
+      operations.push((map, doc) => {
+        const current = readManifest(doc).get(fileId);
+        if (!current || current.path !== from || !this.pathFree(doc, to, fileId, folder)) return;
+        map.set(fileId, entryRecord({ ...current, path: to, updatedAt: now }));
+        if (!folder) {
+          for (const ink of this.inkCompanionMoves(doc, from, to, false, now)) map.set(ink.fileId, entryRecord(ink));
+          for (const transcript of this.transcriptCompanionMoves(doc, from, to, now)) map.set(transcript.fileId, entryRecord(transcript));
+          for (const python of this.pythonCompanionMoves(doc, from, to, now)) map.set(python.fileId, entryRecord(python));
+        }
+        record.path = to;
+        if (record.docId) this.ctx.host.store.upsertDoc({ docId: record.docId, projectId: this.info.projectId, fileId, path: to, materializedHash: record.hash ?? null });
+      });
+    }
+
     // New files and folders the layout does not know.
     const fresh: Array<{ entry: WalkEntry; bytes: Uint8Array | null; hash: string; quiet: boolean }> = [];
     /** Bytes of new files held in memory (readBudget is shared with the tracked files above). */
@@ -2539,7 +2848,15 @@ export class SharedProject {
       const record = this.state.layout[fileId];
       if (record && record.kind !== "folder" && record.hash) missingSizes.add(record.size);
     }
-    for (const [relative, entry] of files) {
+    /** Document kinds of new files that have not settled: a missing document of such a kind may be their rename (S40). */
+    const arriving = new Set<string | null>();
+    /** Folders (as manifest keys) holding such files: no folder entry is made for them yet, and a missing folder waits (S43). */
+    const unsettledDirectories = new Set<string>();
+    const noteUnsettled = (relative: string) => {
+      arriving.add(docKindForPath(relative));
+      for (let at = relative.lastIndexOf("/"); at > 0; at = relative.lastIndexOf("/", at - 1)) unsettledDirectories.add(manifestPathKey(relative.slice(0, at)));
+    };
+    for (const [relative, entry] of fair.order([...files], ([name]) => `path:${name}`)) {
       if (known.has(manifestPathKey(relative))) continue;
       // An external LaTeX build's products would be uploaded again at every compile.
       if (isGeneratedPath(relative)) continue;
@@ -2549,7 +2866,10 @@ export class SharedProject {
       // from a delayed copy of a deleted identity. Explicit file operations
       // remain available; leave unexplained disk bytes untouched.
       // Judge a file only once it has arrived; the poll comes back to it.
-      if (mayStillBeCopying(entry, now)) continue;
+      if (mayStillBeCopying(entry, now)) {
+        noteUnsettled(relative);
+        continue;
+      }
       // And once no program has changed it for a while: a copy can pause
       // with some of its bytes in place.
       const stillChanging = quietWaitMs(entry, now, this.ctx.timings.importQuietMs);
@@ -2559,6 +2879,7 @@ export class SharedProject {
       const renameCandidate = stillChanging > 0 && missingSizes.has(entry.size);
       if (stillChanging > 0 && !renameCandidate) {
         quietDeferMs = Math.min(quietDeferMs, stillChanging);
+        noteUnsettled(relative);
         continue;
       }
       // Reading an online-only file downloads it: decide from the stat first.
@@ -2575,17 +2896,22 @@ export class SharedProject {
       if (this.state.externalAdoptionRequired
         && !missingSizes.has(entry.size) && !missingSizes.has(undefined)
         && !this.retired.has(manifestPathKey(relative)) && !this.conflictCopyOf(relative, "")) continue;
-      // One scan hydrates a bounded amount; the rest waits for the next.
+      const freshKey = `path:${relative}`;
+      if (fair.skipped(freshKey)) continue;
+      // One scan hydrates a bounded amount; the rest waits for the next and goes first there.
       if (entry.size > readBudget) {
+        fair.leftOut(freshKey);
         needsRetry = true;
         continue;
       }
       const absolute = await resolveInside(this.info.root, relative).catch(() => null);
       const read = absolute ? await readShared(absolute, HYDRATION_WAIT_MS, entry, this) : null;
       if (read === SLOW_READ) {
+        fair.failed(freshKey);
         needsRetry = true;
         continue;
       }
+      fair.served(freshKey);
       let bytes: Uint8Array | null = read;
       if (!bytes) continue;
       readBudget -= entry.size;
@@ -2604,7 +2930,7 @@ export class SharedProject {
         const canCommit = guard.canCommit;
         guard.canCommit = async () => await canCommit() && this.pathFree(this.manifestDoc(), relative);
         await this.archive(relative, guard);
-        this.reportArchived(relative, conflictOf ? "conflict-copy" : "removed");
+        this.reportArchived(relative, conflictOf ? "conflict-copy" : "removed", lateCopy && this.retirementEvidence(relative) === "unknown");
         touched.add(relative);
         continue;
       }
@@ -2618,23 +2944,32 @@ export class SharedProject {
     // nothing else could explain the new file: a delayed original or an
     // intentional byte-identical copy looks the same. Anything ambiguous is
     // imported as a new entry instead (the missing one is restored as usual).
-    for (const fileId of [...missing]) {
-      const record = this.state.layout[fileId];
-      if (record.kind === "folder" || !record.hash) continue;
-      const candidates = fresh.filter((candidate) => candidate.hash === record.hash);
-      if (candidates.length !== 1 || !compatibleKind(record, candidates[0].entry.relative)) continue;
-      const sameBytes = Object.entries(this.state.layout).filter(([otherId, other]) => otherId !== fileId && other.kind !== "folder" && other.hash === record.hash);
-      if (sameBytes.length > 0 || [...missing].some((otherId) => otherId !== fileId && this.state.layout[otherId]?.hash === record.hash)) continue;
-      // The original must still be absent now, not only when the walk began.
-      const original = await resolveInside(this.info.root, record.path).catch(() => null);
-      if (original && (await statIfExists(original))) continue;
-      const index = fresh.indexOf(candidates[0]);
-      const [match] = fresh.splice(index, 1);
-      missing.splice(missing.indexOf(fileId), 1);
-      this.missingSince.delete(fileId);
-      const entry = this.entries.get(fileId);
-      if (!this.canEdit || !entry) continue;
-      touched.add(record.path).add(match.entry.relative);
+    /** Renames this pass pairs, for a folder that moved with its files. */
+    const paired: Array<{ fileId: string; from: string; to: string }> = [];
+    /** Missing entries whose pairing waits for a clearer absence: neither restored nor paired this pass (S41). */
+    const held = new Set<string>();
+    /** Reconciliations opened for a rename that was also edited; announced once the manifest is written. */
+    const openedReconciliations: Reconciliation[] = [];
+    const holdPairing = (fileId: string, candidate: (typeof fresh)[number]): void => {
+      const count = (this.renameDeferrals.get(fileId) ?? 0) + 1;
+      // Held for a few scans (the usual cadence, no timer); if the absence never clears, the old path is restored and the new file imported (nothing is lost).
+      if (count > MAX_RENAME_DEFERRALS) {
+        this.renameDeferrals.delete(fileId);
+        return;
+      }
+      this.renameDeferrals.set(fileId, count);
+      held.add(fileId);
+      fresh.splice(fresh.indexOf(candidate), 1);
+    };
+    /** The manifest rename of one file (S42: its companions move as in an explicit rename). */
+    const planRename = (fileId: string, entry: ManifestEntry, record: LayoutRecord, match: (typeof fresh)[number], reconciliation?: Reconciliation) => {
+      const from = record.path;
+      paired.push({ fileId, from, to: match.entry.relative });
+      // Files of one moved folder can pair in different scans: later scans still know where earlier ones went.
+      const recent = scanScratch(this).recentMoves;
+      recent.push({ from, to: match.entry.relative, at: Date.now() });
+      if (recent.length > MAX_RECENT_MOVES) recent.shift();
+      touched.add(from).add(match.entry.relative);
       operations.push((map, doc) => {
         const current = readManifest(doc).get(fileId);
         if (!current || current.kind !== entry.kind || current.docId !== entry.docId || current.path !== entry.path) {
@@ -2646,26 +2981,210 @@ export class SharedProject {
         if (!this.pathFree(doc, match.entry.relative, fileId)) return;
         map.set(fileId, entryRecord({ ...current, path: match.entry.relative, updatedAt: now }));
         // Its ink moves with it; the disk follows the manifest, as for any rename.
-        for (const ink of this.inkCompanionMoves(doc, record.path, match.entry.relative, false, now)) map.set(ink.fileId, entryRecord(ink));
-        // A recording's transcript follows it, as in an explicit rename.
-        for (const transcript of this.transcriptCompanionMoves(doc, record.path, match.entry.relative, now)) {
+        for (const ink of this.inkCompanionMoves(doc, from, match.entry.relative, false, now)) map.set(ink.fileId, entryRecord(ink));
+        // A recording's transcript and a note's Python code follow it, as in an explicit rename.
+        for (const transcript of this.transcriptCompanionMoves(doc, from, match.entry.relative, now)) {
           map.set(transcript.fileId, entryRecord(transcript));
           touched.add(transcript.path);
         }
-        this.retirePath(record.path, knownHashes(record));
+        for (const python of this.pythonCompanionMoves(doc, from, match.entry.relative, now)) {
+          map.set(python.fileId, entryRecord(python));
+          touched.add(python.path);
+        }
+        this.retirePath(from, knownHashes(record));
         Object.assign(record, { path: match.entry.relative, size: match.entry.size, mtimeMs: match.entry.mtimeMs });
+        if (reconciliation) {
+          this.state.reconciliations = [...this.state.reconciliations.filter((item) => item.docId !== reconciliation.docId), reconciliation];
+          openedReconciliations.push(reconciliation);
+        }
         if (record.docId) this.ctx.host.store.upsertDoc({ docId: record.docId, projectId: this.info.projectId, fileId, path: record.path, materializedHash: record.hash ?? null });
       });
+    };
+    /** Whether a move to `to` keeps what an explicit rename keeps (type, ink, transcript, Python code); otherwise it is not a rename (S42). */
+    const keepsRecords = (entry: ManifestEntry | undefined, from: string, to: string): boolean => {
+      if (!entry) return false;
+      try {
+        this.assertRenameKeepsRecords(entry, from, to);
+        return true;
+      } catch (error) {
+        if (!(error instanceof ControlError)) throw error;
+        this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: ${to} is not taken for ${from} renamed. ${error.message} ${from} was put back and ${to} is kept as a separate file.`);
+        return false;
+      }
+    };
+    for (const fileId of [...missing]) {
+      const record = this.state.layout[fileId];
+      if (record.kind === "folder" || !record.hash) continue;
+      const candidates = fresh.filter((candidate) => candidate.hash === record.hash);
+      if (candidates.length !== 1 || !compatibleKind(record, candidates[0].entry.relative)) continue;
+      const sameBytes = Object.entries(this.state.layout).filter(([otherId, other]) => otherId !== fileId && other.kind !== "folder" && other.hash === record.hash);
+      if (sameBytes.length > 0 || [...missing].some((otherId) => otherId !== fileId && this.state.layout[otherId]?.hash === record.hash)) continue;
+      // The original must still be absent now, not only when the walk began.
+      const absence = await this.sourceAbsence(record);
+      if (absence === "present") continue;
+      // A placeholder that is not the missing file's own stat, or a disk that will not say: do not hand over the identity yet.
+      const placeholder = candidates[0].entry.dataless === true && (record.size !== candidates[0].entry.size || record.mtimeMs !== candidates[0].entry.mtimeMs);
+      if (absence === "uncertain" || placeholder) {
+        holdPairing(fileId, candidates[0]);
+        continue;
+      }
+      const entry = this.entries.get(fileId);
+      if (!keepsRecords(entry, record.path, candidates[0].entry.relative)) continue;
+      const index = fresh.indexOf(candidates[0]);
+      const [match] = fresh.splice(index, 1);
+      missing.splice(missing.indexOf(fileId), 1);
+      this.missingSince.delete(fileId);
+      this.renameDeferrals.delete(fileId);
+      if (!this.canEdit || !entry) continue;
+      planRename(fileId, entry, record, match);
+    }
+
+    // A rename and an edit before the scan (S40): the bytes match nothing, but
+    // one missing document and one new text file of its type are plainly the
+    // same note. The document keeps its ID and moves to the new name; its
+    // shared text and the edited disk text wait for the user as a
+    // reconciliation, so neither input is lost or guessed. Uses the bytes
+    // this scan already read.
+    for (const fileId of [...missing]) {
+      if (held.has(fileId) || !this.canEdit) continue;
+      const record = this.state.layout[fileId];
+      if (record.kind !== "doc" || !record.docId || !record.hash) continue;
+      const runtime = this.docs.get(record.docId);
+      if (!runtime || this.reconciliationFor(record.docId) || !hubHasState(this.ctx.host, runtime.hub, "content")) continue;
+      const kind = docKindForPath(record.path);
+      if ([...missing].some((otherId) => otherId !== fileId && this.state.layout[otherId]?.kind === "doc" && docKindForPath(this.state.layout[otherId].path) === kind)) continue;
+      const trackedHashes = new Set(Object.values(this.state.layout).map((other) => other.hash));
+      const edited = fresh.filter((candidate) => candidate.bytes && !trackedHashes.has(candidate.hash) && docKindForPath(candidate.entry.relative) === kind && compatibleKind(record, candidate.entry.relative));
+      if (edited.length !== 1) continue;
+      const diskText = decodeText(edited[0].bytes as Uint8Array);
+      const sharedText = runtime.hub.getText("content");
+      if (diskText === null || !similarText(sharedText, diskText)) continue;
+      if ((await this.sourceAbsence(record)) !== "absent") continue;
+      const entry = this.entries.get(fileId);
+      if (!keepsRecords(entry, record.path, edited[0].entry.relative)) continue;
+      const [match] = fresh.splice(fresh.indexOf(edited[0]), 1);
+      missing.splice(missing.indexOf(fileId), 1);
+      this.missingSince.delete(fileId);
+      this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: ${record.path} looks renamed to ${match.entry.relative} and edited outside Libera; both versions are kept until you choose in the reconcile view.`);
+      planRename(fileId, entry as ManifestEntry, record, match, {
+        id: randomId("rec"),
+        docId: record.docId,
+        path: this.liberaPath(match.entry.relative),
+        shared: sharedText,
+        disk: diskText,
+        base: (await readBase(this.info.root, record.docId)) ?? "",
+        detectedAt: now,
+      });
+    }
+
+    // A folder moved with its files (S43): when every file below a missing
+    // folder entry was paired to the same names under one new folder, the
+    // folder entry moves too and keeps its ID, instead of a second folder
+    // identity appearing next to a restored copy of the old one. Works from
+    // this pass's pairs; no second walk.
+    // A folder entry whose directory is back on disk but empty (this host's own materialization can re-create it between the outside move and the scan) is a candidate too, when every file it held left by a paired move.
+    const emptied: string[] = [];
+    const recentMoves = scanScratch(this).recentMoves.filter((move) => move.at === undefined || now - move.at < RECENT_MOVE_MS);
+    if (recentMoves.length > 0 || paired.length > 0) {
+      const names = [...files.keys(), ...directories.keys()].map(manifestPathKey);
+      for (const [folderId, folderRecord] of Object.entries(this.state.layout)) {
+        if (folderRecord.kind !== "folder" || missing.includes(folderId) || !directoryKeys.has(manifestPathKey(folderRecord.path))) continue;
+        const prefix = `${manifestPathKey(folderRecord.path)}/`;
+        if (![...recentMoves, ...paired].some((move) => manifestPathKey(move.from).startsWith(prefix))) continue;
+        if (names.some((name) => name.startsWith(prefix))) continue;
+        if (Object.values(this.state.layout).some((other) => other.kind !== "folder" && manifestPathKey(other.path).startsWith(prefix) && !paired.some((move) => move.from === other.path))) continue;
+        emptied.push(folderId);
+      }
+    }
+    for (const fileId of [...missing, ...emptied]) {
+      const record = this.state.layout[fileId];
+      if (record.kind !== "folder" || !this.canEdit) continue;
+      const from = record.path;
+      const depth = from.split("/").length;
+      const below = (relative: string) => manifestPathKey(relative).startsWith(`${manifestPathKey(from)}/`);
+      const inside = Object.entries(this.state.layout).filter(([otherId, other]) => otherId !== fileId && other.kind !== "folder" && below(other.path));
+      const pairedNow = paired.filter((move) => below(move.from));
+      // Every file still below the folder paired in this pass; files that moved in earlier scans are remembered.
+      const moves = [...recentMoves.filter((move) => below(move.from) && !(pairedNow as Array<{ from: string; to: string }>).includes(move)), ...pairedNow];
+      if (moves.length === 0 || !inside.every(([, other]) => pairedNow.some((move) => move.from === other.path))) continue;
+      let destination: string | null = null;
+      for (const move of moves) {
+        const rest = move.from.split("/").slice(depth);
+        const target = move.to.split("/");
+        const where = target.length > rest.length ? target.slice(0, target.length - rest.length).join("/") : "";
+        if (!where || manifestPathKey(target.slice(target.length - rest.length).join("/")) !== manifestPathKey(rest.join("/")) || (destination !== null && destination !== where)) {
+          destination = null;
+          break;
+        }
+        destination = where;
+      }
+      if (!destination || !directories.has(destination)) continue;
+      const target = destination;
+      // The destination may already have its own folder entry (made by an earlier scan, before this one could pair): the old entry's absence is explained by the paired moves, so it is removed instead of restored, and the destination's entry stays.
+      const hasFolderAt = (relative: string) => Object.values(this.state.layout).some((other) => other.kind === "folder" && manifestPathKey(other.path) === manifestPathKey(relative));
+      const moved: Array<{ id: string; record: LayoutRecord; to: string; merge: boolean }> = [{ id: fileId, record, to: target, merge: hasFolderAt(target) }];
+      for (const [otherId, other] of Object.entries(this.state.layout)) {
+        if (otherId === fileId || other.kind !== "folder" || !below(other.path) || !missing.includes(otherId)) continue;
+        const to = [target, ...other.path.split("/").slice(depth)].join("/");
+        if (directories.has(to)) moved.push({ id: otherId, record: other, to, merge: hasFolderAt(to) });
+      }
+      for (const item of moved) {
+        if (missing.includes(item.id)) missing.splice(missing.indexOf(item.id), 1);
+        this.missingSince.delete(item.id);
+        known.add(manifestPathKey(item.to));
+        touched.add(item.record.path).add(item.to);
+      }
+      operations.push((map, doc) => {
+        const current = readManifest(doc).get(fileId);
+        if (!current || current.kind !== "folder" || current.path !== from || (!moved[0].merge && !this.pathFree(doc, target, fileId, true))) return;
+        for (const item of moved) {
+          const entry = readManifest(doc).get(item.id);
+          if (!entry || entry.kind !== "folder") continue;
+          if (item.merge) {
+            map.delete(item.id);
+            delete this.state.layout[item.id];
+            continue;
+          }
+          map.set(item.id, entryRecord({ ...entry, path: item.to, updatedAt: now }));
+          item.record.path = item.to;
+        }
+        for (const ink of this.inkCompanionMoves(doc, from, target, true, now)) map.set(ink.fileId, entryRecord(ink));
+        this.retirePath(from);
+      });
+    }
+
+    // A new file of a missing document's kind is still arriving or changing
+    // (a rename followed by an edit): the document is neither restored nor
+    // paired yet, so the next scans can pair it once the file is quiet. Held
+    // for a bounded number of scans.
+    for (const fileId of missing) {
+      const record = this.state.layout[fileId];
+      const waiting = record.kind === "folder" ? unsettledDirectories.size > 0 : record.kind === "doc" && Boolean(record.hash) && arriving.has(docKindForPath(record.path));
+      if (held.has(fileId) || !this.canEdit || !waiting) continue;
+      // Held while the new files settle, for a bounded time (not a number of scans: a busy folder is scanned many times in one quiet period).
+      const holdKey = `unsettled:${fileId}`;
+      const since = this.renameDeferrals.get(holdKey) ?? now;
+      if (now - since > this.ctx.timings.importQuietMs * 3 + 5000) {
+        this.renameDeferrals.delete(holdKey);
+        continue;
+      }
+      this.renameDeferrals.set(holdKey, since);
+      held.add(fileId);
     }
 
     // Absence has no causality: a provider can deliver a deletion days after
     // a restore. Only explicit host delete operations remove shared entries.
     // Retain the manifest and recover the working copy on the next pass.
     for (const fileId of missing) {
+      if (held.has(fileId)) continue;
       this.baselineMissing.add(fileId);
       this.missingSince.delete(fileId);
+      // Nothing in the folder says whether it was moved out of the notebook
+      // (then what left is now a copy) or lost; the shared one comes back.
+      const restored = this.state.layout[fileId];
+      if (restored) this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: ${restored.path} is no longer in the folder, so the shared ${restored.kind === "folder" ? "folder" : "copy"} is put back. A file moved out of a shared notebook stays shared here, and the moved one is only a copy. Delete it in Libera to remove it for everyone.`);
     }
-    if (missing.length > 0) this.scheduleManifest(0);
+    if (missing.some((fileId) => !held.has(fileId))) this.scheduleManifest(0);
     if (this.canEdit) {
       for (const candidate of fresh) {
         if (this.state.externalAdoptionRequired) continue;
@@ -2715,7 +3234,7 @@ export class SharedProject {
       }
       for (const [relative, entry] of directories) {
         if (this.info.album) break;
-        if (known.has(manifestPathKey(relative)) || this.pathRetired(relative) || this.state.externalAdoptionRequired || isGeneratedPath(`${relative}/x`)) continue;
+        if (known.has(manifestPathKey(relative)) || unsettledDirectories.has(manifestPathKey(relative)) || this.pathRetired(relative) || this.state.externalAdoptionRequired || isGeneratedPath(`${relative}/x`)) continue;
         const fileId = randomId("fil");
         const created: ManifestEntry = { fileId, path: relative, kind: "folder", createdBy: accountId, createdAt: now, updatedAt: now };
         operations.push((map, doc) => {
@@ -2733,10 +3252,10 @@ export class SharedProject {
         this.missingSince.clear();
         return;
       }
-      await this.writeManifest((map, doc) => {
-        for (const operation of operations) operation(map, doc);
-      }, EXTERNAL);
+      await this.writeManifestOperations(operations, EXTERNAL);
       if (addedPhotos.length > 0) this.reportAddedPhotos(addedPhotos);
+      for (const reconciliation of openedReconciliations) this.ctx.emit({ t: "reconcile-needed", reconciliation });
+      if (openedReconciliations.length > 0) this.ctx.emit({ t: "project-changed", projectId: this.info.projectId });
       for (const [fileId, record] of Object.entries(this.state.layout)) {
         if (record.kind === "doc" && record.docId && !this.docs.has(record.docId)) this.ensureDoc(record.docId, fileId);
       }
@@ -2747,8 +3266,19 @@ export class SharedProject {
       this.treeChanged(previous, this.state.layout);
       this.filesChanged([...touched]);
     }
+    fair.keepOnly(new Set([...Object.keys(this.state.layout), ...[...files.keys()].map((name) => `path:${name}`)]));
     if (quietDeferMs !== Infinity) this.scheduleScan(Math.ceil(quietDeferMs) + 50);
     if (needsRetry) this.scheduleRetry();
+  }
+
+  /** Whether a missing entry's old path is really gone: the disk may also fail to say (S41). */
+  private async sourceAbsence(record: LayoutRecord): Promise<"absent" | "present" | "uncertain"> {
+    try {
+      const original = await resolveInside(this.info.root, record.path);
+      return (await statIfExists(original)) ? "present" : "absent";
+    } catch {
+      return "uncertain";
+    }
   }
 
   private retirePath(relative: string, hashes: string[] = []): void {
@@ -2776,10 +3306,18 @@ export class SharedProject {
     return hashes.size === 0 && !this.info.album;
   }
 
-  private reportArchived(relative: string, reason: "removed" | "conflict-copy" = "removed"): void {
+  /** What is known about a retired path's old bytes: nothing retired, known versions, or no history at all (S44). */
+  private retirementEvidence(relative: string): "none" | "hashes" | "unknown" {
+    const hashes = this.retired.get(manifestPathKey(relative));
+    return hashes === undefined ? "none" : hashes.size === 0 ? "unknown" : "hashes";
+  }
+
+  private reportArchived(relative: string, reason: "removed" | "conflict-copy" = "removed", unknownHistory = false): void {
     this.ctx.logger.warn(reason === "conflict-copy"
       ? `Shared notebook ${this.info.notebook}: ${relative} looks like a sync conflict copy of a shared file, so it was set aside instead of shared.`
-      : `Shared notebook ${this.info.notebook}: ${relative} matches a file removed from this notebook, so it was not shared again.`);
+      : unknownHistory
+        ? `Shared notebook ${this.info.notebook}: ${relative} is at the name of a removed file and this computer does not know what that file held, so it was set aside in _archive instead of shared. To keep it, restore it from _archive or add it again under another name.`
+        : `Shared notebook ${this.info.notebook}: ${relative} matches a file removed from this notebook, so it was not shared again.`);
     if (!this.info.album) this.ctx.emit({ t: "file-archived", projectId: this.info.projectId, notebook: this.info.notebook, path: this.liberaPath(relative), reason });
   }
 
@@ -2845,7 +3383,29 @@ export class SharedProject {
     return entriesUnder(readManifest(doc).values(), `${INK_DIRECTORY}/${relative}`);
   }
 
-  private inkCompanionMoves(doc: Y.Doc, from: string, to: string, folder: boolean, now: number): ManifestEntry[] {
+  /**
+   * The companion planners return the moved entries, or nothing when there is
+   * nothing to move. Inferred moves (an outside rename) keep the lenient
+   * answer for an occupied or invalid destination; an explicit operation
+   * passes `strict` and is refused, naming the companion, before anything is
+   * published.
+   */
+  private companionBlocked(strict: boolean, what: string, from: string, to: string, why: string): ManifestEntry[] {
+    if (!strict) return [];
+    throw new ControlError(409, "conflict", `${from} was not renamed: its ${what} cannot move to ${to} (${why}). Nothing was changed.`);
+  }
+
+  /** Whether `key` is held in the manifest by an entry outside `ids`, or by a file above it. */
+  private slotTaken(entries: ManifestEntry[], key: string, ids: Set<string>): boolean {
+    const displayed = computeLayout(entries).paths;
+    return entries.some((entry) => {
+      if (ids.has(entry.fileId)) return false;
+      const other = manifestPathKey(displayed.get(entry.fileId) ?? entry.path);
+      return other === key || other.startsWith(`${key}/`) || (entry.kind !== "folder" && key.startsWith(`${other}/`));
+    });
+  }
+
+  private inkCompanionMoves(doc: Y.Doc, from: string, to: string, folder: boolean, now: number, strict = false): ManifestEntry[] {
     if (this.info.album || from === to) return [];
     const inside = (relative: string) => relative === INK_DIRECTORY || relative.startsWith(`${INK_DIRECTORY}/`);
     if (inside(from) || inside(to)) return [];
@@ -2865,10 +3425,10 @@ export class SharedProject {
       const other = manifestPathKey(shown(entry));
       return other === key || other.startsWith(`${key}/`) || (entry.kind !== "folder" && key.startsWith(`${other}/`));
     });
-    if (taken) return [];
+    if (taken) return this.companionBlocked(strict, "ink", from, to, `${inkTo} is already in use`);
     const depth = inkFrom.split("/").length;
     const moved = moving.map((entry) => ({ ...entry, path: [inkTo, ...shown(entry).split("/").slice(depth)].join("/"), updatedAt: now }));
-    return moved.every((entry) => isShareablePath(entry.path)) ? moved : [];
+    return moved.every((entry) => isShareablePath(entry.path)) ? moved : this.companionBlocked(strict, "ink", from, to, "the new ink path is not allowed");
   }
 
   /**
@@ -2882,16 +3442,15 @@ export class SharedProject {
   }
 
   /** The renamed recording's transcript at its new path; none when the destination is occupied. */
-  private transcriptCompanionMoves(doc: Y.Doc, from: string, to: string, now: number): ManifestEntry[] {
+  private transcriptCompanionMoves(doc: Y.Doc, from: string, to: string, now: number, strict = false): ManifestEntry[] {
     if (from === to || !AUDIO_EXTENSIONS.has(path.posix.extname(to).toLowerCase())) return [];
     const entries = [...readManifest(doc).values()];
     const moving = this.transcriptCompanion(entries, from);
-    if (moving.length !== 1) return [];
+    if (moving.length === 0) return [];
+    if (moving.length !== 1) return this.companionBlocked(strict, "transcript", from, to, "it is not one file");
     const next = `${to}.transcript`;
-    const key = manifestPathKey(next);
-    const displayed = computeLayout(entries).paths;
-    const taken = entries.some((entry) => entry.fileId !== moving[0].fileId && manifestPathKey(displayed.get(entry.fileId) ?? entry.path) === key);
-    if (taken || !isShareablePath(next)) return [];
+    if (this.slotTaken(entries, manifestPathKey(next), new Set([moving[0].fileId]))) return this.companionBlocked(strict, "transcript", from, to, `${next} is already in use`);
+    if (!isShareablePath(next)) return this.companionBlocked(strict, "transcript", from, to, `${next} is not an allowed path`);
     return [{ ...moving[0], path: next, updatedAt: now }];
   }
 
@@ -2906,17 +3465,41 @@ export class SharedProject {
   }
 
   /** The renamed note's Python code at its new path; none when the destination is occupied. */
-  private pythonCompanionMoves(doc: Y.Doc, from: string, to: string, now: number): ManifestEntry[] {
+  private pythonCompanionMoves(doc: Y.Doc, from: string, to: string, now: number, strict = false): ManifestEntry[] {
     if (from === to || !MARKDOWN_EXTENSIONS.has(path.posix.extname(to).toLowerCase())) return [];
     const entries = [...readManifest(doc).values()];
     const moving = this.pythonCompanion(entries, from);
-    if (moving.length !== 1) return [];
+    if (moving.length === 0) return [];
+    if (moving.length !== 1) return this.companionBlocked(strict, "Python code", from, to, "it is not one file");
     const next = pythonSidecarPath(`n/${to}`).split("/").slice(1).join("/");
-    const key = manifestPathKey(next);
-    const displayed = computeLayout(entries).paths;
-    const taken = entries.some((entry) => entry.fileId !== moving[0].fileId && manifestPathKey(displayed.get(entry.fileId) ?? entry.path) === key);
-    if (taken || !isShareablePath(next)) return [];
+    if (this.slotTaken(entries, manifestPathKey(next), new Set([moving[0].fileId]))) return this.companionBlocked(strict, "Python code", from, to, `${next} is already in use`);
+    if (!isShareablePath(next)) return this.companionBlocked(strict, "Python code", from, to, `${next} is not an allowed path`);
     return [{ ...moving[0], path: next, updatedAt: now }];
+  }
+
+  /**
+   * The Python code of every note under a renamed folder, at the slots the
+   * notes will have (`_assets/<new prefix>/…`). Those slots are disjoint from
+   * the folder's own prefix, so the folder's entries do not carry them.
+   */
+  private pythonFolderMoves(doc: Y.Doc, from: string, to: string, now: number, strict = false): ManifestEntry[] {
+    const entries = [...readManifest(doc).values()];
+    const displayed = computeLayout(entries).paths;
+    const depth = from.split("/").length;
+    const moved: ManifestEntry[] = [];
+    for (const entry of entriesUnder(entries, from)) {
+      if (entry.kind === "folder") continue;
+      const shown = displayed.get(entry.fileId) ?? entry.path;
+      const next = [to, ...shown.split("/").slice(depth)].join("/");
+      moved.push(...this.pythonCompanionMoves(doc, shown, next, now, strict));
+    }
+    const slots = new Set<string>();
+    for (const entry of moved) {
+      const key = manifestPathKey(entry.path);
+      if (slots.has(key)) return this.companionBlocked(strict, "Python code", from, to, `two scripts would share ${entry.path}`);
+      slots.add(key);
+    }
+    return moved;
   }
 
   /**
@@ -3058,6 +3641,49 @@ export class SharedProject {
     return Promise.resolve({ entries: list });
   }
 
+  /**
+   * A folder rename or delete acts on what the person reviewed: when the
+   * request lists the descendant IDs it was confirmed with, the folder must
+   * hold exactly those now (it was not renamed away and replaced, nothing was
+   * added or removed). Nothing is changed otherwise. Absent list: no binding.
+   */
+  private assertReviewedDescendants(relative: string, selected: ManifestEntry[], reviewed: string[] | undefined): void {
+    if (reviewed === undefined || selected.length === 0) return;
+    const displayed = computeLayout(this.entries.values()).paths;
+    const own = manifestPathKey(relative);
+    const current = new Set(selected.filter((entry) => manifestPathKey(displayed.get(entry.fileId) ?? entry.path) !== own).map((entry) => entry.fileId));
+    const expected = new Set(reviewed);
+    if (current.size === expected.size && [...current].every((fileId) => expected.has(fileId))) return;
+    throw new ControlError(409, "conflict", `${relative} changed since you reviewed it: its files are not the ones you confirmed. Nothing was changed. Open the folder again and repeat the action.`);
+  }
+
+  /**
+   * The owner a companion save belongs to: `_ink/<owner>/<file>` for ink,
+   * `<recording>.transcript` for a transcript. The owner must be a file in
+   * the manifest now, and the one the caller read when it names an ID. A save
+   * for an owner that moved or was removed is refused instead of creating a
+   * companion at the old path (the caller re-reads the owner's current path).
+   */
+  private assertCompanionOwner(relative: string, ownerFileId: string | undefined): void {
+    if (this.info.album) return;
+    let owner: string | null = null;
+    let what = "";
+    const parts = relative.split("/");
+    if (parts[0] === INK_DIRECTORY && parts.length >= 3) {
+      owner = parts.slice(1, -1).join("/");
+      what = "ink";
+    } else if (parts[0] !== INK_DIRECTORY && relative.toLowerCase().endsWith(".transcript") && AUDIO_EXTENSIONS.has(path.posix.extname(relative.slice(0, -".transcript".length)).toLowerCase())) {
+      owner = relative.slice(0, -".transcript".length);
+      what = "transcript";
+    }
+    if (owner === null) return;
+    const files = entriesUnder(this.entries.values(), owner).filter((entry) => entry.kind !== "folder");
+    const displayed = computeLayout(this.entries.values()).paths;
+    const found = files.find((entry) => manifestPathKey(displayed.get(entry.fileId) ?? entry.path) === manifestPathKey(owner!));
+    if (!found) throw new ControlError(409, "conflict", `${owner} is not in this notebook at that path (it was moved or removed), so its ${what} was not saved. Reopen the file and try again.`);
+    if (ownerFileId !== undefined && found.fileId !== ownerFileId) throw new ControlError(409, "conflict", `${owner} is a different file now, so its ${what} was not saved. Reopen the file and try again.`);
+  }
+
   /** A name being created or renamed must leave room for its sidecar files (existing names are not re-judged). */
   private assertNewName(relative: string): void {
     const problem = manifestNewNameError(relative);
@@ -3078,6 +3704,11 @@ export class SharedProject {
         const problem = request.op === "delete" ? null : albumPathError(target);
         if (problem) throw new ControlError(400, "bad-request", problem);
       }
+      // A replacement names the file and the version it replaces; without them it could create or take over another file.
+      if (request.op === "write-blob" && request.replaceOnly) {
+        if (request.createOnly) throw new ControlError(400, "bad-request", "A write cannot both create a file and replace one.");
+        if (!request.expectedFileId || !request.expectedBlobHash) throw new ControlError(400, "bad-request", "Replacing a file needs the file id and the blob hash of the version being replaced.");
+      }
       const now = Date.now();
       const accountId = await this.ctx.accountId();
       this.entries = this.readEntries();
@@ -3086,7 +3717,11 @@ export class SharedProject {
           request.expectedBlobHash !== undefined && (selected.length !== 1 || selected[0].blobHash !== request.expectedBlobHash)) {
         throw new ControlError(409, "conflict", "This file changed since it was read. Refresh it before changing it.");
       }
+      if (request.op === "rename" || request.op === "delete") this.assertReviewedDescendants(relative, selected, request.expectedDescendantIds);
+      if (request.op === "write-blob" || request.op === "create-file") this.assertCompanionOwner(relative, request.ownerFileId);
       const paths: string[] = [];
+      // The exact committed change per manifest entry, for a rename or delete.
+      const moves: FileOpMove[] = [];
       const uploaded: string[] = [];
       // The file a create or a blob write produced or changed, for the caller to name it by.
       let resultFileId: string | undefined;
@@ -3117,6 +3752,7 @@ export class SharedProject {
             if (request.expectedFileId !== undefined && existing?.fileId !== request.expectedFileId) throw new ControlError(409, "conflict", "This file identity changed before the upload began.");
             if (request.expectedBlobHash !== undefined && existing?.blobHash !== request.expectedBlobHash) throw new ControlError(409, "conflict", "This file changed before the upload began.");
             if (existing && request.createOnly) throw new ControlError(409, "conflict", `${existing.path} already exists.`);
+            if (!existing && request.replaceOnly) throw new ControlError(409, "conflict", `${relative} was deleted or moved before it was saved. Nothing was written.`);
             if (!existing) {
               // A new file: the same as create-file, from bytes.
               this.assertFree(relative, []);
@@ -3173,6 +3809,7 @@ export class SharedProject {
               const next = [to, ...rest].join("/");
               if (!isShareablePath(next)) throw new ControlError(400, "bad-request", `${next} is not an allowed path.`);
               paths.push(visible, next);
+              moves.push({ fileId: entry.fileId, from: this.liberaPath(visible), to: this.liberaPath(next) });
               return { ...entry, path: next, updatedAt: now };
             });
             // A folder unless `relative` names a file (folders may have no entry of their own).
@@ -3181,26 +3818,28 @@ export class SharedProject {
               const file = moving.find((entry) => entry.kind !== "folder" && manifestPathKey(displayed.get(entry.fileId) ?? entry.path) === manifestPathKey(relative));
               if (file) this.assertRenameKeepsRecords(file, relative, to);
             }
+            // The companions (ink, transcript, Python code of the file, or of every note
+            // under a folder) are planned with the primary move: an occupied or invalid
+            // slot refuses the whole rename here, before anything is published.
+            const planDoc = this.manifestDoc();
+            const planned = [
+              ...this.inkCompanionMoves(planDoc, relative, to, folder, now, true),
+              ...(folder
+                ? this.pythonFolderMoves(planDoc, relative, to, now, true)
+                : [...this.transcriptCompanionMoves(planDoc, relative, to, now, true), ...this.pythonCompanionMoves(planDoc, relative, to, now, true)]),
+            ];
+            const before = computeLayout(readManifest(planDoc).values()).paths;
+            for (const entry of planned) {
+              paths.push(entry.path);
+              moves.push({ fileId: entry.fileId, from: this.liberaPath(before.get(entry.fileId) ?? entry.path), to: this.liberaPath(entry.path) });
+            }
             // A folder of many files is several transactions: one manifest update
             // over the server's limit would never sync.
             for (const [index, batch] of splitManifestBatches(updates, manifestEntryBytes).entries()) {
-              await this.writeManifest((map, doc) => {
+              await this.writeManifest((map) => {
                 for (const entry of batch) map.set(entry.fileId, entryRecord(entry));
                 if (index > 0) return;
-                for (const entry of this.inkCompanionMoves(doc, relative, to, folder, now)) {
-                  map.set(entry.fileId, entryRecord(entry));
-                  paths.push(entry.path);
-                }
-                if (!folder) {
-                  for (const entry of this.transcriptCompanionMoves(doc, relative, to, now)) {
-                    map.set(entry.fileId, entryRecord(entry));
-                    paths.push(entry.path);
-                  }
-                  for (const entry of this.pythonCompanionMoves(doc, relative, to, now)) {
-                    map.set(entry.fileId, entryRecord(entry));
-                    paths.push(entry.path);
-                  }
-                }
+                for (const entry of planned) map.set(entry.fileId, entryRecord(entry));
               }, { source: "typing" });
             }
             break;
@@ -3213,20 +3852,33 @@ export class SharedProject {
               throw new ControlError(404, "not-found", `${relative} is not in this notebook.`);
             }
             const displayed = computeLayout(this.entries.values()).paths;
+            // The Python code of every note being deleted (the file itself, or each note under
+            // a folder) lives under `_assets/<note path>`, outside the folder's prefix: it goes
+            // in the same committed set, so a note created at the same path later starts clean.
+            const planDoc = this.manifestDoc();
+            const planEntries = [...readManifest(planDoc).values()];
+            const planDisplayed = computeLayout(planEntries).paths;
+            const removedIds = new Set(removing.map((entry) => entry.fileId));
+            const extra = new Map<string, ManifestEntry>();
+            const addExtra = (entry: ManifestEntry) => { if (!removedIds.has(entry.fileId)) extra.set(entry.fileId, entry); };
+            for (const entry of removing) {
+              if (entry.kind === "folder") continue;
+              this.pythonCompanion(planEntries, planDisplayed.get(entry.fileId) ?? entry.path).forEach(addExtra);
+            }
+            this.transcriptCompanion(planEntries, relative).forEach(addExtra);
+            // Someone deleted it on purpose, so its ink goes too (archived on disk like the file).
+            this.inkCompanions(planDoc, relative).forEach(addExtra);
+            for (const entry of removing) moves.push({ fileId: entry.fileId, from: this.liberaPath(displayed.get(entry.fileId)!), to: null });
+            for (const entry of extra.values()) {
+              paths.push(entry.path);
+              moves.push({ fileId: entry.fileId, from: this.liberaPath(planDisplayed.get(entry.fileId) ?? entry.path), to: null });
+            }
             // Many entries are removed in several transactions (see rename).
             for (const [index, batch] of splitManifestBatches(removing, () => 256).entries()) {
-              await this.writeManifest((map, doc) => {
+              await this.writeManifest((map) => {
                 for (const entry of batch) map.delete(entry.fileId);
                 if (index > 0) return;
-                for (const entry of this.transcriptCompanion([...readManifest(doc).values()], relative)) {
-                  map.delete(entry.fileId);
-                  paths.push(entry.path);
-                }
-                // Someone deleted it on purpose, so its ink goes too (archived on disk like the file).
-                for (const entry of this.inkCompanions(doc, relative)) {
-                  map.delete(entry.fileId);
-                  paths.push(entry.path);
-                }
+                for (const fileId of extra.keys()) map.delete(fileId);
               }, { source: "typing" });
             }
             paths.push(...removing.map((entry) => displayed.get(entry.fileId)!));
@@ -3241,7 +3893,7 @@ export class SharedProject {
         // change; rebuild the resolvePath index here, or a file just created
         // would not resolve (the caller's next request is often an edit to it).
         this.ctx.layoutChanged(this.info.projectId);
-        return { paths: paths.map((item) => this.liberaPath(item)), ...(resultFileId ? { fileId: resultFileId } : {}) };
+        return { paths: paths.map((item) => this.liberaPath(item)), ...(resultFileId ? { fileId: resultFileId } : {}), ...(moves.length ? { moves } : {}) };
       } finally {
         for (const hash of uploaded) this.uploadedBlobs.delete(hash);
       }
@@ -3277,13 +3929,25 @@ export class SharedProject {
       throw new ControlError(400, "bad-request", "write-blob needs the staged file's name in stagedFile.");
     }
     const file = path.join(this.info.root, ...STATE_DIRECTORY, "incoming", name);
+    // The read is bounded (the staged folder can sit on a cloud provider). When it does not finish, the file is
+    // kept and nothing was written: the caller may stage it again or retry the same request.
+    const reading = fs.readFile(file);
+    let finished = false;
     try {
-      return new Uint8Array(await fs.readFile(file));
+      const bytes = await withinMs(reading, HYDRATION_WAIT_MS);
+      if (bytes === SLOW_READ) throw new ControlError(503, "offline", "The staged file is still being read from disk. Nothing was changed; retry.");
+      finished = true;
+      return new Uint8Array(bytes);
     } catch (error) {
-      if (isNotFound(error)) throw new ControlError(404, "not-found", "The staged file is gone.");
+      if (isNotFound(error)) {
+        finished = true;
+        throw new ControlError(404, "not-found", "The staged file is gone.");
+      }
+      finished = !(error instanceof ControlError && error.status === 503);
       throw error;
     } finally {
-      await fs.rm(file, { force: true }).catch(() => undefined);
+      // Removal is best effort and never awaited: it must not hold the queue either.
+      if (finished) void withinMs(fs.rm(file, { force: true }), HYDRATION_WAIT_MS).catch(() => undefined);
     }
   }
 
@@ -3514,6 +4178,61 @@ export class SharedProject {
     this.ctx.emit({ t: "tree-changed", projectId: this.info.projectId, notebook: this.info.notebook, added, moves, removed });
   }
 
+  /**
+   * Appends the manifest's moves and removals to the host's durable transition
+   * log (see transition-log.ts), on a writer and on a follower alike. The paths
+   * are the manifest's, by file ID, compared with what was last recorded: not
+   * the layout in memory, which a restart rebuilds. Entries the layout refuses
+   * (a path a shared notebook cannot hold) keep their recorded place: they are
+   * not removals. Called before the tree event, so a window that reacts to it
+   * finds the transition in the log.
+   */
+  /**
+   * Remembers the entries a remote device renamed only in Unicode form (S39),
+   * and forgets one once its path changes again. At most MAX_REMOTE_RESPELLS
+   * are kept (the oldest go first).
+   */
+  private noteRemoteRespells(next: Map<string, RecordedPath>): void {
+    let changed = false;
+    const marks = this.state.remoteRespells ?? {};
+    for (const [fileId, now] of next) {
+      const before = this.recordedPaths.get(fileId);
+      if (!before || before.path === now.path) continue;
+      const own = this.ownRespells.delete(fileId);
+      if (!own && before.path.normalize("NFC") === now.path.normalize("NFC")) {
+        marks[fileId] = { path: now.path, at: Date.now() };
+        changed = true;
+      } else if (marks[fileId]) {
+        delete marks[fileId];
+        changed = true;
+      }
+    }
+    if (!changed) return;
+    const keep = Object.entries(marks).sort((a, b) => b[1].at - a[1].at).slice(0, MAX_REMOTE_RESPELLS);
+    this.state.remoteRespells = Object.fromEntries(keep);
+    this.saveSoon();
+  }
+
+  private recordTransitions(layout: { paths: Map<string, string>; refused: Array<{ fileId: string }> }): void {
+    if (this.info.album) return;
+    try {
+      const next = new Map<string, RecordedPath>();
+      for (const [fileId, path] of layout.paths) next.set(fileId, { path, kind: this.entries.get(fileId)?.kind === "folder" ? "folder" : "file" });
+      for (const { fileId } of layout.refused) {
+        const before = this.recordedPaths.get(fileId);
+        if (before && !next.has(fileId)) next.set(fileId, before);
+      }
+      this.noteRemoteRespells(next);
+      const diff = diffManifestPaths(this.recordedPaths, next, Date.now());
+      if (diff.upserts.length === 0 && diff.removals.length === 0) return;
+      this.ctx.host.store.commitManifestPaths(this.info.projectId, diff);
+      this.recordedPaths = next;
+    } catch (error) {
+      // Recorded again from the same comparison at the next pass.
+      this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: could not record the manifest's moves`, error);
+    }
+  }
+
   private filesChanged(paths: string[]): void {
     const unique = [...new Set(paths)].filter(Boolean).map((item) => this.liberaPath(item));
     if (unique.length > 0) this.ctx.emit({ t: "files-changed", projectId: this.info.projectId, paths: unique });
@@ -3609,10 +4328,26 @@ function spreadFraction(fileId: string): number {
 }
 
 function compatibleKind(record: LayoutRecord, relative: string): boolean {
+  const wanted = docKindForPath(relative);
   // A document renamed to a name that is not text any more ("a.md" → "a.png")
-  // is a new file, not the same document.
-  if (record.kind === "doc") return classifyFile(relative, new Uint8Array(0)).kind === "doc";
-  return true;
+  // is a new file, not the same document, and not one of another document kind.
+  if (record.kind === "doc") return classifyFile(relative, new Uint8Array(0)).kind === "doc" && wanted === (record.docKind ?? null);
+  // A binary does not become a document kind (assertRenameKeepsRecords).
+  return wanted === null || wanted === docKindForPath(record.path);
+}
+
+/** The bytes a retired entry is known to have held: its record, its manifest entry, and the shared text it had. */
+export function retirementHashes(record: LayoutRecord, entry: ManifestEntry | undefined, sharedText: string | null): string[] {
+  const hashes = knownHashes(record, entry);
+  if (sharedText !== null) hashes.push(sha256(encodeText(sharedText)));
+  return [...new Set(hashes)];
+}
+
+/** Whether two texts are mostly the same: about half or less of the longer one differs (a note edited after a rename). */
+function similarText(before: string, after: string): boolean {
+  if (before.length < 16 || after.length < 16 || before.length > 1_000_000 || after.length > 1_000_000) return false;
+  const changed = diffText(before, after).reduce((sum, edit) => sum + edit.end - edit.start + edit.text.length, 0);
+  return changed <= Math.max(before.length, after.length) / 2;
 }
 
 function normalizeRelative(input: string): string {

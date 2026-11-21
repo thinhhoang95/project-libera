@@ -2,18 +2,22 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/api";
 import { toStorageError } from "@/lib/storage";
 import { verifyNotebook, type IntegrityStreamLine } from "@/lib/storage/integrity";
+import { settleSharedRecordsBeforeCheck } from "@/lib/storage/shared-record-follow";
 
 export const runtime = "nodejs";
 
 /**
  * The notebook check (storage/integrity.ts): reads only, on request. With
  * `?stream=1` it reports each check as it starts, and closing the request
- * stops the check between reads.
+ * stops the check between reads. A shared notebook's pending record moves
+ * from the host are applied first (shared-record-follow.ts); the check itself
+ * only reads.
  */
 export async function GET(request: NextRequest) {
   const authError = requireAuth(request);
   if (authError) return authError;
   const notebook = request.nextUrl.searchParams.get("notebook") ?? "";
+  await settleSharedRecordsBeforeCheck(notebook);
 
   if (request.nextUrl.searchParams.get("stream") !== "1") {
     try {

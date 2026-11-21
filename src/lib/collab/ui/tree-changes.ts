@@ -1,4 +1,5 @@
 import type { HostEvent } from "@/lib/collab/local-api";
+import { inheritUnknownFileIds } from "@/lib/tree-merge";
 import type { LiberaFileNode, LiberaNotebookNode, LiberaTree } from "@/lib/types";
 
 /** `fileId`, when known, is the file's identity across the move. */
@@ -83,6 +84,125 @@ export async function withBackoff<T>(
   }
 }
 
+type WithFile = { file: { path: string; fileId?: string } };
+
+/** How the current location of a moved file is read: a file's `file.fileId` is set only when its bytes were verified to be that manifest entry. */
+export type MovedFileRead<P extends WithFile> = {
+  /** The file at a path; rejects when it is not on disk yet. */
+  atPath: (path: string) => Promise<P>;
+  /** The file the manifest lists under this id, wherever it is now: null when the manifest no longer has it, rejects when it is not on disk yet. */
+  byId: (fileId: string, notebook: string) => Promise<P | null>;
+};
+
+export type MoveResolution<P> = { state: "found"; payload: P } | { state: "pending" } | { state: "gone" };
+
+/**
+ * Finds where a moved file is now, by its identity. The destination counts
+ * only when the file there is verified to be the event's file: another file
+ * that took the name, or a copy the disk has not brought up to date, does not.
+ * Then the manifest is asked where that file is (a chain of moves, or a name
+ * taken since). A destination that has not arrived (cloud lag) or cannot be
+ * verified yet is "pending": the caller keeps the move and asks again.
+ * "gone": the manifest no longer has the file. A move without an id (an older
+ * host) can only be read by path.
+ */
+export async function resolveMovedFile<P extends WithFile>(move: FileMove, read: MovedFileRead<P>): Promise<MoveResolution<P>> {
+  if (!move.fileId) {
+    try { return { state: "found", payload: await withBackoff(() => read.atPath(move.to)) }; }
+    catch { return { state: "gone" }; }
+  }
+  try {
+    const atDestination = await read.atPath(move.to);
+    if (atDestination.file.fileId === move.fileId) return { state: "found", payload: atDestination };
+  } catch { /* not arrived yet */ }
+  try {
+    const current = await read.byId(move.fileId, notebookOfPath(move.to));
+    if (current === null) return { state: "gone" };
+    if (current.file.fileId === move.fileId) return { state: "found", payload: current };
+  } catch { /* not arrived yet, or the manifest could not be read */ }
+  return { state: "pending" };
+}
+
+/** A move whose destination is verified: the tab or draft of `from` goes to `payload.file.path`. */
+export type ConfirmedMove<P> = { from: string; fileId?: string; payload: P };
+
+/**
+ * The file record a tab holds after it re-read or saved its file: the identity
+ * the tab had stays unless the read says the path now holds another file
+ * (fileIdState "mismatch"), so a save response without an id does not make the
+ * tab anonymous.
+ */
+export function keepFileIdentity(current: LiberaFileNode, next: LiberaFileNode): LiberaFileNode {
+  if (next.fileId || !current.fileId || next.path !== current.path || next.fileIdState === "mismatch") return next;
+  return { ...next, fileId: current.fileId };
+}
+
+/** Moves kept at most this many; the oldest are dropped first. */
+const MAX_PENDING_MOVES = 500;
+
+/**
+ * Follows moves in the order they happened. A move whose destination cannot be
+ * confirmed yet is kept by file id (a later move of the same file continues
+ * from where the kept one began) and looked up again on `retry`, which the
+ * caller runs when a file arrives or the manifest is read again. There is no
+ * timer: nothing runs while nothing happens. Confirmed moves of one step go to
+ * `apply` together.
+ */
+export function createMoveFollower<P extends WithFile>(options: {
+  read: MovedFileRead<P>;
+  apply: (moves: ConfirmedMove<P>[]) => void | Promise<void>;
+  isActive?: () => boolean;
+}) {
+  const pending = new Map<string, FileMove>();
+  let queue: Promise<void> = Promise.resolve();
+  let stopped = false;
+  const active = () => !stopped && (options.isActive?.() ?? true);
+  const keyOf = (move: FileMove) => move.fileId ? `id:${move.fileId}` : `path:${move.from}`;
+  async function settle(moves: FileMove[]) {
+    const resolved = await Promise.all(moves.map(async (move) => ({ move, resolution: await resolveMovedFile(move, options.read) })));
+    if (!active()) return;
+    const confirmed: ConfirmedMove<P>[] = [];
+    for (const { move, resolution } of resolved) {
+      if (resolution.state === "pending") {
+        pending.delete(keyOf(move));
+        pending.set(keyOf(move), move);
+        if (pending.size > MAX_PENDING_MOVES) pending.delete(pending.keys().next().value!);
+      } else {
+        pending.delete(keyOf(move));
+        if (resolution.state === "found") confirmed.push({ from: move.from, fileId: move.fileId, payload: resolution.payload });
+      }
+    }
+    if (confirmed.length) await options.apply(confirmed);
+  }
+  const enqueue = (work: () => Promise<void>) => {
+    queue = queue.then(work).catch(() => undefined);
+    return queue;
+  };
+  function follow(moves: FileMove[]) {
+    return enqueue(() => {
+      // A kept move of the same file continues: it began where the kept one did.
+      const continued = moves.map((move) => {
+        const kept = move.fileId ? pending.get(keyOf(move)) : undefined;
+        return kept ? { ...move, from: kept.from } : move;
+      });
+      // A file that came back to where it began has nothing left to follow.
+      for (const move of continued) if (move.from === move.to) pending.delete(keyOf(move));
+      return settle(continued.filter((move) => move.from !== move.to));
+    });
+  }
+  function retry() {
+    return enqueue(() => pending.size ? settle([...pending.values()]) : Promise.resolve());
+  }
+  return {
+    follow,
+    retry,
+    /** Resolves when every move given so far has been tried. */
+    settled: () => queue,
+    pending: () => [...pending.values()],
+    stop() { stopped = true; pending.clear(); },
+  };
+}
+
 /**
  * Whether a refused rename or delete was the host's identity check (the path
  * now holds another file than the one the list showed), not some other 409
@@ -144,6 +264,7 @@ export function replaceNotebook(tree: LiberaTree, fresh: LiberaNotebookNode): Li
   collectFileNodes(earlier.children, before);
   const after = new Map<string, LiberaFileNode>();
   collectFileNodes(fresh.children, after);
+  inheritUnknownFileIds(before.values(), after.values());
   for (const [path, file] of after) {
     const crossLinks = (before.get(path)?.linkedFilePaths ?? []).filter((target) => notebookOfPath(target) !== fresh.name);
     const links = [...new Set([...(file.linkedFilePaths ?? []), ...crossLinks])].sort();

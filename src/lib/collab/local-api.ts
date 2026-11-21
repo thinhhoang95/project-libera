@@ -409,6 +409,19 @@ export interface FileBlobResponse {
 export interface FileOpResult {
   paths: string[];
   fileId?: string;
+  /**
+   * For a rename or delete: exactly what the host committed, per manifest
+   * entry (Libera paths). Companions (ink, transcript, Python code) are listed
+   * like files. `to` is null for a removal. Absent when the operation was a
+   * no-op repeat or not a rename or delete.
+   */
+  moves?: FileOpMove[];
+}
+
+export interface FileOpMove {
+  fileId: string;
+  from: string;
+  to: string | null;
 }
 
 /**
@@ -431,6 +444,34 @@ export interface FileListEntry {
 
 export interface FileListResponse {
   entries: FileListEntry[];
+}
+
+/**
+ * One manifest move or removal the host has seen, from its durable per-project
+ * log (GET ControlRoutes.transitions). Paths are Libera paths. `to` is null when the
+ * entry left the manifest. Keyed by the manifest file ID, so a path reused by
+ * another file is a different transition.
+ */
+export interface ManifestTransition {
+  seq: number;
+  projectId: string;
+  fileId: string;
+  kind: "file" | "folder";
+  from: string;
+  to: string | null;
+  at: number;
+}
+
+export interface TransitionsResponse {
+  transitions: ManifestTransition[];
+  /** More than `limit` were pending: ask again after the last seq. */
+  more: boolean;
+}
+
+/** POST ControlRoutes.transitionsAck: drop the transitions Next has applied (the listed seqs and/or all up to `upTo`). */
+export interface AcknowledgeTransitionsRequest {
+  seqs?: number[];
+  upTo?: number;
 }
 
 export interface FileOpRequest {
@@ -456,9 +497,27 @@ export interface FileOpRequest {
   stagedFile?: string;
   /** For write-blob: refuse an existing entry instead of replacing its bytes. */
   createOnly?: boolean;
+  /**
+   * For write-blob: replace the bytes of the file `expectedFileId` at `expectedBlobHash`, and nothing else. It needs
+   * both, never creates a file and never replaces another (409). Without it a write at a vacant path creates.
+   */
+  replaceOnly?: boolean;
   /** The visible identity/version reviewed by a storage mutation. */
   expectedFileId?: string;
   expectedBlobHash?: string;
+  /**
+   * For a folder rename or delete: the manifest IDs of every entry under the
+   * folder (not the folder's own entry) as the person reviewed them. The host
+   * refuses if the folder holds other entries now.
+   */
+  expectedDescendantIds?: string[];
+  /**
+   * For a companion save (an ink file under `_ink/<owner>/`, a `<recording>.transcript`):
+   * the owner file's ID as read. The host refuses when the owner is gone from
+   * that path or is another file now; with or without it, it never creates a
+   * companion for an owner that is not in the manifest.
+   */
+  ownerFileId?: string;
   /** Seed a new live PDF before publishing its manifest entry. */
   pdfSeed?: import("./protocol/pdf").PdfImportRequest;
 }
@@ -721,6 +780,10 @@ export const ControlRoutes = {
   docSuggestions: (docId: string) => `/docs/${encodeURIComponent(docId)}/suggestions`,
   fileBlob: (projectId: string) => `/projects/${encodeURIComponent(projectId)}/file-blob`,
   fileEntries: (projectId: string) => `/projects/${encodeURIComponent(projectId)}/file-entries`,
+  /** GET ?after=&limit= → TransitionsResponse: the manifest moves and removals not yet acknowledged. */
+  transitions: (projectId: string) => `/projects/${encodeURIComponent(projectId)}/transitions`,
+  /** POST AcknowledgeTransitionsRequest → { removed }: trims the log. */
+  transitionsAck: (projectId: string) => `/projects/${encodeURIComponent(projectId)}/transitions/ack`,
   files: (projectId: string) => `/projects/${encodeURIComponent(projectId)}/files`,
   reconciliations: "/reconciliations",
   reconciliation: (id: string) => `/reconciliations/${encodeURIComponent(id)}`,

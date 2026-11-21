@@ -47,6 +47,33 @@ import type { LiberaLinkRewrites, LiberaLinkSkipReason, LiberaMoveStep } from "@
 /** One move: a file, or a folder and everything under it. Library paths. */
 export type PathMove = { from: string; to: string; folder?: boolean };
 
+/** Which library paths are files: the disk (fileExistence) or, for a shared notebook, the host's manifest. */
+export type LinkExistence = Pick<ReturnType<typeof fileExistence>, "check" | "exists">;
+
+/**
+ * Where a plan reads from: the notebook's notes (full text), the files it
+ * lists (as the layout after the move has them), and the text of one file.
+ * The default is the disk; a shared move reads shared notebooks from the host
+ * (shared-move-links.ts) because the working copy on disk can lag it.
+ */
+export type LinkSource = {
+  existence: LinkExistence;
+  /** `hint` lets a source that must ask the host for each note's text read only the notes that can name a moved item. */
+  documents: (notebook: string, hint: DocumentHint) => Promise<{ documents: { documentPath: string; content: string }[]; complete: boolean }>;
+  files: (notebook: string) => Promise<{ files: string[]; truncated: boolean }>;
+  read: (libraryPath: string) => Promise<string>;
+};
+
+/** The moved and arriving names, and where a library path was before the move (itself when it did not move). */
+export type DocumentHint = { names: readonly string[]; was: (libraryPath: string) => string };
+
+export const diskLinkSource = (): LinkSource => ({
+  existence: fileExistence(),
+  documents: (notebook) => readMarkdownAssetDocuments(notebook),
+  files: (notebook) => listVisibleNotebookFiles(notebook, { includeArchive: true }),
+  read: (libraryPath) => readFile(absolute(libraryPath), "utf8"),
+});
+
 /** A rewrite planned for one file (by its path after the move), with the hashes of its text before and after. */
 export type PlannedLinkRewrite = { path: string; from?: string; rewrite: MovedPathRewrite; before: string; after: string };
 
@@ -74,7 +101,7 @@ const absolute = (libraryPath: string) => { const { notebook, pathParts } = spli
  * move): a moved path was there if its destination is now, an arriving one
  * was not, and the rest are as they are. Exact names, as the check matches them.
  */
-export function moveLayout(moves: readonly PathMove[]) {
+export function moveLayout(moves: readonly PathMove[], existence: LinkExistence = fileExistence()) {
   const files = new Map(moves.filter((move) => !move.folder).map((move) => [move.from, move.to]));
   const arrivals = new Map(moves.filter((move) => !move.folder).map((move) => [move.to, move.from]));
   const folders = moves.filter((move) => move.folder).sort((a, b) => b.from.length - a.from.length);
@@ -91,7 +118,7 @@ export function moveLayout(moves: readonly PathMove[]) {
     const folder = folderArrivals.find((move) => within(candidate, move.to));
     return folder ? `${folder.from}${candidate.slice(folder.to.length)}` : null;
   };
-  const disk = fileExistence();
+  const disk = existence;
   return {
     forward: (candidate: string) => moved(candidate) ?? candidate,
     backward,
@@ -220,10 +247,10 @@ function latexSpellings(written: string, base: string, next: string) {
  * folder (latex/dependencies.ts), before the move and after it. A source
  * built from several main files gets one path that finds each build's file.
  */
-async function planLatex(notebook: string, layout: Layout) {
+async function planLatex(notebook: string, layout: Layout, source: LinkSource) {
   const planned = new Map<string, { from?: string; text: string; rewrite: MovedPathRewrite }>();
   const skipped: Skip[] = [];
-  const listing = await listVisibleNotebookFiles(notebook, { includeArchive: true });
+  const listing = await source.files(notebook);
   const beforeFiles = new Set<string>();
   for (const file of listing.files) { const was = layout.backward(file) ?? file; if (notebookOf(was) === notebook) beforeFiles.add(was); }
   for (const move of layout.fileMoves) if (notebookOf(move.from) === notebook && notebookOf(move.to) !== notebook) beforeFiles.add(move.from);
@@ -231,7 +258,7 @@ async function planLatex(notebook: string, layout: Layout) {
   const texts = new Map<string, string>();
   const read = async (file: string) => {
     const now = layout.forward(file);
-    if (!texts.has(now)) texts.set(now, await readFile(absolute(now), "utf8"));
+    if (!texts.has(now)) texts.set(now, await source.read(now));
     return texts.get(now)!;
   };
   const dependencies = await latexDependencies(notebook, [...beforeFiles], read);
@@ -240,8 +267,8 @@ async function planLatex(notebook: string, layout: Layout) {
     await layout.check(candidates);
     return candidates.find(exists) ?? null;
   };
-  for (const [source, mains] of dependencies.mainFiles) {
-    const now = layout.forward(source);
+  for (const [sourceFile, mains] of dependencies.mainFiles) {
+    const now = layout.forward(sourceFile);
     const text = texts.get(now);
     if (text === undefined) continue;
     const rewrite: MovedPathRewrite = {};
@@ -276,14 +303,18 @@ async function planLatex(notebook: string, layout: Layout) {
       if (next === null) skipped.push({ path: now, written: occurrence.written, reason: builds.length > 1 ? "latex-builds" : "unwritable" });
       else (rewrite[occurrence.kind] ??= {})[occurrence.written] = next;
     }
-    if (hasEntries(rewrite)) planned.set(now, { ...(now !== source ? { from: source } : {}), text, rewrite });
+    if (hasEntries(rewrite)) planned.set(now, { ...(now !== sourceFile ? { from: sourceFile } : {}), text, rewrite });
   }
   return { planned, skipped, incomplete: dependencies.incomplete || listing.truncated };
 }
 
-/** Why a file the move would rewrite must be left alone: a shared notebook's (its text changes only through the host), or one a migration is moving. */
-async function blockedFrom(filePath: string, ownMigration: boolean): Promise<LiberaLinkSkipReason | null> {
-  if (isSharedNotebookPath(filePath)) return "shared-notebook";
+/**
+ * Why a file the move would rewrite must be left alone: a shared notebook's
+ * (its text changes only through the host; `throughHost` is a plan whose
+ * caller writes those notes that way), or one a migration is moving.
+ */
+async function blockedFrom(filePath: string, ownMigration: boolean, throughHost: boolean): Promise<LiberaLinkSkipReason | null> {
+  if (!throughHost && isSharedNotebookPath(filePath)) return "shared-notebook";
   if (!ownMigration && await isPathMigrating(filePath)) return "migrating";
   return null;
 }
@@ -298,14 +329,15 @@ async function blockedFrom(filePath: string, ownMigration: boolean): Promise<Lib
  * the fence would otherwise hold off. `leave`: files not to rewrite (a
  * migration's item that is at both places, for the person to sort out).
  */
-export async function planMovedLinks(moves: readonly PathMove[], { ownMigration = false, leave = new Set<string>() }: { ownMigration?: boolean; leave?: ReadonlySet<string> } = {}) {
-  const layout = moveLayout(moves);
+export async function planMovedLinks(moves: readonly PathMove[], { ownMigration = false, leave = new Set<string>(), source }: { ownMigration?: boolean; leave?: ReadonlySet<string>; source?: LinkSource } = {}) {
+  const reads = source ?? diskLinkSource();
+  const layout = moveLayout(moves, reads.existence);
   const notes: PlannedLinkRewrite[] = [];
   const skipped: Skip[] = [];
   const unchecked: string[] = [];
   const add = async (filePath: string, from: string | undefined, text: string, rewrite: MovedPathRewrite) => {
     if (!hasEntries(rewrite) || leave.has(filePath)) return;
-    const blocked = await blockedFrom(filePath, ownMigration);
+    const blocked = await blockedFrom(filePath, ownMigration, source !== undefined);
     if (blocked) {
       for (const map of Object.values(rewrite)) for (const written of Object.keys(map ?? {})) skipped.push({ path: filePath, written, reason: blocked });
       return;
@@ -313,7 +345,7 @@ export async function planMovedLinks(moves: readonly PathMove[], { ownMigration 
     notes.push({ path: filePath, ...(from ? { from } : {}), rewrite, before: hashText(text), after: hashText(rewriteMovedPaths(text, filePath, rewrite)) });
   };
   for (const notebook of await libraryNotebookNames()) {
-    const { documents, complete } = await readMarkdownAssetDocuments(notebook).catch(() => ({ documents: [], complete: false }));
+    const { documents, complete } = await reads.documents(notebook, { names: layout.names, was: (file) => layout.backward(file) ?? file }).catch(() => ({ documents: [], complete: false }));
     if (!complete) unchecked.push(notebook);
     for (const { documentPath, content } of documents) {
       const was = layout.backward(documentPath) ?? documentPath;
@@ -325,7 +357,7 @@ export async function planMovedLinks(moves: readonly PathMove[], { ownMigration 
   }
   for (const notebook of new Set(moves.flatMap((move) => [notebookOf(move.from), notebookOf(move.to)]))) {
     try {
-      const latex = await planLatex(notebook, layout);
+      const latex = await planLatex(notebook, layout, reads);
       if (latex.incomplete && !unchecked.includes(notebook)) unchecked.push(notebook);
       skipped.push(...latex.skipped);
       for (const [filePath, { from, text, rewrite }] of latex.planned) await add(filePath, from, text, rewrite);
@@ -342,6 +374,12 @@ export async function planMovedLinks(moves: readonly PathMove[], { ownMigration 
     unchecked,
   };
 }
+
+/** The replan of a note whose text changed since it was planned: Markdown is planned afresh, LaTeX keeps its rewrite. */
+export const replanMovedNote = (layout: Layout) => async (text: string, note: PlannedLinkRewrite): Promise<MovedPathRewrite> => {
+  if (isLatexCitingPath(note.path)) return note.rewrite;
+  return (await planMarkdown(text, note.path, note.from ?? note.path, layout)).rewrite;
+};
 
 const GONE = "The note is no longer there.";
 const CHANGED = "The note changed while its links were being updated.";
@@ -430,10 +468,7 @@ export async function followLinkRewrites(applied: readonly AppliedLinkRewrite[],
 export async function followMovedLinks(moves: readonly PathMove[]): Promise<{ links: LiberaLinkRewrites; unfinished?: LiberaMoveStep }> {
   try {
     const plan = await planMovedLinks(moves);
-    const { applied, failed } = await applyMovedLinks(plan.notes, async (text, note) => {
-      if (isLatexCitingPath(note.path)) return note.rewrite;
-      return (await planMarkdown(text, note.path, note.from ?? note.path, plan.layout)).rewrite;
-    });
+    const { applied, failed } = await applyMovedLinks(plan.notes, replanMovedNote(plan.layout));
     const failures = await followLinkRewrites(applied);
     const links: LiberaLinkRewrites = { rewritten: applied.map((note) => ({ path: note.path, rewrite: note.rewrite })), skipped: [...plan.skipped, ...failed], unchecked: plan.unchecked };
     const problems = [...(failed.length ? [`${new Set(failed.map((skip) => skip.path)).size} notes could not be updated`] : []), ...failures];

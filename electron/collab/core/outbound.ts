@@ -11,6 +11,7 @@
 // Batches are only formed while the doc is open on the server. Offline edits
 // stay unbatched in the log, so a reconnect merges them into few batches.
 
+import * as encoding from "lib0/encoding";
 import * as Y from "yjs";
 
 import type { Provenance } from "../../../src/lib/collab/protocol/actor";
@@ -100,6 +101,63 @@ export function extendStateVector(stateVector: Uint8Array, updates: readonly Uin
 /** True when an update carries structs (not just a delete set). */
 export function hasStructs(update: Uint8Array): boolean {
   return Y.parseUpdateMeta(update).to.size > 0;
+}
+
+/**
+ * Cuts one oversized update into pieces of about `maxBytes` that apply in
+ * order, one after the other (S50). Only an update from a single client can be
+ * cut safely (every struct then depends on earlier clocks of that client or on
+ * state the server has already); a delete set goes last. Returns null when the
+ * update cannot be cut (several clients, one struct bigger than a piece): the
+ * caller quarantines it and says so, it is never retried in a loop.
+ */
+export function splitUpdate(update: Uint8Array, maxBytes: number): Uint8Array[] | null {
+  let decoded: ReturnType<typeof Y.decodeUpdate>;
+  try { decoded = Y.decodeUpdate(update); } catch { return null; }
+  const clients = new Set(decoded.structs.map((struct) => struct.id.client));
+  if (clients.size > 1) return null;
+  const pieces: Uint8Array[] = [];
+  const emit = (client: number, list: typeof decoded.structs): void => {
+    const encoder = new Y.UpdateEncoderV1();
+    encoding.writeVarUint(encoder.restEncoder, 1);
+    encoding.writeVarUint(encoder.restEncoder, list.length);
+    encoder.writeClient(client);
+    encoding.writeVarUint(encoder.restEncoder, list[0].id.clock);
+    for (const struct of list) struct.write(encoder, 0);
+    encoding.writeVarUint(encoder.restEncoder, 0);
+    pieces.push(encoder.toUint8Array());
+  };
+  let current: typeof decoded.structs = [];
+  let size = 0;
+  for (const struct of decoded.structs) {
+    const probe = new Y.UpdateEncoderV1();
+    struct.write(probe, 0);
+    const bytes = probe.toUint8Array().length;
+    if (bytes + 16 > maxBytes) return null;
+    if (current.length > 0 && size + bytes + 16 > maxBytes) {
+      emit(current[0].id.client, current);
+      current = [];
+      size = 0;
+    }
+    current.push(struct);
+    size += bytes;
+  }
+  if (current.length > 0) emit(current[0].id.client, current);
+  if (decoded.ds.clients.size > 0) {
+    const encoder = new Y.UpdateEncoderV1();
+    encoding.writeVarUint(encoder.restEncoder, 0);
+    encoding.writeVarUint(encoder.restEncoder, decoded.ds.clients.size);
+    for (const [client, items] of decoded.ds.clients) {
+      encoding.writeVarUint(encoder.restEncoder, client);
+      encoding.writeVarUint(encoder.restEncoder, items.length);
+      for (const item of items) {
+        encoding.writeVarUint(encoder.restEncoder, item.clock);
+        encoding.writeVarUint(encoder.restEncoder, item.len);
+      }
+    }
+    pieces.push(encoder.toUint8Array());
+  }
+  return pieces.length > 0 && pieces.every((piece) => piece.length < maxBytes * 2) ? pieces : null;
 }
 
 export class OutboundQueue {
@@ -213,10 +271,13 @@ export class OutboundQueue {
       ]);
       const update = encodeMissing(subdoc, known);
       if (!hasStructs(update)) continue;
-      if (this.tooLarge(subdoc, update.length, `missing:${subdoc}`)) continue;
-      const batch = this.store.createBatch(this.docId, subdoc, [], update);
-      this.batches.push(batch);
-      this.sendBatch(batch);
+      const pieces = update.length > this.updateLimit() ? this.cut(update) : [update];
+      if (!pieces) {
+        this.tooLarge(subdoc, update.length, `missing:${subdoc}`);
+        continue;
+      }
+      for (const piece of pieces) this.batches.push(this.store.createBatch(this.docId, subdoc, [], piece));
+      this.sendUnsent();
     }
   }
 
@@ -331,7 +392,21 @@ export class OutboundQueue {
     }
     if (!subdoc) return null;
     const queue = this.unbatched.get(subdoc) as PendingEntry[];
-    while (queue.length > 0 && this.tooLarge(subdoc, queue[0].update.length, `local:${queue[0].localSeq}`)) queue.shift();
+    while (queue.length > 0 && queue[0].update.length > this.updateLimit()) {
+      // Too large for one frame: send it as several (the last carries its local sequence, so
+      // it counts as pending until every piece is acknowledged). Uncuttable: quarantined, reported once.
+      const entry = queue[0];
+      const pieces = this.cut(entry.update);
+      if (!pieces) {
+        this.tooLarge(subdoc, entry.update.length, `local:${entry.localSeq}`);
+        queue.shift();
+        continue;
+      }
+      const made = pieces.map((piece, index) => this.store.createBatch(this.docId, subdoc, index === pieces.length - 1 ? [entry.localSeq] : [], piece, entry.provenance));
+      queue.shift();
+      for (const batch of made.slice(0, -1)) this.batches.push(batch);
+      return made[made.length - 1];
+    }
     if (queue.length === 0) return this.formOne();
     const first = queue[0];
     const group: PendingEntry[] = [first];
@@ -353,6 +428,15 @@ export class OutboundQueue {
     );
     queue.splice(0, group.length);
     return batch;
+  }
+
+  private updateLimit(): number {
+    return this.limits.maxUpdateBytes ?? SyncLimits.maxUpdateBytes;
+  }
+
+  private cut(update: Uint8Array): Uint8Array[] | null {
+    const pieces = splitUpdate(update, Math.max(1024, Math.floor(this.updateLimit() / 2)));
+    return pieces && pieces.every((piece) => piece.length <= this.updateLimit()) ? pieces : null;
   }
 
   /** Reports an update over the server limit once; the caller skips it. */

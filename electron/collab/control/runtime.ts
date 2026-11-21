@@ -186,6 +186,7 @@ export class CollabRuntime {
     if (this.onBattery === onBattery) return;
     this.onBattery = onBattery;
     this.current?.notebooks.powerChanged?.(onBattery);
+    this.current?.host.setOnBattery(onBattery);
   }
 
   /** The computer woke from sleep: shared folders are checked now. */
@@ -242,7 +243,10 @@ export class CollabRuntime {
     });
     this.notebookRoutes.clear();
     notebooks.registerRoutes(this.notebookRoutes);
-    if (this.onBattery) notebooks.powerChanged?.(true);
+    if (this.onBattery) {
+      notebooks.powerChanged?.(true);
+      host.setOnBattery(true);
+    }
     const unsubscribe = host.on((event) => this.onHostEvent(event));
     this.current = { key, clientNamespace, host, notebooks, unsubscribe };
     try {

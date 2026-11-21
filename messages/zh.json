@@ -4542,7 +4542,18 @@
         "settingsCorrupt": "笔记本的设置文件无法读取，因此其颜色、表情符号和分组均为默认值。",
         "settingsCorruptFix": "请从同步服务的版本历史中恢复它；保存笔记本设置时会写入新的设置文件。",
         "settingsUnreadable": "无法读取笔记本的设置文件。",
-        "sharedNotebook": "这是共享笔记本。其文件由协作功能保持同步；此检查仅涵盖此计算机上的内容。",
+        "sharedNotebook": "这是共享笔记本。其文件由协作功能保持同步；此检查会将此计算机与主机的文件列表进行比较。",
+        "sharedManifestUnavailable": "主机无法提供共享笔记本的文件列表（{reason}），因此依赖它的内容未作判断。",
+        "sharedManifestChanged": "检查期间共享笔记本的文件列表发生了变化，因此未将此计算机与其比较。请稍后再检查。",
+        "sharedSyncUnknown": "无法读取主机的同步状态，因此无法区分仍在传输的文件和缺失的文件。",
+        "sharedFilesNotHere": "共享笔记本的部分文件尚未到达此计算机，因此无法区分仅由它们使用的图片和代码。",
+        "sharedFileArriving": "同步仍在将此文件传送到此计算机。",
+        "sharedFileMissingHere": "共享笔记本中有此文件，但它不在此计算机上，且同步并未落后。",
+        "sharedFileMissingHereFix": "请在同步完成后再检查。",
+        "sharedFileDiffers": "此计算机上的此文件与共享笔记本的版本不同（大小不一致），且同步并未落后。",
+        "sharedFileNotListed": "此文件在此计算机上，但不在共享笔记本的文件列表中：主机尚未添加它，或者它是已从共享笔记本中删除的文件的旧副本。",
+        "sharedFileNotListedFix": "请稍后再检查。如果它仍然存在，则说明它未被共享：若是旧副本，请将其删除。",
+        "orphanSideFileSharedFix": "共享笔记本在此路径没有文件。如果文件在那里被重命名，“尝试修复”会将此计算机的记录与同名文件配对；否则“确认”会将其删除。",
         "sideFileDropped": "{path} 已保存的{kind}中有 {dropped} 条{records}无法读取：它们不会显示，并会在下次保存时丢失。",
         "sideFileDroppedFix": "在更改之前，请先从同步服务的版本历史中恢复该附属文件。",
         "sideFileStale": "{path} 的{kind}是为该文件的另一个版本保存的（大小不同），因此可能已不再与其匹配。",
@@ -4586,7 +4597,8 @@
           "records": "星标、标签、审阅和撤销历史",
           "references": "参考文献附件和 .bib 关联",
           "sidecars": "批注、墨迹、转录稿和其他附属文件",
-          "migrations": "迁移"
+          "migrations": "迁移",
+          "sharing": "共享笔记本文件"
         },
         "orphanSideFileMoved": "{path} 的已保存{kind}不在笔记本中，但属于 {moved}：这是同一文件，只是被移到了应用之外。下次打开笔记本时，它们会被放回该文件。",
         "notebookTooLarge": "{name} 的文件数超出一次检查的读取上限（{count} 个）。",
@@ -5431,6 +5443,7 @@
     "tryToFix": "尝试修复…",
     "understandDeletedForGood": "我了解这些内容将被永久删除",
     "unmatchedNone": "笔记本中没有此名称的文件。",
+    "unmatchedHost": "主机将这些内容保存在共享笔记本中，或仅随文件一起移动，因此不会在此处移动。",
     "unmatchedOwn": "{candidates}已有{count, plural, one {自己的} other {各自的}}记录，因此{count, plural, one {它} other {它们}}很可能是另一个文件。",
     "unmatchedSeveral": "有多个文件使用此名称：{candidates}。",
     "unmatchedSharedName": "其他缺失的文件也使用此名称，因此无法判断哪一个是哪一个。",
@@ -7736,6 +7749,7 @@
     "moveFileError": "无法移动文件。",
     "batchMovePartialError": "已移动 {moved}/{total} 个文件。在 {name} 处停止：{message} 其后的文件未移动。",
     "batchDeletePartialError": "已删除 {deleted}/{total} 个文件。未删除：{failures}",
+    "batchUnfinishedNotice": "{count, plural, other {# 个文件已更改}}，但有些步骤未完成：{details}。请运行 Check Notebook 来处理。",
     "movedButNotUpdatedError": "文件已移动，但应用无法为此完全更新：{message}。请重新打开“迁移”以重试。",
     "movedLinksUpdated": "{count, plural, other {已更新 # 条笔记中的链接}}",
     "movedLinksNotUpdated": "{count, plural, other {# 个链接无法更新，可能会打开另一个文件或无法打开}}：{links}。检查笔记本会列出它们。",
@@ -7748,7 +7762,9 @@
       "unwritable": "无法写回",
       "unreadable": "无法更新该文件",
       "shared-notebook": "共享笔记本",
-      "migrating": "正在移动到另一个笔记本"
+      "migrating": "正在移动到另一个笔记本",
+      "read-only": "你的角色无法编辑此笔记",
+      "edited": "更新链接期间该笔记被编辑"
     },
     "movedLinksUnchecked": "{notebooks} 中的笔记未能全部读取，因此其中部分链接可能未随之更新。",
     "moveUnfinishedNotice": "已移动，但部分随附内容未能跟随：{steps}。检查笔记本会找到剩下的部分。",
@@ -7759,7 +7775,8 @@
       "metadata": "星标和标签",
       "references": "引用的参考文献",
       "history": "撤销历史",
-      "links": "链接"
+      "links": "链接",
+      "records": "保存在此电脑上的记录"
     },
     "noNoteQuoteNotice": "没有打开的笔记：引文和引用已复制到剪贴板。",
     "noSnipTextError": "截图中未找到文本。",

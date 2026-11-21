@@ -31,7 +31,12 @@ interface CopyOptions {
   local?: boolean;
   /** The app is stopping: the copy waiting for its delay is written now. */
   final?: boolean;
+  /** A takedown's export: the server's current comments are required, never replaced by what the sidecar already holds. */
+  strict?: boolean;
 }
+
+/** How long a takedown export waits for one PDF's comments before it fails (one bounded pass, no retry loop). */
+const STRICT_COMMENTS_MS = 15_000;
 
 async function hashFile(file: string): Promise<string> {
   const hash = createHash("sha256");
@@ -100,6 +105,8 @@ interface PdfDoc {
   foreignSource?: boolean;
   /** Settles when the import under way (importing) ends. */
   importDone?: Promise<void>;
+  /** The import under way saw the file move or change: it is discarded and starts again from the new tuple. */
+  importAgain?: boolean;
   writes: Promise<void>;
   /** The delayed copy has started but not ended: quitting then cancels it, so the last copy is written again. */
   writing?: boolean;
@@ -377,9 +384,14 @@ export class PdfMarksRuntime {
   private async importSidecar(doc: PdfDoc, periodic = false): Promise<void> {
     if (doc.importing || this.stopped || doc.hub.isClosed) return;
     if (!this.ctx.canWriteDisk() || !this.hasServerState(doc)) return;
-    const target = this.sidecarPath(doc.path);
+    // One (file ID, path, blob version) tuple for the whole import: a rename or a new version
+    // while it reads is noticed at each commit point, never mixed with a mutable doc.path.
+    const tuple = { fileId: doc.fileId, path: doc.path, blobHash: this.entries.get(doc.fileId)?.blobHash };
+    const holds = () => this.docs.get(tuple.fileId) === doc && doc.path === tuple.path && this.entries.get(tuple.fileId)?.path === tuple.path && this.entries.get(tuple.fileId)?.blobHash === tuple.blobHash;
+    const target = this.sidecarPath(tuple.path);
     // Marked before the first await: a copy written meanwhile waits for this import.
     doc.importing = true;
+    doc.importAgain = false;
     let settle = () => {};
     doc.importDone = new Promise<void>((resolve) => { settle = resolve; });
     try {
@@ -394,12 +406,14 @@ export class PdfMarksRuntime {
         return;
       }
       // Only a PDF with no sidecar of its own can have an older one to merge.
-      const sidecarFile = current ? target : await this.sidecarToRead(doc.path);
+      const sidecarFile = current ? target : await this.sidecarToRead(tuple.path);
       const bytes = current ?? await readIfExists(sidecarFile);
       const sidecar = bytes ? JSON.parse(bytes.toString("utf8")) as Sidecar : null;
       if (bytes && sidecar && !await this.keepRejected(doc, bytes.toString("utf8"))) return;
       if (sidecar) {
-        const belongs = await this.sidecarBelongsToPdf(doc, sidecar, sidecarFile);
+        const belongs = await this.sidecarBelongsToPdf(doc, sidecar, sidecarFile, tuple.path);
+        // The file moved or changed while it was read: what was read is not evidence for it now.
+        if (!holds()) { doc.importAgain = true; return; }
         // The PDF cannot be read right now: decide on the next check, import nothing.
         if (belongs === null) return;
         if (!belongs) {
@@ -425,9 +439,11 @@ export class PdfMarksRuntime {
         const sourceHash = typeof source?.contentHash === "string" && /^[0-9a-f]{64}$/.test(source.contentHash) ? source.contentHash : undefined;
         const batches = importBatches(doc.hub.getDoc("annotations"), annotations);
         if (!this.canAnnotate() && (batches.length || comments.length)) return;
+        if (!holds()) { doc.importAgain = true; return; }
         // Comments go through the same serialized operation as their anchors.
         if (!batches.length && comments.length) batches.push([]);
         for (let index = 0; index < batches.length; index += 1) {
+          if (index > 0 && !holds()) { doc.importAgain = true; return; }
           await api.importPdf(doc.docId, { marks: batches[index], ...(index === 0 ? { comments } : {}), sourceHash });
         }
         if (batches.length) {
@@ -438,6 +454,8 @@ export class PdfMarksRuntime {
       if (Array.isArray(sidecar?.annotations) && annotations.length !== sidecar.annotations.length) {
         if (!await this.keepRejected(doc, JSON.stringify(sidecar))) return;
       }
+      // Recorded as seen only for the tuple it was read under.
+      if (!holds()) { doc.importAgain = true; return; }
       doc.observedHash = observed;
       doc.imported = true;
       doc.sidecarStat = statKey;
@@ -449,6 +467,8 @@ export class PdfMarksRuntime {
     } finally {
       doc.importing = false;
       settle();
+      // A rename or a new version arrived meanwhile: its own import was refused while this ran.
+      if (doc.importAgain && !this.stopped && this.docs.get(doc.fileId) === doc && this.entries.get(doc.fileId)?.path === doc.path) { doc.importAgain = false; void this.importSidecar(doc); }
     }
   }
 
@@ -477,7 +497,8 @@ export class PdfMarksRuntime {
 
   private async writeCurrentCopy(doc: PdfDoc, options: CopyOptions): Promise<void> {
     const stopped = () => this.stopped && !options.final;
-    if ((!options.local && (stopped() || !this.ctx.canWriteDisk())) || doc.hub.isClosed) return;
+    // A terminal local export (revocation, takedown) is written from the document's last state even if its hub closed first.
+    if (!options.local && (stopped() || !this.ctx.canWriteDisk() || doc.hub.isClosed)) return;
     const relative = doc.path;
     const target = this.sidecarPath(relative);
     if (!options.local) await this.importSidecar(doc);
@@ -531,9 +552,9 @@ export class PdfMarksRuntime {
    * sidecar with no recorded bytes is imported only when it is not older than the
    * PDF file (a PDF saved after it was written cannot have been annotated by it).
    */
-  private async sidecarBelongsToPdf(doc: PdfDoc, sidecar: Sidecar, sidecarFile: string): Promise<boolean | null> {
+  private async sidecarBelongsToPdf(doc: PdfDoc, sidecar: Sidecar, sidecarFile: string, relative = doc.path): Promise<boolean | null> {
     if ((sidecar as { sharedCopy?: unknown }).sharedCopy === doc.docId) return true;
-    const pdf = path.join(this.ctx.root, ...doc.path.split("/"));
+    const pdf = path.join(this.ctx.root, ...relative.split("/"));
     const stored = (sidecar.source as { contentHash?: unknown } | undefined)?.contentHash;
     if (typeof stored === "string" && /^[0-9a-f]{64}$/.test(stored)) {
       try { return await hashFile(pdf) === stored; } catch { return null; }
@@ -545,6 +566,18 @@ export class PdfMarksRuntime {
 
   /** The threads for the copy; null keeps the ones it has, as when the server cannot answer. */
   private async commentsForCopy(doc: PdfDoc, options: CopyOptions): Promise<unknown[] | null> {
+    if (options.strict) {
+      // A takedown deletes the only server copy of these comments: an answer that failed or came late fails the export.
+      if (!this.ctx.listComments) throw new Error(`The comments on ${doc.path} could not be read.`);
+      const list = async (docId: string) => {
+        const answer = await this.ctx.listComments!(docId);
+        if (answer === null) throw new Error(`The comments on ${doc.path} could not be read.`);
+        return answer;
+      };
+      let strictTimer: ReturnType<typeof setTimeout> | undefined;
+      const tooLate = new Promise<never>((_resolve, reject) => { strictTimer = setTimeout(() => reject(new Error(`The comments on ${doc.path} did not arrive in time.`)), STRICT_COMMENTS_MS); });
+      return Promise.race([list(doc.docId), tooLate]).finally(() => clearTimeout(strictTimer));
+    }
     const threads = this.ctx.listComments?.(doc.docId).catch(() => null) ?? Promise.resolve(null);
     if (!options.final) return threads;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -603,7 +636,7 @@ export class PdfMarksRuntime {
    * answer for the threads. Failures propagate so the takedown is not carried on.
    */
   async exportLocal(): Promise<void> {
-    await Promise.all([...this.docs.values()].map((doc) => this.writeCopy(doc, { local: true, final: true })));
+    await Promise.all([...this.docs.values()].map((doc) => this.writeCopy(doc, { local: true, final: true, strict: true })));
   }
 
   async seed(fileId: string, relative: string, input: PdfImportRequest): Promise<void> {

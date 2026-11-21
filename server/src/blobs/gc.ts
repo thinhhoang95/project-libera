@@ -26,9 +26,15 @@ export async function lockBlobHash(trx: Kysely<DB>, hash: string): Promise<void>
   await sql`select pg_advisory_xact_lock(hashtextextended(${"libera-blob:" + hash}, 0))`.execute(trx);
 }
 
-/** Inside the transaction that removed `hashes`' rows: records the ones no project references now. */
+/**
+ * Inside the transaction that removed `hashes`' rows: records the ones no project references now.
+ * Takes each hash's lock (sorted, so two retirements cannot deadlock) before it looks, so
+ * two projects retiring the last two references to one blob serialize: the second sees the
+ * first's committed delete and records the orphan (audit S62).
+ */
 export async function recordOrphanedBlobs(trx: Kysely<DB>, hashes: readonly string[]): Promise<void> {
-  const unique = [...new Set(hashes)];
+  const unique = [...new Set(hashes)].sort();
+  for (const hash of unique) await lockBlobHash(trx, hash);
   for (let start = 0; start < unique.length; start += 500) {
     const batch = unique.slice(start, start + 500);
     const referenced = new Set((await trx.selectFrom("blobs").select("hash").where("hash", "in", batch).execute()).map((row) => row.hash));
@@ -42,6 +48,8 @@ export async function collectOrphanedBlobs(context: ServerContext, { olderThanMs
   const { db } = context;
   const store = getBlobStore(context);
   const cutoff = new Date(Date.now() - olderThanMs);
+  // A taken-down project's former members may still download its final binaries until their recovery expires.
+  await db.deleteFrom("takedown_recoveries").where("expires_at", "<", new Date()).execute();
   const due = await db.selectFrom("blob_orphans").select("hash").where("orphaned_at", "<", cutoff).orderBy("orphaned_at").limit(limit).execute();
   let removed = 0;
   for (const { hash } of due) {
@@ -50,12 +58,14 @@ export async function collectOrphanedBlobs(context: ServerContext, { olderThanMs
     await db.transaction().execute(async (trx) => {
       await lockBlobHash(trx, hash);
       const referenced = await trx.selectFrom("blobs").select("hash").where("hash", "=", hash).executeTakeFirst();
-      if (!referenced && store.delete) {
+      // Held only for a taken-down project's recovery: kept, and still an orphan, so it goes once the recovery expires.
+      const held = referenced ? undefined : await trx.selectFrom("takedown_recovery_blobs").select("hash").where("hash", "=", hash).executeTakeFirst();
+      if (!referenced && !held && store.delete) {
         await store.delete(hash);
         removed += 1;
       }
       // Referenced again, or deleted: either way nothing is left to collect.
-      if (referenced || store.delete) await trx.deleteFrom("blob_orphans").where("hash", "=", hash).execute();
+      if (referenced || (!held && store.delete)) await trx.deleteFrom("blob_orphans").where("hash", "=", hash).execute();
     });
   }
   return removed;

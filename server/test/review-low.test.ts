@@ -44,6 +44,10 @@ test("R46: a taken-down project's own blobs are reclaimed after the grace period
   assert.equal(await collectOrphanedBlobs(env.server.server.context), 0);
   assert.ok(stored.has(ONLY));
 
+  // Former members can still download the final binaries while the takedown's recovery lasts (S72, takedown-recovery.ts).
+  assert.equal(await collectOrphanedBlobs(env.server.server.context, { olderThanMs: -1_000 }), 0);
+  assert.ok(stored.has(ONLY), "held for the takedown's recovery");
+  await env.db.updateTable("takedown_recoveries").set({ expires_at: new Date(Date.now() - 1_000) }).where("project_id", "=", env.project.id).execute();
   assert.equal(await collectOrphanedBlobs(env.server.server.context, { olderThanMs: -1_000 }), 1);
   assert.deepEqual([stored.has(ONLY), stored.has(SHARED)], [false, true]);
   assert.deepEqual(await env.db.selectFrom("blob_orphans").selectAll().execute(), []);

@@ -26,7 +26,7 @@ import { cleanupMarkdownImageAssets, copyMarkdownImageAssets, markdownImageTarge
 import { moveReviewPaths } from "@/lib/storage/markdown-reviews";
 import { destinationRecords } from "@/lib/storage/destination-records";
 import { checkNothingLeftAt } from "@/lib/storage/integrity";
-import { claimNotebooksForMigration, migrationJournalDirectory, migrationJournalsChanged } from "@/lib/storage/migration-fence";
+import { assertLifecycleReservation, claimNotebooksForMigration, migrationJournalDirectory, migrationJournalsChanged, withLifecycleReservation } from "@/lib/storage/migration-fence";
 import { createNotebook, deleteNotebook } from "@/lib/storage/notebooks";
 import {
   assertSafeSegment,
@@ -1211,6 +1211,7 @@ function sameSource(item: JournalItem, stats: Stats) {
 
 /** Remove the source once the destination holds the file (and the staged copy, which is the destination's other name). */
 async function retireSource(journal: Journal, index: number, item: JournalItem) {
+  assertLifecycleReservation();
   const staged = stagedPath(journal, index, item);
   await rm(staged, { force: true, recursive: true });
   const source = located(item, item.from);
@@ -1278,6 +1279,8 @@ async function removeCopiedEntries(source: string, copy: string, relative: strin
 
 /** The file (or hidden entry) itself. */
 async function commit(journal: Journal, index: number, item: JournalItem) {
+  // A share that took the notebook over since this run began stops it before anything is published or removed.
+  assertLifecycleReservation();
   const source = located(item, item.from);
   const destination = located(item, item.to);
   const staged = stagedPath(journal, index, item);
@@ -1819,6 +1822,12 @@ export async function runMigration(request: MigrationRequest, expectedToken: str
     const { plan, items, roots, folderTargets, createdFolders } = await buildPlan(request);
     if (plan.blockers.length) throw new StorageError(plan.blockers[0], 409);
     if (plan.token !== expectedToken) throw new StorageError("The notebooks changed since this migration was reviewed. Review it again.", 409);
+    // Held until the migration ends or stops: a share starting meanwhile is refused, and this run is stopped if one took over.
+    return withLifecycleReservation([plan.source, plan.destination.notebook], async () => {
+    // Shared since the plan was made, before the reservation: nothing has changed yet, so just refuse.
+    for (const name of [plan.source, ...(plan.destination.create ? [] : [plan.destination.notebook])]) {
+      if (!isLocalNotebook(name)) throw new StorageError(`${name} is shared now, so it can't be migrated. Review the migration again.`, 409);
+    }
 
     const now = new Date().toISOString();
     const journal: Journal = {
@@ -1881,6 +1890,7 @@ export async function runMigration(request: MigrationRequest, expectedToken: str
     journal.phase = "moving";
     await saveJournal(journal);
     return runMoving(journal, true);
+    });
   });
 }
 
@@ -1906,6 +1916,7 @@ export async function resumeMigration(id: string, mode: "continue" | "stop"): Pr
   return exclusively(async () => {
     const journal = await readJournal(id);
     if (journal.state === "done") throw new StorageError("This migration already finished.", 409);
+    return withLifecycleReservation([journal.source, journal.destination.notebook], async () => {
     await assertResumable(journal);
 
     if (journal.phase === "staging") {
@@ -1940,5 +1951,6 @@ export async function resumeMigration(id: string, mode: "continue" | "stop"): Pr
     }
 
     return runMoving(journal, mode === "continue");
+    });
   });
 }

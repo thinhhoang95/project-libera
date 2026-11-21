@@ -77,12 +77,12 @@ export async function addMember(db: Kysely<DB>, projectId: string, accountId: st
 export async function createDocument(
   db: Kysely<DB>,
   projectId: string,
-  options: { id?: string; kind?: DocKind; createdBy?: string } = {},
+  options: { id?: string; kind?: DocKind; createdBy?: string; fileId?: string } = {},
 ): Promise<string> {
   const id = options.id ?? newId("doc");
   await db
     .insertInto("documents")
-    .values({ id, project_id: projectId, kind: options.kind ?? "markdown", file_id: newId("fil"), created_by: options.createdBy ?? null })
+    .values({ id, project_id: projectId, kind: options.kind ?? "markdown", file_id: options.fileId ?? newId("fil"), created_by: options.createdBy ?? null })
     .onConflict((oc) => oc.column("id").doNothing())
     .execute();
   return id;

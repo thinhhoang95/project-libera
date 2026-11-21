@@ -4542,7 +4542,18 @@
         "settingsCorrupt": "Không đọc được tệp cài đặt của sổ tay, nên màu, biểu tượng cảm xúc và nhóm của nó là mặc định.",
         "settingsCorruptFix": "Khôi phục từ lịch sử phiên bản của dịch vụ đồng bộ; lưu cài đặt sổ tay sẽ ghi một tệp mới.",
         "settingsUnreadable": "Không thể đọc tệp cài đặt của sổ tay.",
-        "sharedNotebook": "Đây là sổ tay dùng chung. Các tệp của nó được giữ đồng bộ nhờ cộng tác; kiểm tra này chỉ bao phủ những gì có trên máy tính này.",
+        "sharedNotebook": "Đây là sổ tay dùng chung. Các tệp của nó được giữ đồng bộ nhờ cộng tác; kiểm tra này so sánh máy tính này với danh sách tệp của máy chủ.",
+        "sharedManifestUnavailable": "Máy chủ không đưa ra được danh sách tệp của sổ tay dùng chung ({reason}), nên những gì phụ thuộc vào nó chưa được đánh giá.",
+        "sharedManifestChanged": "Danh sách tệp của sổ tay dùng chung đã thay đổi trong lúc kiểm tra, nên máy tính này chưa được so sánh với nó. Hãy kiểm tra lại sau giây lát.",
+        "sharedSyncUnknown": "Không đọc được trạng thái đồng bộ của máy chủ, nên không phân biệt được tệp đang được chuyển đến với tệp bị thiếu.",
+        "sharedFilesNotHere": "Một số tệp của sổ tay dùng chung chưa có trên máy tính này, nên không phân biệt được hình ảnh và mã chỉ chúng sử dụng.",
+        "sharedFileArriving": "Đồng bộ vẫn đang đưa tệp này về máy tính này.",
+        "sharedFileMissingHere": "Sổ tay dùng chung có tệp này, nhưng nó không có trên máy tính này và đồng bộ không bị chậm.",
+        "sharedFileMissingHereFix": "Hãy kiểm tra lại khi đồng bộ đã xong.",
+        "sharedFileDiffers": "Máy tính này có phiên bản khác của tệp này so với sổ tay dùng chung (kích thước khác nhau) và đồng bộ không bị chậm.",
+        "sharedFileNotListed": "Tệp này có trên máy tính này nhưng không có trong danh sách tệp của sổ tay dùng chung: máy chủ chưa thêm nó, hoặc đó là bản sao cũ của tệp đã bị xóa khỏi sổ tay dùng chung.",
+        "sharedFileNotListedFix": "Hãy kiểm tra lại sau giây lát. Nếu nó vẫn còn, nó không được chia sẻ: hãy xóa nếu đó là bản sao cũ.",
+        "orphanSideFileSharedFix": "Sổ tay dùng chung không có tệp nào ở đường dẫn này. Nếu tệp đã được đổi tên ở đó, Thử sửa sẽ ghép các bản ghi của máy tính này với tệp cùng tên; nếu không, Xác nhận sẽ xóa chúng.",
         "sideFileDropped": "{dropped} {records} trong {kind} đã lưu của {path} không đọc được: chúng không được hiển thị và sẽ bị mất lần lưu tiếp theo.",
         "sideFileDroppedFix": "Khôi phục tệp phụ từ lịch sử phiên bản của dịch vụ đồng bộ trước khi thay đổi nó.",
         "sideFileStale": "{kind} của {path} được lưu cho một phiên bản khác của tệp (dung lượng khác nhau), nên có thể không còn khớp với tệp.",
@@ -4586,7 +4597,8 @@
           "records": "Dấu sao, thẻ, rà soát và lịch sử hoàn tác",
           "references": "Tệp đính kèm tài liệu tham khảo và liên kết .bib",
           "sidecars": "Chú thích, nét mực, bản chép lời và các tệp phụ khác",
-          "migrations": "Di chuyển dữ liệu"
+          "migrations": "Di chuyển dữ liệu",
+          "sharing": "Tệp của sổ tay dùng chung"
         },
         "orphanSideFileMoved": "{kind} đã lưu của {path}, không có trong sổ tay, thuộc về {moved}: cùng một tệp đã được chuyển ra ngoài ứng dụng. Chúng sẽ được đưa trở lại vào đó lần mở sổ tay tiếp theo.",
         "notebookTooLarge": "{name} có nhiều tệp hơn mức một lần kiểm tra đọc được ({count}).",
@@ -5431,6 +5443,7 @@
     "tryToFix": "Thử sửa…",
     "understandDeletedForGood": "Tôi hiểu rằng các mục này sẽ bị xóa vĩnh viễn",
     "unmatchedNone": "Không có tệp nào tên này trong sổ tay.",
+    "unmatchedHost": "Máy chủ giữ những mục này trong sổ tay dùng chung, hoặc chỉ di chuyển cùng với tệp, nên chúng không được di chuyển ở đây.",
     "unmatchedOwn": "{candidates} đã {count, plural, one {có} other {có}} bản ghi của {count, plural, one {riêng nó} other {riêng chúng}}, nên {count, plural, one {có lẽ đó là} other {có lẽ đó là}} một tệp khác.",
     "unmatchedSeveral": "Có nhiều tệp mang tên này: {candidates}.",
     "unmatchedSharedName": "Các tệp bị thiếu khác có cùng tên, nên không thể phân biệt được tệp nào là tệp nào.",
@@ -7736,6 +7749,7 @@
     "moveFileError": "Không thể di chuyển tệp.",
     "batchMovePartialError": "Đã di chuyển {moved}/{total} tệp. Dừng ở {name}: {message} Các tệp sau đó chưa được di chuyển.",
     "batchDeletePartialError": "Đã xóa {deleted}/{total} tệp. Chưa xóa: {failures}",
+    "batchUnfinishedNotice": "{count, plural, other {# tệp đã được thay đổi}}, nhưng một số bước chưa hoàn tất: {details}. Chạy Check Notebook để xử lý.",
     "movedButNotUpdatedError": "Các tệp đã được chuyển, nhưng ứng dụng không thể cập nhật đầy đủ cho việc này: {message}. Hãy mở lại Di chuyển để thử lại.",
     "movedLinksUpdated": "{count, plural, other {Đã cập nhật liên kết trong # ghi chú}}",
     "movedLinksNotUpdated": "{count, plural, other {# liên kết không thể cập nhật và có thể mở một tệp khác hoặc không mở được tệp nào}}: {links}. Kiểm tra sổ tay sẽ liệt kê chúng.",
@@ -7748,7 +7762,9 @@
       "unwritable": "không thể ghi lại",
       "unreadable": "không thể cập nhật tệp",
       "shared-notebook": "sổ tay dùng chung",
-      "migrating": "đang được chuyển sang sổ tay khác"
+      "migrating": "đang được chuyển sang sổ tay khác",
+      "read-only": "vai trò của bạn không thể sửa ghi chú này",
+      "edited": "ghi chú đã được sửa trong lúc cập nhật liên kết"
     },
     "movedLinksUnchecked": "Không đọc được hết các ghi chú trong {notebooks}, nên một số liên kết của chúng có thể chưa được cập nhật theo.",
     "moveUnfinishedNotice": "Đã di chuyển, nhưng một phần dữ liệu đi kèm chưa theo kịp: {steps}. Kiểm tra sổ tay sẽ tìm ra phần còn lại.",
@@ -7759,7 +7775,8 @@
       "metadata": "dấu sao và thẻ",
       "references": "tài liệu tham khảo được trích dẫn",
       "history": "lịch sử hoàn tác",
-      "links": "liên kết"
+      "links": "liên kết",
+      "records": "dữ liệu lưu trên máy này"
     },
     "noNoteQuoteNotice": "Không có ghi chú nào đang mở: đoạn trích và trích dẫn đã được sao chép vào bảng nhớ tạm.",
     "noSnipTextError": "Không tìm thấy văn bản trong vùng chụp.",

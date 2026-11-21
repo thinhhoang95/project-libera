@@ -2,7 +2,7 @@
 
 When a file or folder moves in the app, the paths written in notes and LaTeX sources that pointed at it, or that a moved note wrote from its old place, are rewritten so they keep opening the same file. The rule is the notebook check's: after any in-app move, **Check Notebook** reports no link, image, chart or LaTeX finding it did not report before. A path that already found nothing is left exactly as it was: never "fixed", never pointed at another file.
 
-Code: `src/lib/move-rewrites.ts` (pure: where the paths are in a text, and applying a rewrite; shared by the server and the app), `src/lib/storage/move-links.ts` (planning against the disk, writing notes, the records that follow), `src/lib/latex/path-occurrences.ts`. Tests: `scripts/editor/notebook-move-links.test.ts`.
+Code: `src/lib/move-rewrites.ts` (pure: where the paths are in a text, and applying a rewrite; shared by the server and the app), `src/lib/storage/move-links.ts` (planning against the disk, writing notes, the records that follow), `src/lib/latex/path-occurrences.ts`. Tests: `scripts/editor/notebook-move-links.test.ts`, `scripts/editor/shared-move-links-integrity.test.ts` (shared notebooks).
 
 ## Which moves
 
@@ -25,7 +25,7 @@ Every new path is resolved again against the layout after the move and must find
 
 Left alone: code spans and fences (links there are not links), external URLs and fragment-only links, `_assets/...` and `/api/markdown-assets/raw?document=…&asset=…` image addresses (they name the notebook, not the note's folder, so a move inside a notebook does not change them; a migration's image step already rewrites moved notes' images), paths that found nothing before the move, LaTeX names built by a macro (`#1`, `\figdir/a`; the check only counts them), `\import`/`\subimport`, `% !TEX root` and `\documentclass[…]{subfiles}`.
 
-Reported instead of rewritten (the notice lists them; Check Notebook then shows the broken link, as the oracle requires): a reference definition shared by a link and an image whose resolvers want different paths (the definition would have to be split), a chart whose data file ends up in another notebook (charts can't reach another notebook), a LaTeX chapter built from two main files that would need two different paths, a path whose spelling has Markdown escapes and whitespace that can't be written back, a note that can't be read or written, a note in a shared notebook, a note a running migration is moving.
+Reported instead of rewritten (the notice lists them; Check Notebook then shows the broken link, as the oracle requires): a reference definition shared by a link and an image whose resolvers want different paths (the definition would have to be split), a chart whose data file ends up in another notebook (charts can't reach another notebook), a LaTeX chapter built from two main files that would need two different paths, a path whose spelling has Markdown escapes and whitespace that can't be written back, a note that can't be read or written, a note in a shared notebook (for a local move), a shared note this account cannot edit or that kept changing, a note a running migration is moving.
 
 ## Which notes are read
 
@@ -67,7 +67,14 @@ The link step runs after the files moved and before the cited-references step, w
 
 ## Shared notebooks
 
-Text of a shared note changes only through the shared write path, with the host's document authority. A move inside a shared notebook (`moveSharedFile`, `renameSharedFolder`) rewrites nothing, as before. A local move whose links are in a shared notebook's notes leaves those notes and lists them as not rewritten.
+Links follow a move inside a shared notebook (`moveSharedFile`, `renameSharedFolder`) as they follow a local one, with the text written through the host (`src/lib/storage/shared-move-links.ts`, `followSharedMovedLinks(moves)`, called right after the host commits; it returns the same `links` report and one plain sentence for each step that stayed behind, which the wrapper adds to its unfinished list):
+
+- **The plan is made against the committed layout**: which paths are files comes from the host's manifest for shared notebooks (`listSharedEntries`), from the disk for local ones, so a working copy that lags the host changes nothing. The resolver is the check's (`resolveLinkTargetWith`), so a link that still resolves but would now open another file (a sibling moved away while a file of the same name stays at the notebook root, or the note moved beside another file of that name) is rewritten to keep its file; the same holds for local moves.
+- **A shared note's text is read from the host** (`readSharedText`) and written only through it (`writeSharedText` with the text just read as precondition). A note that changed in between is read and planned once more; if it changes again it is reported (`edited`). A note this account cannot edit (viewer, commenter, revoked) is reported (`read-only`) and left as it is. Check Notebook then lists the link as broken, as the oracle requires.
+- **Which notes are read**: the moved notes and, in a shared notebook, only the notes whose entry in the notebook's link index names a moved item (or could spell one: `%`, `&`, `\`), plus notes the index does not know yet. No note is fetched for the rest. Chart data files are not in the index, so moving a `.csv` or `.tsv` reads every note of the shared notebook. Local notebooks are read as before. A note that cannot be read marks its notebook as not fully checked.
+- **Local notes linking into the shared notebook** are rewritten on disk, and shared notes linking out follow the same rules as cross-notebook links of a local move.
+- Pending agent reviews, review comments, indexes and Global Search follow as for a local note. The agent's undo history is not carried for shared notes.
+- A local move (or a migration) whose links are in a shared notebook's notes still leaves those notes and lists them as not rewritten (`shared-notebook`).
 
 ## Not done
 

@@ -621,26 +621,41 @@ export async function getNotebookNode(name: string, options: { includeArchive?: 
   return node;
 }
 
+function fileNodesOf(nodes: LiberaTreeNode[], into: LiberaFileNode[] = []) {
+  for (const node of nodes) {
+    if (node.kind === "folder") fileNodesOf(node.children, into);
+    else into.push(node);
+  }
+  return into;
+}
+
 /**
- * Gives each file node the shared file id the host listed for its path. Only
- * where the listing agrees with the node: the tree is read from the working
- * copy, which cloud sync can leave behind the manifest, and a different size
- * means this path may still hold another file than the one the listing names.
- * Without a verifiable match the node carries no id and the host checks nothing.
+ * Gives each file node the shared file id the host listed for its path, but
+ * only where `isVerified` already knows the node's bytes to be that entry (a
+ * copy checked earlier and unchanged since). Nothing is read here: a tree load
+ * must not read, hash or fetch the text of every file. A node the listing has
+ * an entry for but nobody has verified has no id and fileIdState "unknown" (the
+ * row keeps the id it had, and the id is verified when the file is opened or
+ * acted on); a node the listing has no entry for is "mismatch". The tree is read
+ * from the working copy, which cloud sync can leave behind the manifest, so the
+ * listing's entry at a path is never taken for the file on disk by size or name.
  */
-export function attachFileIds(
+export function attachFileIds<E extends { path: string; fileId: string; kind: "doc" | "blob" | "folder" }>(
   nodes: LiberaTreeNode[],
-  entries: readonly { path: string; fileId: string; kind: "doc" | "blob" | "folder"; size?: number }[],
+  entries: readonly E[],
+  isVerified: (entry: E, node: LiberaFileNode) => boolean,
 ) {
   const byPath = new Map(entries.filter((entry) => entry.kind !== "folder").map((entry) => [entry.path, entry]));
-  const visit = (list: LiberaTreeNode[]) => {
-    for (const node of list) {
-      if (node.kind === "folder") { visit(node.children); continue; }
-      const entry = byPath.get(node.path);
-      if (entry && (entry.size === undefined || entry.size === node.size)) node.fileId = entry.fileId;
-    }
-  };
-  visit(nodes);
+  for (const node of fileNodesOf(nodes)) {
+    const entry = byPath.get(node.path);
+    if (entry && isVerified(entry, node)) { node.fileId = entry.fileId; delete node.fileIdState; }
+    else { delete node.fileId; node.fileIdState = entry ? "unknown" : "mismatch"; }
+  }
+}
+
+/** Marks the file nodes that have no verified id as unknown (no listing came in time). */
+export function markFileIdsUnknown(nodes: LiberaTreeNode[]) {
+  for (const node of fileNodesOf(nodes)) if (!node.fileId && !node.fileIdState) node.fileIdState = "unknown";
 }
 
 export type LiberaFileMetadata = {

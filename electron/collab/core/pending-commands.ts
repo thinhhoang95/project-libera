@@ -35,10 +35,38 @@ export interface PendingCommandsOptions {
   beforeSend?: (command: Command, row: PendingCommandRow) => void | Promise<void>;
   backoffBaseMs?: number;
   backoffMaxMs?: number;
+  /** Multiplies the retry delay (a larger factor on battery); 1 when absent. */
+  delayScale?: () => number;
 }
 
 function transientStatus(status: number): boolean {
   return status === 0 || status === 401 || status === 408 || status === 429 || status >= 500;
+}
+
+/**
+ * What a command is about. Commands that share a key stay in order (a message
+ * waits for its thread's creation); commands that share none are independent,
+ * so one that cannot be sent yet does not hold the others back.
+ */
+export function commandKeys(command: Command): string[] {
+  switch (command.kind) {
+    case "thread.create":
+      return [`doc:${command.docId}`, `thread:${command.body.id}`];
+    case "message.create":
+      return [`thread:${command.threadId}`, `message:${command.body.id}`];
+    case "message.edit":
+    case "message.delete":
+      return [`message:${command.messageId}`];
+    case "thread.status":
+    case "thread.reattach":
+    case "thread.delete":
+      return [`thread:${command.threadId}`];
+    case "suggestions.decide":
+    case "revision.create":
+      return [`doc:${command.docId}`];
+    case "review.decide":
+      return [`review:${command.reviewId}`];
+  }
 }
 
 export class PendingCommands {
@@ -67,6 +95,11 @@ export class PendingCommands {
 
   on(listener: (event: PendingCommandEvent) => void): () => void {
     return this.events.on(listener);
+  }
+
+  /** Commands that have failed to send at least once and are still queued: visible so a stuck one can be recovered. */
+  blocked(): PendingCommandRow[] {
+    return this.store.listCommands().filter((row) => row.attempts > 0);
   }
 
   /** Commands not yet settled, oldest first. */
@@ -129,9 +162,19 @@ export class PendingCommands {
   }
 
   private async replay(): Promise<void> {
+    // Rows that could not be sent this pass, and what they are about: later rows about the same
+    // things wait behind them, every other row goes ahead.
+    const tried = new Set<string>();
+    const blockedKeys = new Set<string>();
+    let firstBlocked: { id: string; attempts: number; message: string } | null = null;
     while (!this.stopped && this.online && this.api) {
-      const [next] = this.store.listCommands();
-      if (!next) return;
+      const next = this.store.listCommands().find((row) => !tried.has(row.id) && !commandKeys(row.command).some((key) => blockedKeys.has(key)));
+      if (!next) {
+        // Backoff restarts only when a whole pass went through; while something stays blocked it keeps doubling (capped).
+        if (firstBlocked) this.scheduleRetry(firstBlocked.id, firstBlocked.attempts, firstBlocked.message);
+        else this.attempt = 0;
+        return;
+      }
       const api = this.api;
       let status: number;
       let body: unknown;
@@ -157,10 +200,11 @@ export class PendingCommands {
       if (transientStatus(status)) {
         const message = error?.message ?? `HTTP ${status}`;
         this.store.recordCommandAttempt(next.id, message);
-        this.scheduleRetry(next.id, next.attempts + 1, message);
-        return;
+        tried.add(next.id);
+        for (const key of commandKeys(next.command)) blockedKeys.add(key);
+        firstBlocked ??= { id: next.id, attempts: next.attempts + 1, message };
+        continue;
       }
-      this.attempt = 0;
       const ok = status >= 200 && status < 300;
       if (!ok && !error) {
         const detail = (body as { error?: { code?: string; message?: string } } | null)?.error;
@@ -176,7 +220,7 @@ export class PendingCommands {
 
   private scheduleRetry(id: string, attempts: number, message: string): void {
     const ceiling = Math.min(this.backoffMaxMs, this.backoffBaseMs * 2 ** this.attempt);
-    const delayMs = Math.floor(this.random() * ceiling);
+    const delayMs = Math.floor(this.random() * ceiling * Math.max(1, this.options.delayScale?.() ?? 1));
     this.attempt += 1;
     this.events.emit({ type: "retrying", id, attempts, error: message, delayMs });
     this.retryTimer = this.clock.setTimeout(() => {

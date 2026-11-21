@@ -14,7 +14,9 @@
 // instead of the Next storage module, which resolves its paths from Next's
 // environment.
 
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import path from "node:path";
 
 import type { ReviewDocument, ReviewThread } from "../../../src/lib/markdown-review";
 import { readReviewDocuments, withReviewTransaction } from "../../../src/lib/storage/review-files";
@@ -55,10 +57,47 @@ export async function updateReviewDatabase(libraryRoot: string, change: (db: Rev
   });
 }
 
+// Which shared file each local review belongs to, fixed when the notebook is first
+// shared. The review's key is only a path, and a path can be renamed by another member
+// or taken by a different note before the owner runs the transfer; the file ID
+// (and its document ID) cannot. The map lives with the host's other lifecycle records.
+
+export interface ReviewFileEntry { fileId: string; docId: string }
+export type ReviewFileMap = Record<string, ReviewFileEntry>;
+
+const reviewMapFile = (directory: string, projectId: string) =>
+  path.join(directory, "review-files", `${createHash("sha256").update(projectId).digest("hex").slice(0, 32)}.json`);
+
+/** Writes the local-review-to-file map of a project (atomically). */
+export function recordReviewFileIds(directory: string, projectId: string, entries: ReviewFileMap): void {
+  const file = reviewMapFile(directory, projectId);
+  mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const temporary = `${file}.${randomBytes(6).toString("hex")}.tmp`;
+  try {
+    writeFileSync(temporary, JSON.stringify({ version: 1, projectId, entries }), { flag: "wx", mode: 0o600, flush: true });
+    renameSync(temporary, file);
+  } catch (error) {
+    try { unlinkSync(temporary); } catch { /* Not written. */ }
+    throw error;
+  }
+}
+
+/** The map, or null when this project was shared before the map existed (or it is unreadable). */
+export function readReviewFileIds(directory: string | undefined, projectId: string): ReviewFileMap | null {
+  if (!directory) return null;
+  try {
+    const value = JSON.parse(readFileSync(reviewMapFile(directory, projectId), "utf8")) as { version?: number; projectId?: string; entries?: ReviewFileMap };
+    return value.version === 1 && value.projectId === projectId && value.entries && typeof value.entries === "object" ? value.entries : null;
+  } catch { return null; }
+}
+
 /** Review documents of one notebook folder ("Notebook/...") with threads not yet migrated. */
-export function documentsToMigrate(db: ReviewDatabase, notebook: string): MigratableDocument[] {
+export function documentsToMigrate(db: ReviewDatabase, notebook: string, fileMap?: ReviewFileMap | null): MigratableDocument[] {
   const prefix = `${notebook}/`;
-  return db.documents.filter((doc) => typeof doc.key === "string" && doc.key.startsWith(prefix) && doc.threads.some((thread) => !thread.migratedTo));
+  // A review the map names is the notebook's by its recorded file, not by the path it is stored under now.
+  // One the map does not name (made after sharing, or no map) is found by its stored path, which has followed the file since.
+  return db.documents.filter((doc) => (fileMap && Object.hasOwn(fileMap, doc.id) || (typeof doc.key === "string" && doc.key.startsWith(prefix))) &&
+    doc.threads.some((thread) => !thread.migratedTo));
 }
 
 /**

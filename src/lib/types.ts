@@ -159,9 +159,18 @@ export type LiberaFileNode = {
   /**
    * The shared notebook's file id for this path, when the host listed it at
    * the time the tree was built. Rename and delete send it so a path that
-   * another file has taken over is refused instead of acted on.
+   * another file has taken over is refused instead of acted on. In a shared
+   * notebook it is set only when the row's bytes were verified to be that
+   * manifest entry (never by size alone).
    */
   fileId?: string;
+  /**
+   * A shared file's row without a verified id: "mismatch" when the host's
+   * listing answered and this path does not hold that entry's bytes (another
+   * file, or the disk is behind sync), "unknown" when no answer came in time.
+   * A later read keeps the earlier id on "unknown" and drops it on "mismatch".
+   */
+  fileIdState?: "mismatch" | "unknown";
 };
 
 export type LiberaFolderNode = {
@@ -258,7 +267,7 @@ export type LiberaFilePayload = {
  * finish: `failed` threw (`message` says what), `held` was left at the old
  * path on purpose (a review whose destination already has comments).
  */
-export type LiberaMoveStep = { step: "images" | "reviews" | "attachments" | "metadata" | "references" | "history" | "links"; status: "failed" | "held"; message: string };
+export type LiberaMoveStep = { step: "images" | "reviews" | "attachments" | "metadata" | "references" | "history" | "links" | "records"; status: "failed" | "held"; message: string };
 
 /**
  * Why a path that pointed at a moved file, or that a moved note wrote, was
@@ -267,9 +276,10 @@ export type LiberaMoveStep = { step: "images" | "reviews" | "attachments" | "met
  * that would need two paths, chart data in another notebook, a LaTeX chapter
  * whose builds would need two paths, a spelling that can't be written back,
  * a note that could not be read or written, a shared notebook's note, a note
- * a migration is moving.
+ * a migration is moving, a shared note this account cannot edit (`read-only`),
+ * a shared note edited again while its links were being updated (`edited`).
  */
-export type LiberaLinkSkipReason = "shadowed" | "shared-definition" | "chart-notebook" | "latex-builds" | "unwritable" | "unreadable" | "shared-notebook" | "migrating";
+export type LiberaLinkSkipReason = "shadowed" | "shared-definition" | "chart-notebook" | "latex-builds" | "unwritable" | "unreadable" | "shared-notebook" | "migrating" | "read-only" | "edited";
 
 /** What a move did to the paths notes write (src/lib/storage/move-links.ts). */
 export type LiberaLinkRewrites = {

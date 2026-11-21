@@ -43,8 +43,10 @@ import {
   locateLocalAnchor,
   migrationId,
   readReviewDatabase,
+  readReviewFileIds,
   updateReviewDatabase,
   type MigrationMarker,
+  type ReviewFileMap,
 } from "./review-migration";
 import type { Router } from "./router";
 import { requireApi } from "./routes-projects";
@@ -70,6 +72,8 @@ export interface ThreadRouteOptions {
   libraryRoot: string;
   /** How long the migration waits for a document's first server state. */
   loadTimeoutMs?: number;
+  /** The host's lifecycle records, where the local-review-to-file map is kept. */
+  lifecycleDir?: string;
 }
 
 const CLIENT_ID = /^[A-Za-z0-9_-]{8,80}$/;
@@ -201,9 +205,20 @@ interface MigrationTarget {
   docId: string;
 }
 
-function migrationTargets(runtime: CollabRuntime, projectId: string, documents: { key: string }[]): MigrationTarget[] {
+/**
+ * The shared document each local review goes to. By the file recorded when the notebook was first shared (the document
+ * as it is now, wherever it was renamed to; gone when that file was deleted), never by the path the review is stored under.
+ * A notebook shared before the record existed falls back to the stored path.
+ */
+function migrationTargets(runtime: CollabRuntime, projectId: string, documents: { id: string; key: string }[], fileMap: ReviewFileMap | null): MigrationTarget[] {
   const targets: MigrationTarget[] = [];
   for (const doc of documents) {
+    const recorded = fileMap && Object.hasOwn(fileMap, doc.id) ? fileMap[doc.id] : null;
+    if (recorded) {
+      const resolved = runtime.notebooks.resolveDoc?.(recorded.docId);
+      if (resolved && resolved.projectId === projectId && resolved.fileId === recorded.fileId && resolved.kind === "markdown") targets.push({ key: doc.key, docId: resolved.docId });
+      continue;
+    }
     const resolved = runtime.notebooks.resolvePath(doc.key);
     if (resolved && resolved.projectId === projectId) targets.push({ key: doc.key, docId: resolved.docId });
   }
@@ -384,7 +399,8 @@ export function registerThreadRoutes(router: Router, runtime: CollabRuntime, opt
   router.add("GET", pattern.migrateComments, async (request): Promise<{ body: LocalCommentsSummary }> => {
     const { notebook } = projectNotebook(runtime, request.params.projectId);
     const db = await readReviewDatabase(options.libraryRoot);
-    const targets = new Set(migrationTargets(runtime, request.params.projectId, documentsToMigrate(db, notebook)).map((target) => target.key));
+    const fileMap = readReviewFileIds(options.lifecycleDir, request.params.projectId);
+    const targets = new Set(migrationTargets(runtime, request.params.projectId, documentsToMigrate(db, notebook, fileMap), fileMap).map((target) => target.key));
     const documents = db.documents.filter((doc) => targets.has(doc.key));
     return {
       body: { documents: documents.length, threads: documents.reduce((count, doc) => count + doc.threads.filter((thread) => !thread.migratedTo).length, 0) },
@@ -400,8 +416,9 @@ export function registerThreadRoutes(router: Router, runtime: CollabRuntime, opt
     if (!account) throw new ControlError(409, "signed-out", "Sign in to a collaboration account first.");
     const accountId = account.id;
     const db = await readReviewDatabase(options.libraryRoot);
-    const documents = documentsToMigrate(db, notebook);
-    const targets = new Map(migrationTargets(runtime, projectId, documents).map((target) => [target.key, target.docId]));
+    const fileMap = readReviewFileIds(options.lifecycleDir, projectId);
+    const documents = documentsToMigrate(db, notebook, fileMap);
+    const targets = new Map(migrationTargets(runtime, projectId, documents, fileMap).map((target) => [target.key, target.docId]));
     const markers = new Map<string, Map<string, MigrationMarker>>();
     const result: MigrateCommentsResponse = { documents: 0, threads: 0, detached: 0, skipped: 0 };
 

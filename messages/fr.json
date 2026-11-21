@@ -4542,7 +4542,18 @@
         "settingsCorrupt": "Le fichier de réglages du carnet ne peut pas être lu, donc sa couleur, son emoji et son groupe sont ceux par défaut.",
         "settingsCorruptFix": "Restaurez-le depuis l’historique de versions de votre service de synchronisation ; l’enregistrement des réglages du carnet en crée un nouveau.",
         "settingsUnreadable": "Le fichier de réglages du carnet n’a pas pu être lu.",
-        "sharedNotebook": "Ceci est un carnet partagé. Ses fichiers sont maintenus à jour par la collaboration ; cette vérification porte sur ce qui se trouve sur cet ordinateur.",
+        "sharedNotebook": "Ceci est un carnet partagé. Ses fichiers sont maintenus à jour par la collaboration ; cette vérification compare cet ordinateur à la liste de fichiers de l’hôte.",
+        "sharedManifestUnavailable": "L’hôte n’a pas pu fournir la liste de fichiers du carnet partagé ({reason}) ; ce qui en dépend n’a donc pas été jugé.",
+        "sharedManifestChanged": "La liste de fichiers du carnet partagé a changé pendant la vérification ; cet ordinateur n’a donc pas été comparé à elle. Vérifiez à nouveau dans un instant.",
+        "sharedSyncUnknown": "L’état de synchronisation de l’hôte n’a pas pu être lu ; un fichier en cours d’arrivée ne peut donc pas être distingué d’un fichier manquant.",
+        "sharedFilesNotHere": "Certains fichiers du carnet partagé ne sont pas encore sur cet ordinateur ; les images et le code qu’ils sont seuls à utiliser ne peuvent donc pas être distingués.",
+        "sharedFileArriving": "La synchronisation est encore en train d’amener ce fichier sur cet ordinateur.",
+        "sharedFileMissingHere": "Le carnet partagé contient ce fichier, mais il n’est pas sur cet ordinateur, et la synchronisation n’est pas en retard.",
+        "sharedFileMissingHereFix": "Vérifiez à nouveau une fois la synchronisation terminée.",
+        "sharedFileDiffers": "Cet ordinateur a une autre version de ce fichier que le carnet partagé (sa taille diffère), et la synchronisation n’est pas en retard.",
+        "sharedFileNotListed": "Ce fichier est sur cet ordinateur mais pas dans la liste de fichiers du carnet partagé : l’hôte ne l’a pas encore ajouté, ou c’est une ancienne copie d’un fichier supprimé du carnet partagé.",
+        "sharedFileNotListedFix": "Vérifiez à nouveau dans un instant. S’il reste, il n’est pas partagé : supprimez-le s’il s’agit d’une ancienne copie.",
+        "orphanSideFileSharedFix": "Le carnet partagé n’a aucun fichier à cet emplacement. Si le fichier y a été renommé, « Essayer de corriger » associe les enregistrements de cet ordinateur au fichier de même nom ; sinon « Prendre acte » les supprime.",
         "sideFileDropped": "{dropped} {records} du fichier annexe ({kind}) enregistré pour {path} ne peuvent pas être lus : ils ne sont pas affichés et seront perdus à la prochaine sauvegarde.",
         "sideFileDroppedFix": "Restaurez le fichier annexe depuis l’historique de versions de votre service de synchronisation avant de le modifier.",
         "sideFileStale": "Le fichier annexe ({kind}) de {path} a été enregistré pour une autre version du fichier (sa taille diffère) ; il peut ne plus lui correspondre.",
@@ -4586,7 +4597,8 @@
           "records": "Favoris, étiquettes, relectures et historique d’annulation",
           "references": "Pièces jointes des références et lien .bib",
           "sidecars": "Annotations, encre, transcriptions et autres fichiers annexes",
-          "migrations": "Migrations"
+          "migrations": "Migrations",
+          "sharing": "Fichiers du carnet partagé"
         },
         "orphanSideFileMoved": "Fichier annexe ({kind}) enregistré pour {path}, qui ne fait pas partie du carnet, appartient à {moved} : le même fichier, déplacé hors de l’application. Il y est replacé la prochaine fois que le carnet est ouvert.",
         "notebookTooLarge": "{name} contient plus de fichiers qu’une vérification n’en lit ({count}).",
@@ -5431,6 +5443,7 @@
     "tryToFix": "Essayer de corriger…",
     "understandDeletedForGood": "Je comprends que ces éléments seront supprimés définitivement",
     "unmatchedNone": "Aucun fichier portant ce nom ne se trouve dans le carnet.",
+    "unmatchedHost": "L’hôte les conserve dans le carnet partagé, ou ne les déplace qu’avec le fichier ; ils ne sont donc pas déplacés ici.",
     "unmatchedOwn": "{candidates} {count, plural, one {a déjà ses propres enregistrements} other {ont déjà leurs propres enregistrements}}, donc {count, plural, one {il s’agit probablement d’un autre fichier} other {ce sont probablement d’autres fichiers}}.",
     "unmatchedSeveral": "Plusieurs fichiers portent ce nom : {candidates}.",
     "unmatchedSharedName": "D’autres fichiers manquants portent le même nom, il est donc impossible de savoir lequel est lequel.",
@@ -7736,6 +7749,7 @@
     "moveFileError": "Impossible de déplacer le fichier.",
     "batchMovePartialError": "{moved} fichier(s) déplacé(s) sur {total}. Arrêt à {name} : {message} Les fichiers suivants n’ont pas été déplacés.",
     "batchDeletePartialError": "{deleted} fichier(s) supprimé(s) sur {total}. Non supprimés : {failures}",
+    "batchUnfinishedNotice": "{count, plural, one {# fichier a été modifié} other {# fichiers ont été modifiés}}, mais certaines étapes n’ont pas abouti : {details}. Lancez la vérification du carnet pour les régler.",
     "movedButNotUpdatedError": "Les fichiers ont été déplacés, mais l’application n’a pas pu se mettre entièrement à jour : {message}. Rouvrez Migration pour réessayer.",
     "movedLinksUpdated": "{count, plural, one {Liens mis à jour dans # note} other {Liens mis à jour dans # notes}}",
     "movedLinksNotUpdated": "{count, plural, one {# lien n’a pas pu être mis à jour et peut ouvrir un autre fichier ou aucun} other {# liens n’ont pas pu être mis à jour et peuvent ouvrir un autre fichier ou aucun}} : {links}. Vérifier le carnet les liste.",
@@ -7748,7 +7762,9 @@
       "unwritable": "il ne peut pas être réécrit",
       "unreadable": "le fichier n’a pas pu être mis à jour",
       "shared-notebook": "carnet partagé",
-      "migrating": "en cours de déplacement vers un autre carnet"
+      "migrating": "en cours de déplacement vers un autre carnet",
+      "read-only": "votre rôle ne permet pas de modifier cette note",
+      "edited": "elle a été modifiée pendant la mise à jour des liens"
     },
     "movedLinksUnchecked": "Les notes de {notebooks} n’ont pas toutes pu être lues : certains de leurs liens n’ont peut-être pas suivi.",
     "moveUnfinishedNotice": "Déplacé, mais une partie de ce qui l’accompagne n’a pas suivi : {steps}. Vérifier le carnet trouve ce qui reste.",
@@ -7759,7 +7775,8 @@
       "metadata": "étoiles et étiquettes",
       "references": "références citées",
       "history": "historique d’annulation",
-      "links": "liens"
+      "links": "liens",
+      "records": "enregistrements gardés sur cet ordinateur"
     },
     "noNoteQuoteNotice": "Aucune note n’est ouverte : la citation et la référence ont été copiées dans le presse-papiers.",
     "noSnipTextError": "Aucun texte n’a été trouvé dans la capture.",
