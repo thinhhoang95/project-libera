@@ -113,13 +113,26 @@ export function anchorRange(text: Y.Text, start: number, end: number): { start: 
 export function positionCharacter(content: Y.Doc, json: unknown): "none" | "unknown" | "deleted" | "live" {
   if (!isPositionJson(json) || !json.item) return "none";
   const { client, clock } = json.item;
-  if (typeof client !== "number" || typeof clock !== "number") return "unknown";
-  if (Y.getState(content.store, client) <= clock) return "unknown";
-  let item = Y.getItem(content.store, Y.createID(client, clock)) as Y.Item | Y.AbstractStruct;
-  for (let hops = 0; item instanceof Y.Item && item.redone && hops < 1000; hops += 1) {
-    item = Y.getItem(content.store, item.redone) as Y.Item;
+  if (
+    typeof client !== "number" ||
+    typeof clock !== "number" ||
+    !Number.isSafeInteger(client) ||
+    !Number.isSafeInteger(clock) ||
+    client < 0 ||
+    clock < 0
+  ) {
+    return "unknown";
   }
-  return !(item instanceof Y.Item) || item.deleted ? "deleted" : "live";
+  if (Y.getState(content.store, client) <= clock) return "unknown";
+  try {
+    let item = Y.getItem(content.store, Y.createID(client, clock)) as Y.Item | Y.AbstractStruct;
+    for (let hops = 0; item instanceof Y.Item && item.redone && hops < 1000; hops += 1) {
+      item = Y.getItem(content.store, item.redone) as Y.Item;
+    }
+    return !(item instanceof Y.Item) || item.deleted ? "deleted" : "live";
+  } catch {
+    return "unknown";
+  }
 }
 
 export type SuggestionStaleReason = "text-changed" | "target-removed";

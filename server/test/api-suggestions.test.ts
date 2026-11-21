@@ -331,4 +331,31 @@ describe("suggestions", () => {
     // The replay of the replay returns the stored result.
     assert.deepEqual(await env.api("POST", "/v1/commands", env.editor2, command), replay);
   });
+
+  test("malformed relative-position clocks in annotations do not crash mirror or decisions", async () => {
+    const client = await env.connect(env.editor);
+    const docId = await env.document(client, "Hello world");
+    await env.server.server.context.rooms.batch(docId, async (batch) => {
+      const yClient = batch.docs.content.clientID;
+      await batch.transact("annotations", { kind: "user", userId: env.editor.id }, { source: "typing" }, (doc) => {
+        doc.getMap("suggestions").set("sg_bad_clock_1", {
+          id: "sg_bad_clock_1",
+          actor: { kind: "user", userId: env.editor.id },
+          createdBy: env.editor.id,
+          start: { item: { client: yClient, clock: -1 }, assoc: -1 },
+          end: { item: { client: yClient, clock: -1 }, assoc: 0 },
+          baseQuote: "",
+          replacement: "X",
+          status: "pending",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        });
+      });
+    });
+    const rows = await list(docId);
+    assert.equal(rows.length, 1);
+    const decided = await decide(env, env.editor, docId, [["sg_bad_clock_1", "accept"]]);
+    assert.equal(decided.status, 200);
+    assert.deepEqual(outcomes(decided), { sg_bad_clock_1: "stale" });
+  });
 });

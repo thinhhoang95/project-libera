@@ -118,7 +118,58 @@ function anchorFor(annotations: Y.Doc, scope: StoredScope): ScopeAnchor | null {
   return scope.kind === "range" && scope.anchorId ? scopeAnchor(annotations, scope.anchorId) : null;
 }
 
-async function changesSinceBase(db: Kysely<DB>, docId: string, baseSeq: number, scope: StoredScope, anchor: ScopeAnchor | null): Promise<number> {
+interface CachedRangeChanges {
+  uptoSeq: number;
+  count: number;
+  basePrint: string;
+  lastPrint: string;
+}
+
+const MAX_CHANGES_CACHE = 5_000;
+const REPLAY_YIELD_EVERY = 128;
+
+const rangeChangesCaches = new WeakMap<ServerContext, Map<string, CachedRangeChanges>>();
+
+function rangeChangesCache(context: ServerContext): Map<string, CachedRangeChanges> {
+  let cache = rangeChangesCaches.get(context);
+  if (!cache) {
+    cache = new Map();
+    rangeChangesCaches.set(context, cache);
+  }
+  return cache;
+}
+
+function setCachedRangeChanges(cache: Map<string, CachedRangeChanges>, key: string, entry: CachedRangeChanges): void {
+  cache.delete(key);
+  cache.set(key, entry);
+  while (cache.size > MAX_CHANGES_CACHE) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+}
+
+async function latestContentServerSeq(db: Kysely<DB>, docId: string): Promise<number> {
+  const row = await db
+    .selectFrom("doc_updates")
+    .select((eb) => eb.fn.max("server_seq").as("seq"))
+    .where("doc_id", "=", docId)
+    .where("subdoc", "=", "content")
+    .executeTakeFirst();
+  return row?.seq === null || row?.seq === undefined ? 0 : Number(row.seq);
+}
+
+async function changesSinceBase(
+  context: ServerContext,
+  docId: string,
+  reviewId: string,
+  baseSeq: number,
+  latestSeq: number,
+  scope: StoredScope,
+  anchor: ScopeAnchor | null,
+): Promise<number> {
+  const { db } = context;
+  if (latestSeq <= baseSeq) return 0;
   if (scope.kind === "document") {
     const row = await db
       .selectFrom("doc_updates")
@@ -126,39 +177,130 @@ async function changesSinceBase(db: Kysely<DB>, docId: string, baseSeq: number, 
       .where("doc_id", "=", docId)
       .where("subdoc", "=", "content")
       .where("server_seq", ">", baseSeq)
+      .where("server_seq", "<=", latestSeq)
       .executeTakeFirst();
     return Number(row?.count ?? 0);
   }
-  const doc = await loadSubdocState(db, docId, "content", baseSeq);
+  if (!anchor) return 0;
+
+  const cache = rangeChangesCache(context);
+  const cacheKey = `${reviewId}:${baseSeq}:${JSON.stringify(anchor)}`;
+  const cached = cache.get(cacheKey);
+  if (cached && latestSeq <= cached.uptoSeq) return cached.count;
+
+  const startSeq = cached ? cached.uptoSeq : baseSeq;
+  const doc = await loadSubdocState(db, docId, "content", startSeq);
   try {
-    const base = scopeText(doc, scope, anchor);
+    const ytext = sourceText(doc);
+    let text = ytext.toString();
+    let range = resolveRange(doc, anchor.start, anchor.end);
+    const initialPrint = fingerprint(range ? text.slice(range.start, range.end) : null);
+    const basePrint = cached ? cached.basePrint : initialPrint;
+    let lastPrint = cached ? cached.lastPrint : initialPrint;
+    let count = cached ? cached.count : 0;
+
     const rows = await db
       .selectFrom("doc_updates")
-      .select("update")
+      .select(["server_seq", "update"])
       .where("doc_id", "=", docId)
       .where("subdoc", "=", "content")
-      .where("server_seq", ">", baseSeq)
+      .where("server_seq", ">", startSeq)
+      .where("server_seq", "<=", latestSeq)
       .orderBy("server_seq")
       .execute();
-    let previous = base;
-    let count = 0;
-    for (const row of rows) {
-      Y.applyUpdate(doc, row.update);
-      if (doc.store.pendingStructs !== null || doc.store.pendingDs !== null) {
-        // Retention pruned updates after the base (only snapshots are left),
-        // so they cannot be replayed one by one. Fall back to comparing the
-        // base with the latest state: at least one change when they differ.
-        const latest = await loadSubdocState(db, docId, "content");
-        try {
-          return Math.max(count, scopeText(latest, scope, anchor) === base ? 0 : 1);
-        } finally {
-          latest.destroy();
+
+    // Track Y.Text deltas incrementally so edits strictly outside the anchor
+    // shift [start, end] in O(1) without calling Y.Text.toString() or
+    // re-resolving relative positions on every update.
+    let touched = false;
+    let textDirty = false;
+    const onDelta = (event: Y.YTextEvent) => {
+      if (textDirty) {
+        touched = true;
+        return;
+      }
+      const parts: string[] = [];
+      let oldPos = 0;
+      let newPos = 0;
+      for (const op of event.delta) {
+        if (typeof op.retain === "number") {
+          parts.push(text.slice(oldPos, oldPos + op.retain));
+          oldPos += op.retain;
+          newPos += op.retain;
+        } else if (op.insert !== undefined) {
+          if (typeof op.insert !== "string") {
+            touched = true;
+            textDirty = true;
+            return;
+          }
+          if (!touched && range) {
+            if (newPos < range.start) {
+              range = { start: range.start + op.insert.length, end: range.end + op.insert.length };
+            } else if (newPos <= range.end) {
+              touched = true;
+            }
+          } else {
+            touched = true;
+          }
+          parts.push(op.insert);
+          newPos += op.insert.length;
+        } else if (typeof op.delete === "number") {
+          if (!touched && range) {
+            if (newPos + op.delete < range.start) {
+              range = { start: range.start - op.delete, end: range.end - op.delete };
+            } else if (newPos <= range.end) {
+              touched = true;
+            }
+          } else {
+            touched = true;
+          }
+          oldPos += op.delete;
         }
       }
-      const now = scopeText(doc, scope, anchor);
-      if (now !== previous) count += 1;
-      previous = now;
+      if (oldPos < text.length) parts.push(text.slice(oldPos));
+      text = parts.join("");
+    };
+    ytext.observe(onDelta);
+    try {
+      let processed = 0;
+      for (const row of rows) {
+        touched = false;
+        Y.applyUpdate(doc, row.update);
+        if (doc.store.pendingStructs !== null || doc.store.pendingDs !== null) {
+          // Retention pruned updates after the base (only snapshots are left),
+          // so they cannot be replayed one by one. Fall back to comparing the
+          // base with the latest state: at least one change when they differ.
+          const latest = await loadSubdocState(db, docId, "content");
+          try {
+            const latestPrint = fingerprint(scopeText(latest, scope, anchor));
+            const fallback = Math.max(count, latestPrint === basePrint ? 0 : 1);
+            setCachedRangeChanges(cache, cacheKey, { uptoSeq: latestSeq, count: fallback, basePrint, lastPrint: latestPrint });
+            return fallback;
+          } finally {
+            latest.destroy();
+          }
+        }
+        if (touched) {
+          if (textDirty) {
+            text = ytext.toString();
+            textDirty = false;
+          }
+          range = resolveRange(doc, anchor.start, anchor.end);
+          const nowPrint = fingerprint(range ? text.slice(range.start, range.end) : null);
+          if (nowPrint !== lastPrint) {
+            count += 1;
+            lastPrint = nowPrint;
+          }
+        }
+        processed += 1;
+        if (processed % REPLAY_YIELD_EVERY === 0) {
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+      }
+    } finally {
+      ytext.unobserve(onDelta);
     }
+    setCachedRangeChanges(cache, cacheKey, { uptoSeq: latestSeq, count, basePrint, lastPrint });
     return count;
   } finally {
     doc.destroy();
@@ -200,6 +342,7 @@ async function buildReviews(context: ServerContext, docId: string, reviews: Revi
   const anchors = await context.rooms.withDocs(docId, (docs) =>
     reviews.map((review) => anchorFor(docs.annotations, review.scope as unknown as StoredScope)),
   );
+  const latestSeq = await latestContentServerSeq(db, docId);
   const result: Review[] = [];
   for (const [index, review] of reviews.entries()) {
     const scope = review.scope as unknown as StoredScope;
@@ -223,7 +366,15 @@ async function buildReviews(context: ServerContext, docId: string, reviews: Revi
           outdated: row.outdated,
         }),
       ),
-      changesSinceBase: await changesSinceBase(db, docId, baseSeqs.get(review.base_revision_id) ?? 0, scope, anchors[index]),
+      changesSinceBase: await changesSinceBase(
+        context,
+        docId,
+        review.id,
+        baseSeqs.get(review.base_revision_id) ?? 0,
+        latestSeq,
+        scope,
+        anchors[index],
+      ),
     });
   }
   return result;

@@ -26,7 +26,7 @@ import * as Y from "yjs";
 import { z } from "zod";
 
 import { requireDocumentAction, writeAudit } from "../auth/access.js";
-import type { ServerContext } from "../context.js";
+import type { RoomBatch, ServerContext } from "../context.js";
 import type { DB, SuggestionsTable } from "../db/types.js";
 import { HttpError } from "../http/errors.js";
 import { isClientId } from "../ids.js";
@@ -36,6 +36,7 @@ import {
   ApiRoutes,
   bindActor,
   EventKind,
+  SyncLimits,
   type Actor,
   type AiFeature,
   type DecideSuggestionsResponse,
@@ -43,6 +44,7 @@ import {
   type DecisionOutcome,
   type RevertSuggestionResponse,
   type Revision,
+  type Role,
   type SuggestionInfo,
   type SuggestionRecord,
   type UserSummary,
@@ -111,9 +113,54 @@ function plain(record: SuggestionRecord): SuggestionRecord {
   return JSON.parse(JSON.stringify(record)) as SuggestionRecord;
 }
 
+/** Half of SyncLimits.maxUpdateBytes so Yjs encoding overhead never breaches client/server frame limits. */
+const MAX_ANNOTATIONS_CHUNK_BYTES = Math.floor(SyncLimits.maxUpdateBytes * 0.5);
+const MAX_EXPANDED_DECISIONS = 5_000;
+const AUDIT_BATCH_SIZE = 200;
+
 function writeRecords(annotations: Y.Doc, records: Iterable<SuggestionRecord>): void {
   const overlay = overlayOf(annotations);
   for (const record of records) overlay.set(record.id, plain(record));
+}
+
+/**
+ * Writes updated suggestion records in size-bounded transactions so a large
+ * Accept All never produces an oversized annotations update or WebSocket frame.
+ */
+async function writeRecordsChunked(
+  batch: RoomBatch,
+  actor: Actor,
+  records: Iterable<SuggestionRecord>,
+  fence?: { projectId: string; role: Role },
+): Promise<void> {
+  let chunk: SuggestionRecord[] = [];
+  let bytes = 0;
+  const flush = async () => {
+    if (chunk.length === 0) return;
+    const toWrite = chunk;
+    chunk = [];
+    bytes = 0;
+    await batch.transact(
+      "annotations",
+      actor,
+      { source: "system" },
+      (doc) => {
+        const overlay = overlayOf(doc);
+        for (const item of toWrite) overlay.set(item.id, item);
+      },
+      fence,
+    );
+  };
+  for (const record of records) {
+    const json = JSON.stringify(record);
+    const size = Buffer.byteLength(json);
+    if (chunk.length > 0 && bytes + size > MAX_ANNOTATIONS_CHUNK_BYTES) {
+      await flush();
+    }
+    chunk.push(JSON.parse(json) as SuggestionRecord);
+    bytes += size;
+  }
+  await flush();
 }
 
 /**
@@ -252,6 +299,39 @@ class SuggestionMirror {
       this.mirrored.set(docId, cache);
     }
     const present = new Set<string>();
+    const pendingUpserts: Array<{
+      id: string;
+      signature: string;
+      insert: {
+        id: string;
+        doc_id: string;
+        project_id: string;
+        account_id: string;
+        created_at: Date;
+        group_id: string | null;
+        actor: string;
+        base_quote: string;
+        replacement: string;
+        status: SuggestionRecord["status"];
+        thread_ids: string;
+        updated_at: Date;
+        decided_by: string | null;
+        decided_at: Date | null;
+        stale_reason: StaleReason | null;
+      };
+      update: {
+        group_id: string | null;
+        actor: string;
+        base_quote: string;
+        replacement: string;
+        status: SuggestionRecord["status"];
+        thread_ids: string;
+        updated_at: Date;
+        decided_by: string | null;
+        decided_at: Date | null;
+        stale_reason: StaleReason | null;
+      };
+    }> = [];
     for (const record of records) {
       // The row needs a real account; an editor can write any createdBy.
       if (!accounts.has(record.createdBy)) continue;
@@ -271,21 +351,33 @@ class SuggestionMirror {
       };
       const signature = JSON.stringify(values);
       if (cache.get(record.id) === signature) continue;
-      await db
-        .insertInto("suggestions")
-        .values({
+      pendingUpserts.push({
+        id: record.id,
+        signature,
+        insert: {
           id: record.id,
           doc_id: docId,
           project_id: document.project_id,
           account_id: record.createdBy,
           created_at: timeOrNow(record.createdAt),
           ...values,
-        })
-        // Ids are client-chosen: never let one document's overlay overwrite
-        // another document's row that happens to share the id.
-        .onConflict((conflict) => conflict.column("id").doUpdateSet(values).where("suggestions.doc_id", "=", docId))
-        .execute();
-      cache.set(record.id, signature);
+        },
+        update: values,
+      });
+    }
+    if (pendingUpserts.length > 0) {
+      await db.transaction().execute(async (trx) => {
+        for (const item of pendingUpserts) {
+          await trx
+            .insertInto("suggestions")
+            .values(item.insert)
+            // Ids are client-chosen: never let one document's overlay overwrite
+            // another document's row that happens to share the id.
+            .onConflict((conflict) => conflict.column("id").doUpdateSet(item.update).where("suggestions.doc_id", "=", docId))
+            .execute();
+        }
+      });
+      for (const item of pendingUpserts) cache.set(item.id, item.signature);
     }
     // A pending entry removed from the overlay was withdrawn by its author.
     const removed = rows.filter((row) => row.status === "pending" && !present.has(row.id)).map((row) => row.id);
@@ -437,6 +529,7 @@ export async function decideSuggestions(context: ServerContext, accountId: strin
     const overlay = overlayOf(annotations);
     const results = new Map<string, Result>();
     const units = new Map<string, Unit>();
+    let expandedCount = 0;
     for (const { suggestionId, decision } of body.decisions) {
       const record = parseRecord(suggestionId, overlay.get(suggestionId));
       if (!record) {
@@ -452,6 +545,10 @@ export async function decideSuggestions(context: ServerContext, accountId: strin
         continue;
       }
       const members = record.groupId ? groupMembers(annotations, content, record.groupId) : [record];
+      expandedCount += members.length;
+      if (expandedCount > MAX_EXPANDED_DECISIONS) {
+        throw new HttpError("bad-request", `At most ${MAX_EXPANDED_DECISIONS} suggestions may be decided in one request.`);
+      }
       units.set(key, { decision, members });
     }
 
@@ -478,21 +575,31 @@ export async function decideSuggestions(context: ServerContext, accountId: strin
     }
 
     // Document order, so accept-all reads like an editor going top to bottom.
-    const firstPosition = new Map(
-      live.map((unit) => [unit, Math.min(...unit.members.map((member) => resolvePosition(content, member.start) ?? Number.MAX_SAFE_INTEGER))]),
-    );
+    const firstPosition = new Map<Unit, number>();
+    for (const unit of live) {
+      let min = Number.MAX_SAFE_INTEGER;
+      for (const member of unit.members) {
+        const pos = resolvePosition(content, member.start);
+        if (pos !== null && pos < min) min = pos;
+      }
+      firstPosition.set(unit, min);
+    }
     live.sort((a, b) => firstPosition.get(a)! - firstPosition.get(b)!);
 
     const changes = new Map<string, SuggestionRecord>();
     const appliedSeqs = new Map<string, number>();
     const now = Date.now();
+    let aborted = false;
     try {
+      let processedUnits = 0;
       for (const unit of live) {
         if (unit.decision === "reject") {
           for (const member of unit.members) {
             changes.set(member.id, { ...member, status: "rejected", decidedBy: accountId, decidedAt: now, updatedAt: now });
             results.set(member.id, { outcome: "rejected", decidedBy: accountId });
           }
+          processedUnits += 1;
+          if (processedUnits % 32 === 0) await new Promise<void>((resolve) => setImmediate(resolve));
           continue;
         }
         const problems = unitProblems(content, unit);
@@ -502,6 +609,8 @@ export async function decideSuggestions(context: ServerContext, accountId: strin
             changes.set(member.id, { ...member, status: "stale", staleReason: problems.get(member.id) ?? first, updatedAt: now });
             results.set(member.id, { outcome: "stale" });
           }
+          processedUnits += 1;
+          if (processedUnits % 32 === 0) await new Promise<void>((resolve) => setImmediate(resolve));
           continue;
         }
         for (const member of unit.members) {
@@ -534,12 +643,29 @@ export async function decideSuggestions(context: ServerContext, accountId: strin
           });
           results.set(member.id, { outcome: "applied", decidedBy: accountId });
         }
+        processedUnits += 1;
       }
+    } catch (error) {
+      aborted = true;
+      throw error;
     } finally {
       // Statuses are recorded even if a later write failed, so what was
-      // applied is never offered for acceptance again.
-      if (changes.size > 0) {
-        await batch.transact("annotations", overlayActor, { source: "system" }, (doc) => writeRecords(doc, changes.values()), fence);
+      // applied is never offered for acceptance again. On an abort (e.g. a
+      // mid-batch role change), flush only already-applied records without the
+      // membership fence, and never mask the original error.
+      if (!aborted && changes.size > 0) {
+        await writeRecordsChunked(batch, overlayActor, changes.values(), fence);
+      } else if (aborted && appliedSeqs.size > 0) {
+        const appliedRecords = [...appliedSeqs.keys()]
+          .map((id) => changes.get(id))
+          .filter((record): record is SuggestionRecord => record !== undefined);
+        if (appliedRecords.length > 0) {
+          try {
+            await writeRecordsChunked(batch, overlayActor, appliedRecords);
+          } catch (flushError) {
+            context.log.error({ err: flushError, docId }, "Failed to flush applied suggestion statuses after abort");
+          }
+        }
       }
     }
     return { results, changes, appliedSeqs, checkpoint, serverSeq: batch.serverSeq(), units: live.length };
@@ -547,8 +673,12 @@ export async function decideSuggestions(context: ServerContext, accountId: strin
 
   const mirror = suggestionMirror(context);
   await mirror.sync(docId);
-  for (const [id, seq] of outcome.appliedSeqs) {
-    await db.updateTable("suggestions").set({ decision_server_seq: seq }).where("id", "=", id).where("doc_id", "=", docId).execute();
+  if (outcome.appliedSeqs.size > 0) {
+    await db.transaction().execute(async (trx) => {
+      for (const [id, seq] of outcome.appliedSeqs) {
+        await trx.updateTable("suggestions").set({ decision_server_seq: seq }).where("id", "=", id).where("doc_id", "=", docId).execute();
+      }
+    });
   }
 
   const users = await loadUsers(db, [accountId, ...[...outcome.results.values()].map((result) => result.decidedBy)]);
@@ -567,16 +697,25 @@ export async function decideSuggestions(context: ServerContext, accountId: strin
   };
 
   const deciderSummary = userOrUnknown(users, accountId);
+  const actorJson = JSON.stringify(actor);
+  const auditRows: Array<{
+    project_id: string;
+    actor: string;
+    account_id: string;
+    action: string;
+    target: string;
+    details: string;
+  }> = [];
   for (const [id, record] of outcome.changes) {
     const result = outcome.results.get(id)!;
     publish(context, "doc", docId, EventKind.SuggestionDecided, { suggestionId: id, outcome: result.outcome, decidedBy: deciderSummary });
-    await writeAudit(db, {
-      projectId: access.projectId,
-      actor,
-      accountId,
+    auditRows.push({
+      project_id: access.projectId,
+      actor: actorJson,
+      account_id: accountId,
       action: "suggestion.decide",
       target: id,
-      details: {
+      details: JSON.stringify({
         docId,
         decision: record.status === "rejected" ? "reject" : "accept",
         outcome: result.outcome,
@@ -585,21 +724,28 @@ export async function decideSuggestions(context: ServerContext, accountId: strin
         serverSeq: outcome.appliedSeqs.get(id) ?? null,
         staleReason: record.status === "stale" ? (record.staleReason ?? null) : null,
         checkpointRevisionId: outcome.checkpoint?.id ?? null,
-      },
+      }),
     });
   }
   if (outcome.units > 1) {
-    await writeAudit(db, {
-      projectId: access.projectId,
-      actor,
-      accountId,
+    auditRows.push({
+      project_id: access.projectId,
+      actor: actorJson,
+      account_id: accountId,
       action: "suggestions.decide-all",
       target: docId,
-      details: {
+      details: JSON.stringify({
         checkpointRevisionId: outcome.checkpoint?.id ?? null,
         results: response.results.map((result) => ({ suggestionId: result.suggestionId, outcome: result.outcome })),
         serverSeq: outcome.serverSeq,
-      },
+      }),
+    });
+  }
+  if (auditRows.length > 0) {
+    await db.transaction().execute(async (trx) => {
+      for (let index = 0; index < auditRows.length; index += AUDIT_BATCH_SIZE) {
+        await trx.insertInto("audit_log").values(auditRows.slice(index, index + AUDIT_BATCH_SIZE)).execute();
+      }
     });
   }
   return { status: 200, body: response };

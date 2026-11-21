@@ -39,6 +39,24 @@ describe("text helpers", () => {
     }
   });
 
+  test("diffText preserves unchanged lines on large multi-line edits and handles huge rewrites cheaply", () => {
+    const shared = Array.from({ length: 30 }, (_, index) => `\\section{Part ${index}} ${"alpha ".repeat(15)}\n`);
+    const modified = [...shared];
+    modified[2] = `\\section{Part 2} ${"beta ".repeat(15)}\n`;
+    modified[25] = `\\section{Part 25} ${"gamma ".repeat(15)}\n`;
+    const before = shared.join("");
+    const after = modified.join("");
+    const edits = diffText(before, after);
+    assert.equal(applyEdits(before, edits), after);
+    assert.ok(edits.length >= 2, "unchanged middle sections kept intact");
+    const touched = edits.reduce((sum, edit) => sum + edit.deleteCount + edit.insert.length, 0);
+    assert.ok(touched < 400, `expected localized edits, touched ${touched} code units`);
+
+    const hugeBefore = "x".repeat(5000);
+    const hugeAfter = "y".repeat(5000);
+    assert.equal(applyEdits(hugeBefore, diffText(hugeBefore, hugeAfter)), hugeAfter);
+  });
+
   test("locateSection finds a changed section by its context", () => {
     const old = "# Intro\nHello world.\n# Methods\nWe measured things.\n# End\nBye.\n";
     const start = old.indexOf("We measured");

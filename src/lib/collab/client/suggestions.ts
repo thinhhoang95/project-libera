@@ -279,6 +279,8 @@ function outcomeMessage(kind: SuggestionOutcomeKind, decision: DecisionKind | nu
 
 const DEFAULT_POLL_MS = 3_000;
 const TEXT_REFRESH_MS = 150;
+/** Server and host cap per /suggestions/decisions request (routes-suggestions.ts, api/suggestions.ts). */
+const MAX_DECISIONS_PER_REQUEST = 1_000;
 
 /* ---- Controller ------------------------------------------------------------------------- */
 
@@ -593,6 +595,22 @@ export class SuggestionsController {
       return { commandId, sent: Promise.resolve({ queued: false }), settled: Promise.resolve(outcomes) };
     }
     const targets = this.expand(ids);
+    if (!targets.length) {
+      return { commandId, sent: Promise.resolve({ queued: false }), settled: Promise.resolve(new Map()) };
+    }
+    if (targets.length <= MAX_DECISIONS_PER_REQUEST) {
+      return this.sendDecisionBatch(commandId, targets, targets, decision, options);
+    }
+    return this.decideChunked(commandId, targets, decision, options);
+  }
+
+  private sendDecisionBatch(
+    commandId: string,
+    targets: readonly string[],
+    requestIds: readonly string[],
+    decision: DecisionKind,
+    options: { checkpoint?: boolean },
+  ): DecisionResult {
     for (const id of targets) {
       this.pending.set(id, { decision, phase: "sending", commandId });
       this.outcomes.delete(id);
@@ -600,9 +618,9 @@ export class SuggestionsController {
     this.changed();
     let resolveSettled: (outcomes: Map<string, SuggestionOutcome>) => void = () => {};
     const settled = new Promise<Map<string, SuggestionOutcome>>((resolve) => { resolveSettled = resolve; });
-    this.commands.set(commandId, { ids: targets, decision, resolve: resolveSettled });
+    this.commands.set(commandId, { ids: [...targets], decision, resolve: resolveSettled });
     const request = this.api.decide(this.docId, {
-      decisions: targets.map((suggestionId) => ({ suggestionId, decision })),
+      decisions: requestIds.map((suggestionId) => ({ suggestionId, decision })),
       ...(options.checkpoint ? { checkpoint: true } : {}),
       commandId,
     });
@@ -620,6 +638,71 @@ export class SuggestionsController {
       return { queued: false };
     });
     return { commandId, sent, settled };
+  }
+
+  /** Splits >1,000 decisions into sequential whole-group batches under the server's per-request cap. */
+  private decideChunked(
+    firstCommandId: string,
+    targets: readonly string[],
+    decision: DecisionKind,
+    options: { checkpoint?: boolean },
+  ): DecisionResult {
+    const records = new Map(listSuggestions(this.replica.annotations, { status: ["pending", "stale"] }).map((record) => [record.id, record]));
+    const byGroup = new Map<string, string[]>();
+    for (const id of targets) {
+      const record = records.get(id);
+      const key = record ? groupKey(record) : id;
+      const list = byGroup.get(key);
+      if (list) list.push(id); else byGroup.set(key, [id]);
+    }
+    // Each request keeps groups intact; a single group larger than the cap needs only one member id (the server expands groups).
+    const batches: Array<{ targets: string[]; requestIds: string[] }> = [];
+    let currentTargets: string[] = [];
+    let currentRequestIds: string[] = [];
+    for (const members of byGroup.values()) {
+      const requestMembers = members.length > MAX_DECISIONS_PER_REQUEST ? [members[0]] : members;
+      if (currentRequestIds.length > 0 && currentRequestIds.length + requestMembers.length > MAX_DECISIONS_PER_REQUEST) {
+        batches.push({ targets: currentTargets, requestIds: currentRequestIds });
+        currentTargets = [];
+        currentRequestIds = [];
+      }
+      currentTargets.push(...members);
+      currentRequestIds.push(...requestMembers);
+    }
+    if (currentTargets.length) batches.push({ targets: currentTargets, requestIds: currentRequestIds });
+
+    const planned = batches.map((batch, index) => ({
+      ...batch,
+      commandId: index === 0 ? firstCommandId : newSuggestionId("cmd"),
+      checkpoint: index === 0 ? options.checkpoint : false,
+    }));
+    // Mark every target pending up front so the UI disables repeated clicks across batches.
+    for (const batch of planned) {
+      for (const id of batch.targets) {
+        this.pending.set(id, { decision, phase: "sending", commandId: batch.commandId });
+        this.outcomes.delete(id);
+      }
+    }
+    this.changed();
+
+    const settledPromises: Promise<Map<string, SuggestionOutcome>>[] = [];
+    const sent = (async () => {
+      let anyQueued = false;
+      for (const batch of planned) {
+        const result = this.sendDecisionBatch(batch.commandId, batch.targets, batch.requestIds, decision, { checkpoint: batch.checkpoint });
+        settledPromises.push(result.settled);
+        const state = await result.sent;
+        anyQueued ||= state.queued;
+      }
+      return { queued: anyQueued };
+    })();
+    const settled = sent.then(async () => {
+      const maps = await Promise.all(settledPromises);
+      const combined = new Map<string, SuggestionOutcome>();
+      for (const map of maps) for (const [id, outcome] of map) combined.set(id, outcome);
+      return combined;
+    });
+    return { commandId: firstCommandId, sent, settled };
   }
 
   /** Accept every pending group in document order, with a checkpoint first (stale ones are skipped by the server and reported). */

@@ -168,4 +168,32 @@ describe("reviews", () => {
     assert.equal((await env.api("POST", `/v1/reviews/${second.id}/close`, env.owner)).status, 200, "closing twice is harmless");
     assert.equal((await env.api("POST", "/v1/reviews/rvw_missing/close", env.owner)).status, 404);
   });
+
+  test("range review changesSinceBase tracks edits incrementally across cached reads", async () => {
+    const client = await env.connect(env.editor);
+    const docId = await env.document(client, "Before.\nTarget sentence here.\nAfter.\n");
+    const start = at(client, docId, "Target sentence");
+    const scope = await anchor(client, docId, env.editor, start, start + "Target sentence here.".length);
+    const created = await create(docId, {
+      scope: { kind: "range", anchorId: scope.id, quote: "Target sentence here." },
+      assignees: [env.editor2.id],
+    });
+    assert.equal(created.status, 201);
+    assert.equal((await reviews(docId))[0].changesSinceBase, 0);
+
+    // Edits before and after the range do not increment changesSinceBase.
+    await edit(client, docId, 0, 6, "Header");
+    await edit(client, docId, at(client, docId, "After."), at(client, docId, "After.") + 6, "Footer.");
+    assert.equal((await reviews(docId))[0].changesSinceBase, 0);
+    // Repeated read hits the cache.
+    assert.equal((await reviews(docId))[0].changesSinceBase, 0);
+
+    // Edits inside increment once per content update that changes the scoped text.
+    await edit(client, docId, at(client, docId, "here"), at(client, docId, "here") + 4, "now");
+    assert.equal((await reviews(docId))[0].changesSinceBase, 1);
+    await edit(client, docId, 0, 0, "Prefix ");
+    assert.equal((await reviews(docId))[0].changesSinceBase, 1);
+    await edit(client, docId, at(client, docId, "now"), at(client, docId, "now") + 3, "later");
+    assert.equal((await reviews(docId))[0].changesSinceBase, 2);
+  });
 });
