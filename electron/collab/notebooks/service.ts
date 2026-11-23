@@ -828,7 +828,14 @@ export class NotebookServiceImpl implements NotebookService {
     if (now - since < this.markerRepairDelayMs) return false;
     const api = this.deps.host.api;
     if (!api || !this.markerAuthorityMatches(binding)) return false;
-    const project = await api.getProject(projectId).catch(() => null);
+    const lookup = await api.getProject(projectId).then((found) => ({ project: found, gone: false }), (error: unknown) => ({ project: null, gone: error instanceof ApiClientError && error.status === 404 }));
+    if (lookup.gone) {
+      // A confirmed 404 is final: the project was taken down (or this account
+      // removed) while this device was away. Network errors and 5xx change nothing.
+      if (!this.projects.has(projectId)) this.endMarkerlessProject(projectId, root, binding);
+      return false;
+    }
+    const project = lookup.project;
     if (!project || project.manifestDocId !== binding.manifestDocId) return false;
     // Root existence plus a missing marker is not evidence that this is still
     // the notebook: an unrelated directory may sit at the old path now.
@@ -846,6 +853,21 @@ export class NotebookServiceImpl implements NotebookService {
     this.markerMissingSince.delete(root);
     this.logger.warn(`Shared notebook ${path.basename(root)}: its sharing marker was missing and has been restored.`);
     return true;
+  }
+
+  /** Records the terminal outcome for a project the server no longer has and forgets its row (no runtime ever ran for it). */
+  private endMarkerlessProject(projectId: string, root: string, binding: SharedMarker): void {
+    const row = this.deps.host.store.getProject(projectId);
+    const outcome = row?.role === "owner" ? "local" : "revoked";
+    recordNotebookLifecycle(this.lifecycleDirectory, binding, outcome);
+    if (binding.folderId) {
+      const legacy: SharedMarker = { ...binding };
+      delete legacy.folderId;
+      recordNotebookLifecycle(this.lifecycleDirectory, legacy, outcome);
+    }
+    this.deps.host.store.deleteProject(projectId);
+    this.logger.warn(`Shared notebook ${path.basename(root)}: the server no longer has this project, so it ended here.`);
+    this.deps.emit({ t: "project-changed", projectId });
   }
 
   /** The folder's own bookkeeping names documents this host knows as belonging to the project (evidence it is the original directory). */
@@ -1122,11 +1144,6 @@ export class NotebookServiceImpl implements NotebookService {
     return this.deps.host.installationId;
   }
 
-  /** Whether this installation may rewrite or remove the marker: it is this project's, and no other installation keeps the folder. */
-  private ownsMarker(marker: SharedMarker, projectId: string): boolean {
-    return marker.projectId === projectId && (!marker.writer || marker.writer === this.installationId);
-  }
-
   private markerAuthorityMatches(marker: SharedMarker): boolean {
     if (this.deps.authority) return sameAuthority(marker, this.deps.authority);
     const host = this.deps.host;
@@ -1344,9 +1361,19 @@ export class NotebookServiceImpl implements NotebookService {
     const handle = this.projects.get(projectId);
     if (!handle || handle.revoked || handle.revoking) return;
     // Owners cannot be removed, so an owner losing access means the project
-    // was deleted; confirm that unless the server said so.
-    if (handle.role === "owner" && (deleted || (await this.projectGone(projectId)))) {
-      await this.removeLocally(handle);
+    // was deleted; confirm that unless the server said so. An owner is never
+    // treated as a removed member: while the server cannot be asked (or says
+    // the project exists) nothing changes, and the next lease check asks again.
+    if (handle.role === "owner") {
+      const state = deleted ? "gone" : await this.projectState(projectId);
+      if (state === "gone") await this.removeLocally(handle);
+      else if (state === "present") {
+        // The server still has the project, so a closed document was not a loss of access.
+        const { store } = this.deps.host;
+        for (const docId of store.projectDocIds(projectId)) {
+          if (store.getDocMeta(docId)?.readOnlyReason === "access-revoked") this.deps.host.clearReadOnly(docId);
+        }
+      }
       return;
     }
     if (handle.kind === "album") {
@@ -1365,6 +1392,8 @@ export class NotebookServiceImpl implements NotebookService {
         await runtime.stop({ preserveContent: true });
       }
       await this.rememberEnded(handle, "revoked");
+      // Documents closed or never opened on the socket stay read-only too, so a rejoin rolls their pending edits back.
+      this.deps.host.markProjectRevoked(projectId);
       // Revocation is terminal for this account on every copy. A follower must
       // not wait for an offline former writer to make its recovery copy deletable.
       const marker = await readMarker(handle.root).catch(() => null);
@@ -1508,7 +1537,8 @@ export class NotebookServiceImpl implements NotebookService {
   private async takeAlbumAway(handle: ProjectHandle): Promise<void> {
     const originalRoot = await statIfExists(handle.root);
     const runtime = handle.runtime;
-    const photos = runtime?.albumState().photos ?? [];
+    // Without a runtime (a role change is restarting it) the cached manifest and the folder's layout still say whose photos are whose.
+    const photos = runtime ? runtime.albumState().photos : await this.cachedAlbumPhotos(handle);
     await runtime?.stop();
     await this.rememberEnded(handle, "revoked");
     handle.runtime = null;
@@ -1517,11 +1547,13 @@ export class NotebookServiceImpl implements NotebookService {
     // converge whichever device gets there first. The marker check below
     // keeps a folder that another share or account now owns untouched.
     {
-      const accountId = this.cachedAccountId ?? (await this.accountId().catch(() => null));
       const marker = await readMarker(handle.root).catch(() => null);
-      // The writer, or a follower of this account (see above); the cleanup then
+      // Local state names the account first; a server that has just ended this account's access is not asked.
+      const accountId = this.deps.authority?.accountId ?? this.deps.host.accountId ?? marker?.accountId ?? this.cachedAccountId ?? (await this.accountId().catch(() => null));
+      if (!accountId) this.logger.warn(`Shared album ${handle.name}: the account could not be identified, so no photos were removed.`);
+      // Any installation of this account cleans up; the cleanup then
       // rechecks the folder and its sharing identity before every removal.
-      const ours = marker && (handle.writer ? this.ownsMarker(marker, handle.projectId) : this.markerAuthorityMatches(marker));
+      const ours = marker && this.markerAuthorityMatches(marker);
       if (marker && ours && originalRoot?.isDirectory() && !originalRoot.isSymbolicLink() && this.matchesMarker(handle, marker)) {
         await this.runAlbumCleanup({
           version: 1,
@@ -1532,7 +1564,7 @@ export class NotebookServiceImpl implements NotebookService {
           root: handle.root,
           rootId: { dev: originalRoot.dev, ino: originalRoot.ino, birthtimeMs: originalRoot.birthtimeMs },
           remove: [
-            ...photos.filter((photo) => !(accountId && photo.addedBy === accountId)).map((photo) => photo.name),
+            ...(accountId ? photos.filter((photo) => photo.addedBy !== accountId).map((photo) => photo.name) : []),
             ARCHIVE_DIRECTORY, ".libera", SHARE_PENDING_FILE, ".libera-share-uploaded.jsonl",
           ],
         });
@@ -1542,6 +1574,25 @@ export class NotebookServiceImpl implements NotebookService {
     this.projects.delete(handle.projectId);
     this.deps.emit({ t: "project-changed", projectId: handle.projectId });
     this.deps.statusChanged?.();
+  }
+
+  /** The album's photos for a project whose runtime is not running: the cached manifest's records and the folder's layout. A photo without a recorded owner is left out, never removed on a guess. */
+  private async cachedAlbumPhotos(handle: ProjectHandle): Promise<Array<{ name: string; addedBy: string }>> {
+    const state = await readState(handle.root).catch(() => null);
+    if (!state) return [];
+    const host = this.deps.host;
+    const hub = host.acquire(handle.manifestDocId);
+    try {
+      const records = hub.getDoc("manifest").getMap<unknown>(ManifestKeys.photos);
+      const photos: Array<{ name: string; addedBy: string }> = [];
+      for (const [fileId, layout] of Object.entries(state.layout)) {
+        const addedBy = (records.get(fileId) as Partial<AlbumPhotoRecord> | undefined)?.addedBy;
+        if (typeof addedBy === "string" && addedBy) photos.push({ name: layout.path, addedBy });
+      }
+      return photos;
+    } finally {
+      host.release(handle.manifestDocId);
+    }
   }
 
   private albumCleanupFile(projectId: string): string {
@@ -1558,7 +1609,7 @@ export class NotebookServiceImpl implements NotebookService {
     const file = this.albumCleanupFile(entry.projectId);
     const probe = { projectId: entry.projectId, manifestDocId: entry.manifestDocId, folderId: entry.folderId, root: entry.root } as ProjectHandle;
     const guard = this.cleanupGuard(entry.root, entry.rootId, (marker) =>
-      this.matchesMarker(probe, marker) && (entry.writer ? this.ownsMarker(marker, entry.projectId) : this.markerAuthorityMatches(marker)));
+      this.matchesMarker(probe, marker) && this.markerAuthorityMatches(marker));
     const rootGuard = this.cleanupGuard(entry.root, entry.rootId, () => true);
     const detach = async (name: string): Promise<string | null> => {
       await checkWriteGuard(guard);
@@ -1688,13 +1739,13 @@ export class NotebookServiceImpl implements NotebookService {
     return { original };
   }
 
-  /** Whether the server confirms the project no longer exists (false when it cannot be asked). */
-  private async projectGone(projectId: string): Promise<boolean> {
+  /** "gone" only for a confirmed 404; "unknown" when the server cannot be asked or fails. */
+  private async projectState(projectId: string): Promise<"present" | "gone" | "unknown"> {
     const api = this.deps.host.api;
-    if (!api) return false;
+    if (!api) return "unknown";
     return api.getProject(projectId).then(
-      () => false,
-      (error: unknown) => error instanceof ApiClientError && error.status === 404,
+      () => "present" as const,
+      (error: unknown) => (error instanceof ApiClientError && error.status === 404 ? "gone" as const : "unknown" as const),
     );
   }
 

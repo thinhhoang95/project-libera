@@ -660,11 +660,32 @@ export class CollabHost {
     this.store.setProjectRole(projectId, role);
   }
 
+  /**
+   * Access to the project ended: every document that is not a confirmed
+   * deletion is read-only, including those that were closed or never opened
+   * on the socket, so a later rejoin rolls their pending edits back.
+   */
+  markProjectRevoked(projectId: string): void {
+    for (const docId of this.store.projectDocIds(projectId)) {
+      const hub = this.registryInstance?.get(docId);
+      if (hub) {
+        hub.revokeAccess();
+        continue;
+      }
+      const reason = this.store.getDocMeta(docId)?.readOnlyReason;
+      if (reason !== "document-deleted" && reason !== "access-revoked") this.store.updateDocMeta(docId, { readOnlyReason: "access-revoked" });
+    }
+  }
+
   /** Rejoining is explicit authorization; stale unacknowledged edits stay in recovery. */
   restoreProjectAccess(projectId: string, role: Role): void {
     for (const docId of this.store.projectDocIds(projectId)) {
       const hub = this.acquire(docId);
-      try { hub.restoreAccess(role); }
+      try {
+        // A project revoked before documents were marked has none; rejoining must still roll pending edits back.
+        if (!this.store.getDocMeta(docId)?.readOnlyReason) hub.revokeAccess();
+        hub.restoreAccess(role);
+      }
       finally { this.release(docId); }
     }
     this.setProjectRole(projectId, role);

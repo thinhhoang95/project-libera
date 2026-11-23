@@ -1050,14 +1050,25 @@ export class DocHub implements CompactionTarget {
     }
   }
 
+  /** Local work stays in SQLite; nothing more is sent for this doc. */
+  private markAccessRevoked(): void {
+    this.store.updateDocMeta(this.docId, { readOnlyReason: "access-revoked" });
+    this.stopSyncing();
+    this.refreshMeta();
+  }
+
+  /** The project's access ended (told by the project, not by this document's own close). */
+  revokeAccess(): void {
+    if (this.closed || this.meta.readOnlyReason === "document-deleted" || this.meta.readOnlyReason === "access-revoked") return;
+    this.markAccessRevoked();
+    this.status.changed();
+  }
+
   handleClosed(message: ClosedMessage): void {
     switch (message.reason) {
       case "access-revoked":
       case "forbidden":
-        // Local work stays in SQLite; nothing more is sent for this doc.
-        this.store.updateDocMeta(this.docId, { readOnlyReason: "access-revoked" });
-        this.stopSyncing();
-        this.refreshMeta();
+        this.markAccessRevoked();
         break;
       case "document-deleted":
         this.markDeleted();
