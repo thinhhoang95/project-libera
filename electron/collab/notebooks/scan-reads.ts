@@ -112,6 +112,11 @@ export async function readShared(absolute: string, ms: number, observed: { size:
       if (after === SLOW_READ || !after || after.size !== observed.size || after.mtimeMs !== observed.mtimeMs) return SLOW_READ;
     }
     return bytes;
+  } catch {
+    // A read that failed (locked, denied, I/O error) says nothing about the
+    // file: uncertain, like one that did not finish. The caller records it as
+    // failed and goes on with the other files; it is read again later.
+    return SLOW_READ;
   } finally {
     clearTimeout(timer);
   }
@@ -136,7 +141,29 @@ export function quietWaitMs(entry: { mtimeMs: number; ctimeMs?: number }, now: n
   return Math.max(0, quietMs - (now - Math.max(modified, changed)));
 }
 
+/** What this host's own write left behind: any other stat of the file is somebody else's change. */
+export interface OwnWriteSignature {
+  /** The spelling the file was written under. */
+  relative: string;
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+  ino: number;
+  /** performance.now() when it was recorded. */
+  at: number;
+}
+
+/** How long a recorded own write may excuse a watcher event: the events of one write arrive within moments. */
+export const OWN_WRITE_TTL_MS = 30_000;
+
+/** Longest wait before a scan comes back for files that sit out scans after failed reads. */
+export const MAX_SKIPPED_RETRY_MS = 2 * 60_000;
+
 interface ScanReadState {
+  /** Scans in a row that came back only for files sitting out after failed reads (the wait doubles; any other scan resets it). */
+  skippedRetries: number;
+  /** This host's own recent writes, by manifest path key. */
+  ownWrites: Map<string, OwnWriteSignature>;
   /** Files refused for their size, so the warning is given once. */
   oversized: Set<string>;
   /** Walks in a row that could not finish. */
@@ -152,7 +179,7 @@ const states = new WeakMap<object, ScanReadState>();
 export function scanReadState(owner: object): ScanReadState {
   let state = states.get(owner);
   if (!state) {
-    state = { oversized: new Set(), incompleteWalks: 0, blockedUntil: 0, warnedTruncated: false };
+    state = { skippedRetries: 0, ownWrites: new Map(), oversized: new Set(), incompleteWalks: 0, blockedUntil: 0, warnedTruncated: false };
     states.set(owner, state);
   }
   return state;
