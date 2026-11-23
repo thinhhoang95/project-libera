@@ -92,7 +92,7 @@ test("service cleanup against the real host and server", { timeout: 180_000 }, a
     await t.test("STALE-5: album cleanup handles EXDEV, persists failures and retries them", async () => {
       const root = path.join(alice.library, "AlbumCleanup");
       writeTree(root, { "theirs.jpg": "x", "busy.jpg": "y", "mine.jpg": "z" });
-      const marker = { projectId: "prj_p07", serverUrl: "http://x", accountId: "acc", manifestDocId: "doc_man", sharedAt: new Date().toISOString(), kind: "album" as const, writer: "inst_alice_notebooks", folderId: "fld_p07" };
+      const marker = { projectId: "prj_p07", serverUrl: server.url, accountId: aliceAuth.account.id, manifestDocId: "doc_man", sharedAt: new Date().toISOString(), kind: "album" as const, writer: "inst_alice_notebooks", folderId: "fld_p07" };
       await writeMarker(root, marker);
       const stats = statSync(root);
       const service = alice.service as unknown as {

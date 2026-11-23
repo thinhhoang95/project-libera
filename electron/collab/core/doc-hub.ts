@@ -765,10 +765,12 @@ export class DocHub implements CompactionTarget {
   private armResync(): void {
     if (this.resyncTimer || this.closed) return;
     const delay = Math.min(30_000, 1000 * 2 ** Math.min(this.resyncAttempts, 5));
-    this.resyncAttempts += 1;
     this.resyncTimer = this.clock.setTimeout(() => {
       this.resyncTimer = null;
       if (this.closed || !this.resyncPending) return;
+      // Counted when a re-open is made, not when the timer is armed: an Opened that fails again
+      // re-arms the timer this one already re-armed, and must not double the wait twice (S55).
+      this.resyncAttempts += 1;
       this.reopenLink();
       if (this.link && this.canSync()) this.armResync();
     }, delay);

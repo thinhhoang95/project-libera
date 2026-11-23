@@ -80,7 +80,9 @@ test("S35: a follower that restarts after a move reads a move, on the writer too
 
     const renamed = await alice.router.call("POST", files, { op: "rename", path: "a.md", to: "c.md" });
     assert.equal(renamed.status, 200, JSON.stringify(renamed.body));
-    // The writer's own log has the move before its response (the wrapper reads it right after the commit).
+    // The writer's own log records the move once the server has it (M23: an edit the server may still
+    // roll back is not logged). The wrapper follows the move from the response until then.
+    await until(() => alice.host.store.transitionsAfter(projectId).length === 1, "the writer's log once the server has the move");
     assert.deepEqual(alice.host.store.transitionsAfter(projectId).map((row) => [row.from, row.to]), [["a.md", "c.md"]]);
     await until(() => bob.host.store.transitionsAfter(projectId).length === 1, "the follower's log");
     const fileId = alice.host.store.transitionsAfter(projectId)[0].fileId;

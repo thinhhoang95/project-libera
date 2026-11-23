@@ -100,9 +100,12 @@ test("an ambiguous legacy database stays preserved after a later remembered sign
     store.close();
     const scoped = await databasePath(temp.dir, account, null, quiet);
     assert.notEqual(scoped, legacy);
+    // This sign-in opens its own database, as the runtime does.
+    new HostStore({ path: scoped }).close();
     assert.equal(await databasePath(temp.dir, account, account, quiet), scoped);
     const preserved = new HostStore({ path: legacy });
-    assert.equal(preserved.databaseAuthority(), null);
+    // Left unpinned (H16): pinning it to nobody would send its real owner to an empty database for good.
+    assert.equal(preserved.databaseAuthority(), undefined);
     assert.equal(preserved.unbatchedUpdates("doc_unknown").length, 1);
     preserved.close();
   } finally { temp.cleanup(); }
