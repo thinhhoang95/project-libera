@@ -789,7 +789,8 @@ export class SharedProject {
       const marker = await readMarker(this.info.root).catch(() => null);
       if (marker && marker.projectId !== this.info.projectId) {
         this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: its folder now belongs to another share, so nothing was exported into it before the takedown.`);
-        return { sequence, recovery: { threads: 0, messages: 0, suggestions: 0, reviews: 0 } };
+        // Nothing was exported: the server keeps a project that still has comments unless the owner accepts that.
+        return { sequence, recovery: { threads: 0, messages: 0, suggestions: 0, reviews: 0, ...(options.acceptIncompleteExport === true ? { incomplete: true } : {}) } };
       }
       const needsRoot = [...entries.values()].some((entry) => entry.kind === "blob");
       const current = async () => !this.stopped && hub.getStatus().connected && hub.pendingCount === 0 &&
