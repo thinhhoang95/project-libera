@@ -84,7 +84,7 @@ import { ScanFairness } from "./scan-fairness";
 import { PdfCommentService } from "./pdf-comments";
 import { AUDIO_EXTENSIONS, MARKDOWN_EXTENSIONS } from "../../../src/lib/storage/constants";
 import { pythonSidecarPath } from "../../../src/lib/python/sidecar";
-import { PdfMarksRuntime } from "./pdf-marks";
+import { PdfMarksRuntime, pdfDocId } from "./pdf-marks";
 import { PDF_LIVE_SETTING } from "../../../src/lib/collab/protocol/pdf";
 import { emptyState, isStaleCopy, isUncertainCopy, readBase, readMarker, readState, setMaterialized, writeBase, writeMarker, writeState, deleteBase, type LayoutRecord, type ProjectState } from "./state";
 import { diffText } from "./text-diff";
@@ -485,7 +485,7 @@ export class SharedProject {
       commentsChanged: (docId) => ctx.emit({ t: "pdf-comments-changed", docId }),
       filesChanged: (paths) => this.filesChanged(paths),
       manifest: () => (this.manifestHub && !this.manifestHub.isClosed ? this.manifestHub.getDoc("manifest") : null),
-      listComments: (docId) => this.pdfComments().list(docId),
+      listComments: (docId, options) => this.pdfComments().list(docId, options),
     });
   }
 
@@ -677,6 +677,56 @@ export class SharedProject {
     this.manifestHub = null;
   }
 
+  /** Writes a document's current text as its file; the file's other content is archived first. */
+  private async writeLatestText(runtime: DocRuntime, record: LayoutRecord, guard: WriteGuard): Promise<void> {
+    const text = runtime.hub.getText("content");
+    const bytes = encodeText(text);
+    const target = await resolveInside(this.info.root, record.path);
+    const disk = await readWithin(target, HYDRATION_WAIT_MS);
+    // Stopping must not wait on a stalled provider: keep the text in the archive instead.
+    if (disk === SLOW_READ) throw new WriteCancelledError();
+    let expected = disk === null ? null : sha256(disk);
+    if (disk && sha256(disk) !== sha256(bytes) && sha256(disk) !== record.hash &&
+        decodeText(disk) !== await readBase(this.info.root, runtime.docId)) {
+      await this.archive(record.path, contentGuard(target, expected, guard));
+      expected = null;
+    }
+    const stats = await writeFileAtomic(target, bytes, contentGuard(target, expected, guard));
+    this.noteOwnWrite(target, stats);
+    setMaterialized(record, sha256(bytes), stats.size, stats.mtimeMs);
+    await writeBase(this.info.root, runtime.docId, text, guard);
+  }
+
+  /**
+   * A takedown's text export: the latest text of every document the fence lists, at the path the manifest as the
+   * fence froze it gives, which can be newer than this device's layout. Unlike preserveLatestText, a document
+   * that is not ready or cannot be written stops the takedown: the server copy is deleted next.
+   */
+  private async preserveLatestTextStrict(entries: ReadonlyMap<string, ManifestEntry>, paths: ReadonlyMap<string, string>, fenced: ReadonlySet<string>): Promise<void> {
+    const guard = this.diskGuard(true);
+    for (const [fileId, entry] of entries) {
+      if (entry.kind !== "doc" || !entry.docId || !fenced.has(entry.docId)) continue;
+      const relative = paths.get(fileId);
+      const label = relative ?? entry.path;
+      const runtime = this.docs.get(entry.docId);
+      if (!relative || !runtime || !this.docReady(runtime)) throw new ControlError(503, "offline", `Could not preserve ${label}. The shared project was kept; retry taking it down.`);
+      const known = this.state.layout[fileId];
+      const record: LayoutRecord = known?.docId === entry.docId && known.path === relative
+        ? known
+        : { path: relative, kind: "doc", docId: entry.docId, ...(entry.docKind ? { docKind: entry.docKind } : {}) };
+      try {
+        if (!(await guard.canCommit())) throw new WriteCancelledError();
+        await this.writeLatestText(runtime, record, guard);
+      } catch (error) {
+        if (error instanceof ControlError) throw error;
+        if (error instanceof WriteCancelledError) throw new ControlError(503, "offline", `${label} could not be saved right now (its folder is still downloading or changed). The shared project was kept; retry taking it down.`);
+        if (error instanceof PathRefusedError) throw new ControlError(409, "conflict", `${label} could not be saved safely in this notebook. The shared project was kept.`);
+        if (isNotFound(error)) throw new ControlError(503, "offline", `${label} could not be saved because its folder is unavailable. The shared project was kept; retry taking it down.`);
+        throw error;
+      }
+    }
+  }
+
   /** A terminal lifecycle transition must keep text newer than the disk debounce. */
   private async preserveLatestText(): Promise<void> {
     const guard = this.diskGuard(true);
@@ -685,22 +735,7 @@ export class SharedProject {
         if (!record.docId || !(await guard.canCommit())) continue;
         const runtime = this.docs.get(record.docId);
         if (!runtime || !this.docReady(runtime)) continue;
-        const text = runtime.hub.getText("content");
-        const bytes = encodeText(text);
-        const target = await resolveInside(this.info.root, record.path);
-        const disk = await readWithin(target, HYDRATION_WAIT_MS);
-        // Stopping must not wait on a stalled provider: keep the text in the archive instead.
-        if (disk === SLOW_READ) throw new WriteCancelledError();
-        let expected = disk === null ? null : sha256(disk);
-        if (disk && sha256(disk) !== sha256(bytes) && sha256(disk) !== record.hash &&
-            decodeText(disk) !== await readBase(this.info.root, record.docId)) {
-          await this.archive(record.path, contentGuard(target, expected, guard));
-          expected = null;
-        }
-        const stats = await writeFileAtomic(target, bytes, contentGuard(target, expected, guard));
-        this.noteOwnWrite(target, stats);
-        setMaterialized(record, sha256(bytes), stats.size, stats.mtimeMs);
-        await writeBase(this.info.root, record.docId, text, guard);
+        await this.writeLatestText(runtime, record, guard);
       } catch (error) {
         // A local symlink or a disappearing/replaced root must not block
         // revocation, nor turn preservation into a write outside this copy.
@@ -735,11 +770,10 @@ export class SharedProject {
         throw new ControlError(503, "offline", "Connect and sync this notebook before taking it down.");
       }
       const fence = await beginFence();
-      await this.catchUpWithFence(fence);
+      // Every later step works from the manifest as the fence froze it, not from this device's older layout.
+      const { entries, layout } = await this.catchUpWithFence(fence);
       if (hub.pendingCount > 0) throw new ControlError(503, "offline", "Connect and sync this notebook before taking it down.");
       const sequence = this.ctx.host.store.getDocMeta(this.info.manifestDocId)?.lastSeenServerSeq ?? 0;
-      const entries = this.readEntries();
-      const layout = computeLayout(entries.values());
       const needsRoot = [...entries.values()].some((entry) => entry.kind === "blob");
       const current = async () => !this.stopped && hub.getStatus().connected && hub.pendingCount === 0 &&
         this.ctx.host.store.getDocMeta(this.info.manifestDocId)?.lastSeenServerSeq === sequence && (!needsRoot || await this.rootAvailable());
@@ -764,7 +798,7 @@ export class SharedProject {
       }
       // The fence froze text, PDF marks and comments too: write the final text and the
       // PDF sidecars now, while the server can still answer, not after it is deleted.
-      await this.preserveLatestText();
+      await this.preserveLatestTextStrict(entries, layout.paths, new Set(fence.docs.map((doc) => doc.docId)));
       try { await this.pdfs.exportLocal(); }
       catch (error) {
         this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: could not export the PDF notes`, error);
@@ -788,7 +822,7 @@ export class SharedProject {
         throw new ControlError(503, "offline", "Could not make the exported files durable. The shared project was kept.");
       }
       // The comment stores only the server holds (threads, suggestions, reviews, PDF comments): one pass, after the fence.
-      const recovery = await this.exportCommentStores(fence, layout.paths, guard, options.acceptIncompleteExport === true);
+      const recovery = await this.exportCommentStores(fence, entries, layout.paths, guard, options.acceptIncompleteExport === true);
       if (!await current()) throw new ControlError(409, "conflict", "The notebook changed during its local export. Retry taking it down.");
       return { sequence, recovery };
     });
@@ -801,13 +835,14 @@ export class SharedProject {
    * accepted an incomplete export, which is then recorded in the file and reported to the server.
    * One bounded pass: nothing is retried here.
    */
-  private async exportCommentStores(fence: ProjectClosingResponse, paths: ReadonlyMap<string, string>, guard: WriteGuard, acceptIncomplete: boolean): Promise<TakedownRecovery> {
+  private async exportCommentStores(fence: ProjectClosingResponse, entries: ReadonlyMap<string, ManifestEntry>, paths: ReadonlyMap<string, string>, guard: WriteGuard, acceptIncomplete: boolean): Promise<TakedownRecovery> {
     const api = this.ctx.host.api;
     if (!api) throw new ControlError(503, "offline", "Connect and sync this notebook before taking it down.");
     const pathOfDoc = new Map<string, string>();
     for (const [fileId, relative] of paths) {
-      const record = this.state.layout[fileId];
-      if (record?.docId) pathOfDoc.set(record.docId, relative);
+      const entry = entries.get(fileId);
+      if (entry?.docId) pathOfDoc.set(entry.docId, relative);
+      else if (entry?.kind === "blob") pathOfDoc.set(pdfDocId(this.info.projectId, fileId), relative);
     }
     const recovery: TakedownRecovery = { threads: 0, messages: 0, suggestions: 0, reviews: 0 };
     const documents: Array<Record<string, unknown>> = [];
@@ -842,20 +877,39 @@ export class SharedProject {
     return recovery;
   }
 
-  /** Waits until every document this device holds open has the updates the takedown fence froze on the server. */
-  private async catchUpWithFence(fence: ProjectClosingResponse): Promise<void> {
+  /**
+   * Waits until this device holds the manifest, every text document and every PDF document the takedown fence froze,
+   * at the sequence the fence reports, and returns the manifest as of the fence. A document this device never opened
+   * (added or renamed just before the fence, its hub not ready, or a PDF nobody opened here) is opened now: one
+   * bounded wait on the takedown deadline, no loop beyond it.
+   */
+  private async catchUpWithFence(fence: ProjectClosingResponse): Promise<{ entries: Map<string, ManifestEntry>; layout: ReturnType<typeof computeLayout> }> {
     const finalSeq = new Map(fence.docs.map((doc) => [doc.docId, doc.serverSeq]));
-    const held = [
-      this.info.manifestDocId,
-      ...[...this.docs.values()].filter((doc) => this.docReady(doc)).map((doc) => doc.docId),
-      ...this.pdfs.openDocIds(),
-    ];
-    const behind = () => held.filter((docId) => (this.ctx.host.store.getDocMeta(docId)?.lastSeenServerSeq ?? 0) < (finalSeq.get(docId) ?? 0));
+    const behind = (docIds: string[]) => docIds.filter((docId) => (this.ctx.host.store.getDocMeta(docId)?.lastSeenServerSeq ?? 0) < (finalSeq.get(docId) ?? 0));
     const deadline = Date.now() + HYDRATION_WAIT_MS;
-    while (behind().length > 0) {
-      if (this.stopped || Date.now() > deadline) throw new ControlError(503, "offline", "This notebook is still receiving its latest changes. The shared project was kept; retry taking it down.");
-      await new Promise((resolve) => setTimeout(resolve, 25));
+    const until = async (settled: () => boolean) => {
+      while (!settled()) {
+        if (this.stopped || Date.now() > deadline) throw new ControlError(503, "offline", "This notebook is still receiving its latest changes. The shared project was kept; retry taking it down.");
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    };
+    await until(() => behind([this.info.manifestDocId]).length === 0);
+    const entries = this.readEntries();
+    const layout = computeLayout(entries.values());
+    // Text documents the manifest lists and the fence froze.
+    const texts: string[] = [];
+    for (const [fileId, entry] of entries) {
+      if (entry.kind !== "doc" || !entry.docId || !finalSeq.has(entry.docId)) continue;
+      this.ensureDoc(entry.docId, fileId);
+      texts.push(entry.docId);
     }
+    const pdfIds = fence.docs.filter((doc) => doc.kind === "pdf").map((doc) => doc.docId);
+    const unmatched = pdfIds.length ? this.pdfs.openForExport(entries.values(), layout.paths, pdfIds) : [];
+    const pdfs = pdfIds.filter((docId) => !unmatched.includes(docId));
+    await until(() => behind([...texts, ...pdfs]).length === 0 &&
+      texts.every((docId) => { const runtime = this.docs.get(docId); return !!runtime && this.docReady(runtime); }) &&
+      this.pdfs.notReady(pdfs).length === 0);
+    return { entries, layout };
   }
 
   /** Resolves once the queue is empty and no write, scan or manifest pass is pending. */

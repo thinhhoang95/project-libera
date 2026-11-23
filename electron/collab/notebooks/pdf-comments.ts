@@ -156,7 +156,7 @@ export class PdfCommentService {
    * The PDF's threads. The cache answers when the server cannot, so a person
    * offline keeps seeing what they saw, plus their own queued comments.
    */
-  async list(docId: string): Promise<PdfCommentThread[]> {
+  async list(docId: string, options: { strict?: boolean } = {}): Promise<PdfCommentThread[]> {
     let threads: Thread[];
     try {
       const api = this.host.api;
@@ -171,6 +171,8 @@ export class PdfCommentService {
       // Only threads that changed are written: this runs on every sidecar copy.
       for (const thread of threads) if (cached.get(thread.id) !== JSON.stringify(thread)) this.host.store.putThread(thread.id, docId, thread);
     } catch (error) {
+      // A takedown export needs the server's answer: the cache is what this device last saw, not what the server holds.
+      if (options.strict) throw error;
       if (error instanceof ApiClientError && !error.transient && error.code !== "network" && error.code !== "needs-sign-in" && error.status !== 404) throw error;
       threads = this.host.store.listThreads(docId).map((row) => row.json as Thread);
     }

@@ -73,7 +73,7 @@ export interface PdfRuntimeContext {
   /** Reads the notebook's manifest document. */
   manifest(): Y.Doc | null;
   /** The server's comment threads, for the sidecar copy. */
-  listComments?(docId: string): Promise<unknown[] | null>;
+  listComments?(docId: string, options?: { strict?: boolean }): Promise<unknown[] | null>;
 }
 
 interface Sidecar {
@@ -108,6 +108,8 @@ interface PdfDoc {
   /** The import under way saw the file move or change: it is discarded and starts again from the new tuple. */
   importAgain?: boolean;
   writes: Promise<void>;
+  /** Set by the first close(): a second one (a rename sync, then stop) waits for it instead of releasing the hub again. */
+  closing?: Promise<void>;
   /** The delayed copy has started but not ended: quitting then cancels it, so the last copy is written again. */
   writing?: boolean;
   /** How many comment anchors were here, to notice one arriving. */
@@ -210,10 +212,18 @@ export class PdfMarksRuntime {
         void this.close(doc, true);
         continue;
       }
+      if (entry.path !== doc.path) {
+        // The sidecar to read and write is the new path's: forget what was seen at the old one, so the import
+        // below starts over there (and schedules the copy even when the new path has no sidecar yet).
+        doc.path = entry.path;
+        doc.observedHash = null;
+        doc.imported = false;
+        doc.sidecarStat = undefined;
+        doc.sidecarReadAt = undefined;
+        doc.foreignSource = undefined;
+        this.ctx.host.store.upsertDoc({ docId: doc.docId, projectId: this.ctx.projectId, fileId: doc.fileId, path: doc.path, materializedHash: null });
+      }
       void this.importSidecar(doc);
-      if (entry.path === doc.path) continue;
-      doc.path = entry.path;
-      this.ctx.host.store.upsertDoc({ docId: doc.docId, projectId: this.ctx.projectId, fileId: doc.fileId, path: doc.path, materializedHash: null });
     }
     if (!this.markerRecorded && this.ctx.canWriteDisk()) {
       this.markerRecorded = true;
@@ -512,7 +522,17 @@ export class PdfMarksRuntime {
     }
     const observed = await readIfExists(target);
     const expected = observed ? sha256(observed) : null;
-    const existing = observed ? JSON.parse(observed.toString("utf8")) as Sidecar : null;
+    let existing: Sidecar | null = null;
+    if (observed) {
+      try { existing = JSON.parse(observed.toString("utf8")) as Sidecar; }
+      catch {
+        // A damaged sidecar is kept aside, then replaced by this copy; it never stops a terminal export.
+        if (!await this.keepRejected(doc, observed.toString("utf8"), options.local === true || options.final === true)) {
+          if (options.strict) throw new Error(`The notes sidecar of ${doc.path} is damaged and could not be set aside.`);
+          return;
+        }
+      }
+    }
     if (!options.local && (!doc.imported || doc.importing || expected !== doc.observedHash)) return;
     const annotations: unknown[] = visibleMarks(readAllMarks(doc.hub.getDoc("annotations")));
     // Records this version cannot read stay, as the sidecar writer keeps them.
@@ -570,7 +590,7 @@ export class PdfMarksRuntime {
       // A takedown deletes the only server copy of these comments: an answer that failed or came late fails the export.
       if (!this.ctx.listComments) throw new Error(`The comments on ${doc.path} could not be read.`);
       const list = async (docId: string) => {
-        const answer = await this.ctx.listComments!(docId);
+        const answer = await this.ctx.listComments!(docId, { strict: true });
         if (answer === null) throw new Error(`The comments on ${doc.path} could not be read.`);
         return answer;
       };
@@ -601,7 +621,13 @@ export class PdfMarksRuntime {
     }
   }
 
-  private async close(doc: PdfDoc, finalWrite: boolean, options: CopyOptions = {}): Promise<void> {
+  private close(doc: PdfDoc, finalWrite: boolean, options: CopyOptions = {}): Promise<void> {
+    // Marked before the first await: one release per acquire, however many callers close it.
+    doc.closing ??= this.closeOnce(doc, finalWrite, options);
+    return doc.closing;
+  }
+
+  private async closeOnce(doc: PdfDoc, finalWrite: boolean, options: CopyOptions): Promise<void> {
     if (doc.timer) clearTimeout(doc.timer);
     doc.timer = null;
     if (finalWrite) await this.writeCopy(doc, options).catch(() => undefined);
@@ -628,6 +654,28 @@ export class PdfMarksRuntime {
   /** The PDF documents open now: a takedown waits until each has every update the server holds. */
   openDocIds(): string[] {
     return [...this.docs.values()].map((doc) => doc.docId);
+  }
+
+  /**
+   * Takedown: brings the runtime to the manifest as the fence froze it and opens the documents of the PDFs the
+   * fence lists, whether or not this device had them open. Returns the ids with no PDF in the manifest (a
+   * deleted file: nothing local to write marks to).
+   */
+  openForExport(entries: Iterable<ManifestEntry>, paths: ReadonlyMap<string, string>, docIds: string[]): string[] {
+    if (this.stopped) throw new Error("The PDF notes are stopped.");
+    this.sync(entries, paths);
+    const unmatched: string[] = [];
+    for (const docId of docIds) {
+      const fileId = [...this.entries.keys()].find((id) => pdfDocId(this.ctx.projectId, id) === docId);
+      if (fileId) this.open(fileId); else unmatched.push(docId);
+    }
+    return unmatched;
+  }
+
+  /** Whether each of these documents is open and has the server's state (a takedown waits for the others). */
+  notReady(docIds: string[]): string[] {
+    const open = new Map([...this.docs.values()].map((doc) => [doc.docId, doc]));
+    return docIds.filter((docId) => { const doc = open.get(docId); return !doc || doc.hub.isClosed || !this.hasServerState(doc); });
   }
 
   /**
