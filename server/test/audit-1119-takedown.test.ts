@@ -111,6 +111,8 @@ describe("audit 1119: lock order", () => {
   test("guarded takedown locks documents (the manifest included) before memberships", async () => {
     const other = await startSyncEnv();
     try {
+      // A delete that carries an export sequence belongs to a fenced takedown (C5).
+      assert.equal((await json(other.server.url, `/v1/projects/${other.project.id}/closing`, { method: "POST", token: other.owner.token, body: {} })).status, 200);
       const statements = await recordSql(async () => {
         const response = await json(other.server.url, `/v1/projects/${other.project.id}`, { method: "DELETE", token: other.owner.token, body: { expectedManifestSeq: 0 } });
         assert.equal(response.status, 204);

@@ -41,6 +41,8 @@ test("R15: server deletion rejects an export from an older manifest sequence", a
     await client.open(env.project.manifestDocId);
     const ack = await client.acked(client.edit(env.project.manifestDocId, "manifest", (doc) => doc.getMap(ManifestKeys.files).set("fil_export", { kind: "folder", path: "new-folder" })));
     const route = `/v1/projects/${env.project.id}`;
+    // A delete that carries an export sequence belongs to a fenced takedown (C5).
+    assert.equal((await json(env.server.url, `${route}/closing`, { method: "POST", token: env.owner.token, body: {} })).status, 200);
     const stale = await json(env.server.url, route, { method: "DELETE", token: env.owner.token, body: { expectedManifestSeq: 0 } });
     assert.equal(stale.status, 409);
     assert.equal((await json(env.server.url, route, { token: env.owner.token })).status, 200);
