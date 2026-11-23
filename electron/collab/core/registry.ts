@@ -18,6 +18,11 @@ export interface DocHubRegistryOptions {
   create: (docId: string, options: AcquireOptions) => DocHub;
   /** Delay before an unreferenced hub closes. */
   idleMs?: number;
+  /**
+   * Whether a hub with unacknowledged work is kept open past its idle delay
+   * (true while a sync connection exists to deliver it); default true.
+   */
+  holdUnacked?: () => boolean;
   clock?: Clock;
   logger?: Logger;
 }
@@ -27,18 +32,22 @@ interface Entry {
   refs: number;
   idleTimer: TimerHandle | null;
   closing: Promise<void> | null;
+  /** Unsubscribes the wait for unacknowledged work to drain before an idle close. */
+  drainWatch: (() => void) | null;
 }
 
 export class DocHubRegistry {
   private readonly entries = new Map<string, Entry>();
   private readonly create: DocHubRegistryOptions["create"];
   private readonly idleMs: number;
+  private readonly holdUnacked: () => boolean;
   private readonly clock: Clock;
   private stopped = false;
 
   constructor(options: DocHubRegistryOptions) {
     this.create = options.create;
     this.idleMs = options.idleMs ?? 30_000;
+    this.holdUnacked = options.holdUnacked ?? (() => true);
     this.clock = options.clock ?? systemClock;
   }
 
@@ -52,7 +61,7 @@ export class DocHubRegistry {
     }
     if (!entry) {
       const hub = this.create(docId, options);
-      entry = { hub, refs: 0, idleTimer: null, closing: null };
+      entry = { hub, refs: 0, idleTimer: null, closing: null, drainWatch: null };
       this.entries.set(docId, entry);
       const created = entry;
       hub.onClose(() => {
@@ -60,6 +69,7 @@ export class DocHubRegistry {
       });
     }
     entry.refs += 1;
+    this.stopDrainWatch(entry);
     if (entry.idleTimer) {
       this.clock.clearTimeout(entry.idleTimer);
       entry.idleTimer = null;
@@ -89,8 +99,34 @@ export class DocHubRegistry {
     }
     // Someone may have acquired the hub while snapshots were flushing.
     if (entry.refs > 0 || this.entries.get(docId) !== entry) return;
+    // Local work the server has not acknowledged keeps the hub open (it holds the
+    // replay state); closing is retried once the hub reports it drained.
+    if (this.hasUnackedWork(entry.hub)) {
+      this.watchDrain(docId, entry);
+      return;
+    }
     this.entries.delete(docId);
     entry.hub.close();
+  }
+
+  private hasUnackedWork(hub: DocHub): boolean {
+    // Only work that can still drain holds a hub open: a read-only or revoked doc, or one blocked by an
+    // update that cannot be cut, would otherwise keep it open without bound.
+    return !hub.isClosed && hub.pendingCount > 0 && !hub.readOnlyReason && hub.canSync() && !hub.syncBlockedDetail && this.holdUnacked();
+  }
+
+  private watchDrain(docId: string, entry: Entry): void {
+    if (entry.drainWatch) return;
+    entry.drainWatch = entry.hub.onStatus(() => {
+      if (entry.refs > 0 || this.hasUnackedWork(entry.hub)) return;
+      this.stopDrainWatch(entry);
+      void this.closeIfIdle(docId, entry);
+    });
+  }
+
+  private stopDrainWatch(entry: Entry): void {
+    entry.drainWatch?.();
+    entry.drainWatch = null;
   }
 
   get(docId: string): DocHub | null {
@@ -110,7 +146,10 @@ export class DocHubRegistry {
   async closeAll(reason = "host-stopped"): Promise<void> {
     this.stopped = true;
     const entries = [...this.entries.values()];
-    for (const entry of entries) if (entry.idleTimer) this.clock.clearTimeout(entry.idleTimer);
+    for (const entry of entries) {
+      if (entry.idleTimer) this.clock.clearTimeout(entry.idleTimer);
+      this.stopDrainWatch(entry);
+    }
     await Promise.all(entries.map((entry) => entry.hub.prepareClose()));
     for (const entry of entries) entry.hub.close(reason);
     this.entries.clear();

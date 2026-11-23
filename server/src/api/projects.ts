@@ -245,6 +245,12 @@ export function registerProjectRoutes(app: FastifyInstance, context: ServerConte
       if (fence?.closing_at && !closingFenceActive(fence.closing_at)) {
         throw new HttpError("conflict", "Changes were paused for this takedown too long, so the pause ended. Take the notebook down again.");
       }
+      // A delete that carries export evidence belongs to a takedown: without a fence (another owner device
+      // lifted it) text and comments written after that export would be deleted with no recovery check.
+      const fenced = Boolean(fence?.closing_at);
+      if (!fenced && (body.recovery !== undefined || body.expectedManifestSeq !== undefined)) {
+        throw new HttpError("conflict", "Changes are no longer paused for this takedown, so its export may be out of date. Take the notebook down again.");
+      }
       if (body.expectedManifestSeq !== undefined) {
         const manifest = docs.find((doc) => doc.kind === "manifest");
         if (!manifest || manifest.last_server_seq !== body.expectedManifestSeq) {

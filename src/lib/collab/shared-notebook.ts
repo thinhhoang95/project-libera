@@ -19,7 +19,7 @@ import path from "node:path";
 import { ARCHIVE_DIR } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
 import { getAdminRoot, getLinkedFolder } from "@/lib/storage/paths";
-import { MAX_MARKER_BYTES, parseNotebookMarker, readNotebookBinding, readNotebookLifecycle, sameNotebookIdentity } from "./local-notebook-state";
+import { MAX_MARKER_BYTES, compatibleNotebookIdentity, parseNotebookMarker, readNotebookBinding, readNotebookLifecycle } from "./local-notebook-state";
 
 /** Marker the collab host writes in a shared notebook's root (electron/collab/notebooks). */
 export const SHARED_MARKER_FILE = ".libera-shared.json";
@@ -86,7 +86,7 @@ function effectiveMarker(root: string, marker: SharedNotebookMarker | null): Sha
   const directory = process.env.LIBERA_COLLAB_LIFECYCLE_DIR;
   const binding = readNotebookBinding(directory, root);
   if (binding && readNotebookLifecycle(directory, binding) === null &&
-      (!marker?.projectId || !sameNotebookIdentity(binding, marker))) return UNREADABLE;
+      (!marker?.projectId || !compatibleNotebookIdentity(binding, marker))) return UNREADABLE;
   if (!marker?.projectId) return marker;
   const outcome = readNotebookLifecycle(directory, marker);
   if (outcome === "local") return null;
@@ -95,6 +95,8 @@ function effectiveMarker(root: string, marker: SharedNotebookMarker | null): Sha
 
 /** The marker of a top-level notebook, or null when it is not shared. Linked folders are never shared. */
 export function sharedNotebookMarker(notebook: string): SharedNotebookMarker | null {
+  // The same trailing-whitespace trim as assertSafeSegment, so "Shared " is the notebook "Shared".
+  if (typeof notebook === "string") notebook = notebook.trimEnd();
   if (!notebook || notebook.startsWith(".") || /[\\/\0]/.test(notebook) || notebook === "..") return null;
   if (getLinkedFolder(notebook)) return null;
   const root = path.join(getAdminRoot(), notebook);
@@ -117,7 +119,8 @@ export function sharedNotebookMarker(notebook: string): SharedNotebookMarker | n
 }
 
 function splitLiberaPath(liberaPath: string): string[] {
-  return liberaPath.replace(/\\/g, "/").split("/").filter((segment) => segment && segment !== ".");
+  // Trailing whitespace is trimmed as assertSafeSegment does: "Notebook /note.md" resolves to the notebook "Notebook".
+  return liberaPath.replace(/\\/g, "/").split("/").map((segment) => segment.trimEnd()).filter((segment) => segment && segment !== ".");
 }
 
 /**

@@ -404,6 +404,17 @@ function processAlive(pid: number): boolean {
  * are reused (Windows hands a dead host's pid to any new process), so a live
  * pid alone does not prove the lock is held.
  */
+const LOCK_RECHECK_MS = 25;
+
+/** Blocks for a few milliseconds; only used on the rare path of a lock file that looks missing. */
+function pauseBriefly(ms: number): void {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    // Not allowed on this thread: the immediate re-check is all there is.
+  }
+}
+
 class OwnerLock {
   private readonly token = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
   private held = false;
@@ -493,6 +504,10 @@ class OwnerLock {
    * owner's lock was swept up: put it back.
    */
   private removeStale(judgedToken: string | null): void {
+    // Re-check right before taking it: another contender may have replaced the lock since it was judged.
+    // (The rename below stays atomic; this only avoids touching a live lock at all.)
+    const current = this.readOwner();
+    if (current && current.token !== judgedToken) return;
     const taken = `${this.path}.stale.${process.pid}.${Math.random().toString(36).slice(2)}`;
     try {
       renameSync(this.path, taken);
@@ -507,17 +522,34 @@ class OwnerLock {
     } catch {
       tokenTaken = null;
     }
-    if (tokenTaken !== judgedToken) {
-      try {
-        linkSync(taken, this.path);
-      } catch {
-        // Someone published meanwhile: that lock wins, and ours was a stale race loser.
-      }
-    }
+    if (tokenTaken !== judgedToken && !this.putBack(taken)) return;
     try {
       unlinkSync(taken);
     } catch {
       // Already gone.
+    }
+  }
+
+  /**
+   * Returns a swept-up live lock to its place. False means it was renamed
+   * back or could not be restored and must be left alone, never deleted: a
+   * live owner's lock is not ours to destroy.
+   */
+  private putBack(taken: string): boolean {
+    try {
+      linkSync(taken, this.path);
+      return true;
+    } catch (error) {
+      // Someone published meanwhile: that lock wins, and ours was a stale race loser.
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") return true;
+    }
+    // No hard links here: rename it back, unless a new lock appeared in the meantime.
+    try {
+      if (existsSync(this.path)) return true;
+      renameSync(taken, this.path);
+      return false;
+    } catch {
+      return false;
     }
   }
 
@@ -548,9 +580,16 @@ class OwnerLock {
     try {
       // Only our own lock: one taken over after a long stall is someone else's now,
       // and then this owner must stop writing, not carry on beside the new one.
-      const owner = this.readOwner();
+      let owner = this.readOwner();
       if (owner && owner.token !== this.token) return this.markLost();
-      if (!owner && !existsSync(this.path)) return this.markLost();
+      if (!owner && !existsSync(this.path)) {
+        // A contender may be holding the file for a moment (a stale sweep renames it away and back):
+        // look once more before concluding it is gone.
+        pauseBriefly(LOCK_RECHECK_MS);
+        owner = this.readOwner();
+        if (owner && owner.token !== this.token) return this.markLost();
+        if (!owner && !existsSync(this.path)) return this.markLost();
+      }
       if (!owner) return;
       const now = new Date();
       utimesSync(this.path, now, now);
@@ -627,14 +666,20 @@ export class HostStore {
     if (this.lock) this.lock.onLost = () => this.fence();
     this.onLockLost = options.onLockLost ?? null;
     this.lock?.acquire();
+    let opened: DatabaseSync | null = null;
     try {
-      this.db = openDatabase(options.path);
+      this.db = opened = openDatabase(options.path);
       this.db.exec(`PRAGMA busy_timeout = ${Math.max(0, Math.floor(options.busyTimeoutMs ?? 5000))}`);
       if (!memory) this.db.exec("PRAGMA journal_mode = WAL");
       this.db.exec("PRAGMA synchronous = FULL");
       this.db.exec("PRAGMA foreign_keys = ON");
       this.migrate();
     } catch (error) {
+      try {
+        opened?.close();
+      } catch {
+        // The handle is unusable either way.
+      }
       this.lock?.release();
       throw error;
     }
@@ -873,7 +918,7 @@ export class HostStore {
 
   /** Doc ids that still have local work the server has not acknowledged. */
   docsWithUnacked(): string[] {
-    return this.all(`SELECT DISTINCT doc_id FROM updates WHERE acked_server_seq IS NULL ORDER BY doc_id`).map((row) =>
+    return this.all(`SELECT doc_id FROM updates WHERE acked_server_seq IS NULL UNION SELECT doc_id FROM outbound_batches ORDER BY doc_id`).map((row) =>
       String(row.doc_id),
     );
   }
@@ -1315,8 +1360,11 @@ export class HostStore {
   }
 
   retirePath(projectId: string, path: string, hashes: Iterable<string> = []): void {
-    this.run(`INSERT OR IGNORE INTO retired_paths (project_id, path) VALUES (?, ?)`, projectId, path);
-    for (const hash of hashes) this.run(`INSERT OR IGNORE INTO retired_hashes (project_id, path, hash) VALUES (?, ?, ?)`, projectId, path, hash);
+    // One commit: a crash between the two inserts would leave a retired path with no known history.
+    this.transaction(() => {
+      this.run(`INSERT OR IGNORE INTO retired_paths (project_id, path) VALUES (?, ?)`, projectId, path);
+      for (const hash of hashes) this.run(`INSERT OR IGNORE INTO retired_hashes (project_id, path, hash) VALUES (?, ?, ?)`, projectId, path, hash);
+    });
   }
 
   /** Retired paths, each with the content hashes known for it (empty when unknown). */
@@ -1426,10 +1474,26 @@ export class HostStore {
     });
   }
 
-  deleteProject(projectId: string): void {
+  /**
+   * What a project's earlier folder left in the store: the external-adoption
+   * fence, retired paths and hashes, the manifest's last-seen paths and the
+   * transitions not yet acknowledged. A fresh folder for the project (a rejoin
+   * after revocation) starts without them: they name paths and moves of the
+   * old folder, which Next would otherwise apply to the new one's records.
+   */
+  clearProjectRecords(projectId: string): void {
     this.transaction(() => {
+      this.run(`DELETE FROM project_adoption_fences WHERE project_id = ?`, projectId);
+      this.run(`DELETE FROM retired_hashes WHERE project_id = ?`, projectId);
+      this.run(`DELETE FROM retired_paths WHERE project_id = ?`, projectId);
       this.run(`DELETE FROM manifest_paths WHERE project_id = ?`, projectId);
       this.run(`DELETE FROM manifest_transitions WHERE project_id = ?`, projectId);
+    });
+  }
+
+  deleteProject(projectId: string): void {
+    this.transaction(() => {
+      this.clearProjectRecords(projectId);
       this.run(`DELETE FROM docs WHERE project_id = ?`, projectId);
       this.run(`DELETE FROM projects WHERE project_id = ?`, projectId);
     });

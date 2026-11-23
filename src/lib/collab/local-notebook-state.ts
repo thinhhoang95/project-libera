@@ -48,9 +48,24 @@ export function sameNotebookIdentity(left: NotebookMarker, right: NotebookMarker
   return identity(left) === identity(right);
 }
 
+/**
+ * One way: a binding recorded from a marker that predates `folderId` accepts the same share's upgraded marker
+ * (same server, account, project and manifest). The reverse, or two different folder ids, is a different folder.
+ */
+export function compatibleNotebookIdentity(binding: NotebookMarker, marker: NotebookMarker): boolean {
+  if (sameNotebookIdentity(binding, marker)) return true;
+  return binding.folderId === undefined && marker.folderId !== undefined &&
+    sameNotebookIdentity(binding, { ...marker, folderId: undefined });
+}
+
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const endedFile = (directory: string, marker: NotebookMarker) => path.join(directory, `ended-${hash(identity(marker))}.json`);
-const bindingFile = (directory: string, root: string) => path.join(directory, `binding-${hash(path.resolve(root))}.json`);
+// Case is ignored where the filesystem ignores it (as lifecycle-reservation.ts does): "notes/a.md" for "Notes" is the same folder.
+const foldsCase = process.platform === "win32" || process.platform === "darwin";
+const rootKey = (root: string) => foldsCase ? path.resolve(root).toLowerCase() : path.resolve(root);
+const bindingFile = (directory: string, root: string) => path.join(directory, `binding-${hash(rootKey(root))}.json`);
+/** Where a binding was written before the key ignored case. Read as a fallback, and deleted with the binding. */
+const earlierBindingFile = (directory: string, root: string) => path.join(directory, `binding-${hash(path.resolve(root))}.json`);
 
 function readRecord(file: string): Record<string, unknown> | null {
   try {
@@ -97,11 +112,27 @@ export function recordNotebookBinding(directory: string, root: string, marker: N
   const saved = readNotebookBinding(directory, root);
   if (saved && sameNotebookIdentity(saved, marker)) return;
   writeRecord(bindingFile(directory, root), { version: 1, root: path.resolve(root), marker });
+  // The binding now lives under the current key; the earlier file must not shadow a later delete.
+  if (earlierBindingFile(directory, root) !== bindingFile(directory, root)) {
+    try { unlinkSync(earlierBindingFile(directory, root)); } catch { /* None written. */ }
+  }
+}
+
+/** Forgets the binding of `root` (its project moved to another folder, or the folder is no longer that notebook's). */
+export function deleteNotebookBinding(directory: string | undefined, root: string): void {
+  if (!directory) return;
+  for (const file of new Set([bindingFile(directory, root), earlierBindingFile(directory, root)])) {
+    try { unlinkSync(file); } catch { /* Not bound. */ }
+  }
 }
 
 export function readNotebookBinding(directory: string | undefined, root: string): NotebookMarker | null {
   if (!directory) return null;
-  const record = readRecord(bindingFile(directory, root));
-  if (record?.version !== 1 || record.root !== path.resolve(root)) return null;
-  return parseNotebookMarker(record.marker);
+  for (const file of new Set([bindingFile(directory, root), earlierBindingFile(directory, root)])) {
+    const record = readRecord(file);
+    if (!record) continue;
+    if (record.version !== 1 || typeof record.root !== "string" || rootKey(record.root) !== rootKey(root)) continue;
+    return parseNotebookMarker(record.marker);
+  }
+  return null;
 }

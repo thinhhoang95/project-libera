@@ -113,6 +113,10 @@ export function compareDigest(local: LocalState, digest: DocumentDigest): "match
   return local.contentSha256 === digest.contentSha256 ? "match" : "mismatch";
 }
 
+function sameLocalState(a: LocalState, b: LocalState): boolean {
+  return a.subdoc === b.subdoc && a.contentSha256 === b.contentSha256 && sameBytes(a.stateVector, b.stateVector);
+}
+
 export class DivergenceChecker {
   private readonly host: DivergenceHost;
   private readonly clock: Clock;
@@ -295,11 +299,31 @@ export class DivergenceChecker {
     // mismatch.
     const local = this.readLocal(docId);
     if (!local.ok) return this.record(docId, "skipped", { detail: local.detail });
-    const outcome = compareDigest(local.state, digest);
+    // A deletion (ours or a remote one that landed during the round trip) does
+    // not move the state vector: if the local state changed meanwhile, the
+    // digest describes some other moment and proves nothing.
+    if (!sameLocalState(before.state, local.state)) return this.record(docId, "skipped", { detail: "changed-during-check" });
+    let current = local.state;
+    let outcome = compareDigest(current, digest);
     if (outcome !== "mismatch") return this.record(docId, outcome);
+    // Equal vectors with different text are conclusive only once the host has seen everything the server had
+    // when it computed the digest. A host ahead of the digest is looking at something newer: inconclusive.
+    // One that is behind may just not have received the updates yet: wait (bounded, on the hub's own status
+    // events) for it to catch up. If it never does, the update was missed, which is the divergence to report.
+    const seen = () => this.host.store().getDocMeta(docId)?.lastSeenServerSeq ?? 0;
+    if (seen() > digest.serverSeq) return this.record(docId, "inconclusive", { detail: "server-seq-differs" });
+    const hub = seen() < digest.serverSeq ? this.host.openHub(docId) : null;
+    if (hub && (await this.until(hub, () => seen() >= digest.serverSeq))) {
+      const again = this.readLocal(docId);
+      if (!again.ok) return this.record(docId, "skipped", { detail: again.detail });
+      current = again.state;
+      outcome = compareDigest(current, digest);
+      if (outcome !== "mismatch") return this.record(docId, outcome);
+      if (seen() > digest.serverSeq) return this.record(docId, "inconclusive", { detail: "server-seq-differs" });
+    }
 
     this.logger.error(
-      `Divergence: ${docId} (${local.state.subdoc}) differs from the server at the same state vector (server seq ${digest.serverSeq}).`,
+      `Divergence: ${docId} (${current.subdoc}) differs from the server at the same state vector (server seq ${digest.serverSeq}).`,
     );
     if (!recover) return this.record(docId, "mismatch", { detail: "still-differs", recovered: false });
     const recovered = await this.recover(docId);
@@ -308,19 +332,16 @@ export class DivergenceChecker {
 
   /** Re-open with empty state vectors, wait for acks, compare again. */
   private async recover(docId: string): Promise<{ ok: boolean; detail: string }> {
-    let hub = this.host.openHub(docId);
-    let acquired = false;
-    if (!hub) {
-      hub = this.host.acquire(docId);
-      acquired = true;
-    }
+    // Always hold a reference: an idle open hub could otherwise be closed mid-recovery.
+    const hub = this.host.acquire(docId);
     try {
-      // A freshly acquired hub sends its own `open` first; wait for that
-      // answer so it is not mistaken for the full-state one.
-      await this.until(hub, () => hub!.getStatus().state !== "loading" && hub!.getStatus().connected);
+      // A freshly acquired hub sends its own `open` first; wait until that
+      // answer arrived (a hub with local data is "saved-local" before then,
+      // not "loading") so it is not mistaken for the full-state one.
+      if (!(await this.until(hub, () => hub.hasOpened && hub.getStatus().connected))) return { ok: false, detail: "reopen-unavailable" };
       const reopened = await this.host.reopenFull(hub, this.recoveryTimeoutMs);
       if (!reopened) return { ok: false, detail: "reopen-unavailable" };
-      if (!(await this.until(hub, () => hub!.getStatus().pending === 0))) return { ok: false, detail: "acks-timed-out" };
+      if (!(await this.until(hub, () => hub.getStatus().pending === 0))) return { ok: false, detail: "acks-timed-out" };
       const again = await this.checkOnce(docId, false);
       if (again.outcome === "match") {
         this.logger.warn(`Divergence: ${docId} matches the server again after a full re-open.`);
@@ -328,7 +349,7 @@ export class DivergenceChecker {
       }
       return { ok: false, detail: again.outcome === "mismatch" ? "still-differs" : `recheck-${again.outcome}` };
     } finally {
-      if (acquired) this.host.release(docId);
+      this.host.release(docId);
     }
   }
 

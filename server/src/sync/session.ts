@@ -87,6 +87,18 @@ export class Session implements RoomMember {
     }
   }
 
+  /**
+   * Why a document this account cannot reach is closed. A deleted file that the
+   * account is still a member of is `document-deleted`; the project's access is
+   * only reported lost (`otherwise`) when no such membership exists.
+   */
+  async unreachableReason(docId: string, otherwise: "not-found" | "access-revoked"): Promise<ClosedReason> {
+    const deleted = await this.server.context.db.selectFrom("documents").select("project_id")
+      .where("id", "=", docId).where("deleted_at", "is not", null).executeTakeFirst();
+    const member = deleted && await projectRole(this.server.context.db, deleted.project_id, this.accountId);
+    return member ? "document-deleted" : otherwise;
+  }
+
   /** Do not use a lookup whose membership changed while it was in flight. */
   async currentAccess(docId: string): Promise<DocAccess | null> {
     while (!this.closed) {
@@ -292,10 +304,7 @@ export class Session implements RoomMember {
     if (!access) {
       // A returning member may have missed the manifest deletion while offline.
       // Distinguish that from losing notebook access, without exposing other projects.
-      const deleted = await this.server.context.db.selectFrom("documents").select("project_id")
-        .where("id", "=", docId).where("deleted_at", "is not", null).executeTakeFirst();
-      const member = deleted && await projectRole(this.server.context.db, deleted.project_id, this.accountId);
-      this.send({ type: MessageType.Closed, docId, reason: member ? "document-deleted" : "not-found" });
+      this.send({ type: MessageType.Closed, docId, reason: await this.unreachableReason(docId, "not-found") });
       return;
     }
     const existing = this.docs.get(docId);
@@ -305,7 +314,7 @@ export class Session implements RoomMember {
     } catch (error) {
       if (!existing) this.server.releaseRoom(room);
       if (error instanceof DocumentMissingError) {
-        this.send({ type: MessageType.Closed, docId, reason: "not-found" });
+        this.send({ type: MessageType.Closed, docId, reason: await this.unreachableReason(docId, "not-found") });
         return;
       }
       throw error;
@@ -322,8 +331,10 @@ export class Session implements RoomMember {
       if (this.closed || room.disposed) return false;
       if (existing && this.docs.get(docId) !== existing) return false;
       if (!current) {
-        if (existing) this.closeDoc(docId, "access-revoked");
-        else this.send({ type: MessageType.Closed, docId, reason: "not-found" });
+        const reason = await this.unreachableReason(docId, existing ? "access-revoked" : "not-found");
+        if (this.closed || room.disposed) return false;
+        if (existing) this.closeDoc(docId, reason);
+        else this.send({ type: MessageType.Closed, docId, reason });
         return false;
       }
       if (existing) {
@@ -361,7 +372,9 @@ export class Session implements RoomMember {
     if (opened || existing) return;
     this.server.releaseRoom(room);
     // documentDeleted ran while this open waited for the room.
-    if (room.disposed && !this.closed) this.send({ type: MessageType.Closed, docId, reason: "not-found" });
+    if (room.disposed && !this.closed) {
+      this.send({ type: MessageType.Closed, docId, reason: await this.unreachableReason(docId, "not-found") });
+    }
   }
 
   private update(message: UpdateMessage): void {

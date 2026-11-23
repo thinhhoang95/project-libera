@@ -204,7 +204,9 @@ export async function readState(root: string, guard?: WriteGuard, expected?: Sta
 const plain = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 const safeId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{1,200}$/.test(value);
 const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
-const hashValue = (value: unknown): value is string => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+/** A file time: negative is valid (a pre-1970 mtime), only non-finite values are not. */
+const timeValue = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+const hashValue =(value: unknown): value is string => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
 
 function validState(value: unknown): value is ProjectState {
   if (!plain(value) || value.version !== 1 || !plain(value.layout) || !Array.isArray(value.reconciliations)) return false;
@@ -217,10 +219,16 @@ function validState(value: unknown): value is ProjectState {
         !["doc", "blob", "folder"].includes(String(record.kind))) return false;
     if (record.kind === "doc" && (!safeId(record.docId) || !["markdown", "latex", "text"].includes(String(record.docKind)))) return false;
     if (record.hash !== undefined && !hashValue(record.hash)) return false;
-    for (const key of ["size", "mtimeMs"]) if (record[key] !== undefined && !finite(record[key])) return false;
+    if (record.size !== undefined && !finite(record.size)) return false;
+    if (record.mtimeMs !== undefined && !timeValue(record.mtimeMs)) return false;
     if (record.previous !== undefined && (!Array.isArray(record.previous) || record.previous.length > MAX_PREVIOUS ||
-        !record.previous.every((item: unknown) => plain(item) && hashValue(item.hash) && finite(item.mtimeMs)))) return false;
+        !record.previous.every((item: unknown) => plain(item) && hashValue(item.hash) && timeValue(item.mtimeMs)))) return false;
   }
+  if (value.displaced !== undefined && (!Array.isArray(value.displaced) || value.displaced.length > 50_000 ||
+      !value.displaced.every((item: unknown) => plain(item) && typeof item.fileId === "string" && typeof item.from === "string" &&
+        typeof item.to === "string" && finite(item.at)))) return false;
+  if (value.remoteRespells !== undefined && !(plain(value.remoteRespells) &&
+      Object.values(value.remoteRespells).every((item: unknown) => plain(item) && typeof item.path === "string" && finite(item.at)))) return false;
   return value.reconciliations.every((item: unknown) => plain(item) && safeId(item.id) && safeId(item.docId) &&
     typeof item.path === "string" && manifestPathError(item.path) === null && finite(item.detectedAt) &&
     [item.shared, item.disk, item.base].every((part) => typeof part === "string"));

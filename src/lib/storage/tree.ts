@@ -1,3 +1,4 @@
+import { manifestPathKey } from "@/lib/collab/protocol/schema";
 import { prunePdfTextCaches } from "@/lib/storage/pdf-text-cache";
 import { pdfFilesOf, reconcilePdfSidecars } from "@/lib/storage/pdf-sidecars";
 import { inkSourceFilesOf, reconcileInkFolders } from "@/lib/storage/ink";
@@ -645,9 +646,9 @@ export function attachFileIds<E extends { path: string; fileId: string; kind: "d
   entries: readonly E[],
   isVerified: (entry: E, node: LiberaFileNode) => boolean,
 ) {
-  const byPath = new Map(entries.filter((entry) => entry.kind !== "folder").map((entry) => [entry.path, entry]));
+  const byPath = new Map(entries.filter((entry) => entry.kind !== "folder").map((entry) => [manifestPathKey(entry.path), entry]));
   for (const node of fileNodesOf(nodes)) {
-    const entry = byPath.get(node.path);
+    const entry = byPath.get(manifestPathKey(node.path));
     if (entry && isVerified(entry, node)) { node.fileId = entry.fileId; delete node.fileIdState; }
     else { delete node.fileId; node.fileIdState = entry ? "unknown" : "mismatch"; }
   }

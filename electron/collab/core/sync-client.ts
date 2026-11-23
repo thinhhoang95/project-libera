@@ -300,6 +300,8 @@ export class SyncClient {
         const nonce = ++this.nonce;
         this.awaitingPong = nonce;
         this.sendFrame({ type: MessageType.Ping, nonce });
+        // The regular ping timer must not fire during this ping's round trip and mistake it for a missing pong.
+        this.schedulePing();
         this.nudgeTimer = this.clock.setTimeout(() => {
           this.nudgeTimer = null;
           if (this.awaitingPong === nonce) this.drop("no pong after nudge");
@@ -672,16 +674,17 @@ export class SyncClient {
         if (this.socket === socket) this.sendFrame({ type: MessageType.Awareness, docId: target.docId, update });
       },
       reopen: () => {
-        if (this.socket === socket && this.targets.get(target.docId) === target && target.canSync()) this.sendOpen(target);
+        return this.socket === socket && this.targets.get(target.docId) === target && target.canSync() && this.sendOpen(target);
       },
     };
     this.transports.set(target.docId, transport);
     return transport;
   }
 
-  private sendOpen(target: SyncTarget): void {
+  /** True when the frame was written to the socket. */
+  private sendOpen(target: SyncTarget): boolean {
     const pdf = target.pdfTarget?.();
-    this.sendFrame({ type: MessageType.Open, docId: target.docId, subdocs: target.stateVectors(), ...(pdf ? { pdf } : {}) });
+    return this.sendFrame({ type: MessageType.Open, docId: target.docId, subdocs: target.stateVectors(), ...(pdf ? { pdf } : {}) });
   }
 
   private handleFrame(socket: WebSocketLike, data: unknown): void {

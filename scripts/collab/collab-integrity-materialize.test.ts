@@ -35,7 +35,7 @@ function fakeTransport() {
   const transport: HubTransport = {
     send: (message) => { sent.push(message); return true; },
     sendAwareness: () => {},
-    reopen: () => { reopens += 1; },
+    reopen: () => { reopens += 1; return true; },
   };
   return { transport, sent, reopens: () => reopens };
 }

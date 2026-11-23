@@ -344,13 +344,34 @@ async function linkExclusive(source: string, destination: string): Promise<boole
   }
 }
 
-/** Claims `destination` with an empty file so nobody else can create it; a later rename replaces the claim. */
-async function claimName(destination: string): Promise<void> {
-  try { await (await fs.open(destination, "wx")).close(); }
+/** Claims `destination` with an empty file so nobody else can create it; a later rename replaces the claim. Returns the claim's identity. */
+async function claimName(destination: string): Promise<{ ino: number; dev: number }> {
+  try {
+    const handle = await fs.open(destination, "wx");
+    try {
+      const { ino, dev } = await handle.stat();
+      return { ino, dev };
+    } finally { await handle.close(); }
+  }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new DestinationTakenError(destination);
     throw error;
   }
+}
+
+/** Removes `destination` only while it is still the empty file `claimName` made: anything else there is another actor's. */
+async function releaseClaim(destination: string, claim: { ino: number; dev: number }): Promise<void> {
+  try {
+    const current = await fs.lstat(destination);
+    if (current.isFile() && current.size === 0 && current.ino === claim.ino && current.dev === claim.dev) await fs.rm(destination, { force: true });
+  } catch { /* gone, or unreadable: nothing of ours to remove */ }
+}
+
+/** Where hard links are unavailable: claims `to`, then renames `from` over the claim; a failed rename gives the claim back, never another file. */
+async function renameOverClaim(from: string, to: string, guard?: WriteGuard): Promise<void> {
+  const claim = await claimName(to);
+  try { await renameWithRetry(from, to, guard); }
+  catch (error) { await releaseClaim(to, claim); throw error; }
 }
 
 async function renameWithRetry(from: string, to: string, guard?: WriteGuard): Promise<void> {
@@ -378,7 +399,16 @@ async function renameWithRetry(from: string, to: string, guard?: WriteGuard): Pr
 async function moveExclusive(from: string, to: string, guard?: WriteGuard): Promise<void> {
   const stats = await fs.lstat(from);
   if (stats.isDirectory()) {
-    if (process.platform === "win32") { await renameWithRetry(from, to, guard); return; }
+    if (process.platform === "win32") {
+      // Windows refuses to replace a folder, which is exclusive already; the refusal is the destination being taken, not a failure.
+      if (await statIfExists(to)) throw new DestinationTakenError(to);
+      try { await renameWithRetry(from, to, guard); }
+      catch (error) {
+        if (["EEXIST", "EPERM", "EACCES", "ENOTEMPTY"].includes((error as NodeJS.ErrnoException).code ?? "") && await statIfExists(to)) throw new DestinationTakenError(to);
+        throw error;
+      }
+      return;
+    }
     try { await fs.mkdir(to); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new DestinationTakenError(to);
@@ -401,14 +431,16 @@ async function moveExclusive(from: string, to: string, guard?: WriteGuard): Prom
       }
       catch (error) {
         if (isNotFound(error)) return;
-        if (!isBusy(error) || attempt >= 6) throw error;
+        if (!isBusy(error) || attempt >= 6) {
+          // The source stays, so the move did not happen: drop the link made for it, or `to` and `from` would share one inode.
+          await fs.unlink(to).catch(() => undefined);
+          throw error;
+        }
         await sleep(25 * 2 ** attempt);
       }
     }
   }
-  await claimName(to);
-  try { await renameWithRetry(from, to, guard); }
-  catch (error) { await fs.rm(to, { force: true }).catch(() => undefined); throw error; }
+  await renameOverClaim(from, to, guard);
 }
 
 /**
@@ -438,9 +470,7 @@ export async function writeFileExclusive(absolute: string, bytes: Uint8Array, gu
     await fs.writeFile(temporary, bytes, { flag: "wx" });
     await checkWriteGuard(guard);
     if (!await linkExclusive(temporary, absolute)) {
-      await claimName(absolute);
-      try { await renameWithRetry(temporary, absolute, guard); }
-      catch (error) { await fs.rm(absolute, { force: true }).catch(() => undefined); throw error; }
+      await renameOverClaim(temporary, absolute, guard);
     }
   } finally {
     await fs.rm(temporary, { force: true }).catch(() => undefined);
@@ -471,9 +501,7 @@ export async function writeFileUnique(directory: string, name: string, bytes: Ui
       try {
         await checkWriteGuard(guard);
         if (!await linkExclusive(temporary, to)) {
-          await claimName(to);
-          try { await renameWithRetry(temporary, to, guard); }
-          catch (error) { await fs.rm(to, { force: true }).catch(() => undefined); throw error; }
+          await renameOverClaim(temporary, to, guard);
         }
         return to;
       } catch (error) { if (!(error instanceof DestinationTakenError)) throw error; }
@@ -590,9 +618,21 @@ export function isFinderCopy(entry: Pick<WalkEntry, "birthtimeMs">): boolean {
   return entry.birthtimeMs !== undefined && Math.abs(entry.birthtimeMs - FINDER_BUSY_BIRTH_MS) < 1000;
 }
 
+/**
+ * Milliseconds until a new empty file stops looking like the start of a copy
+ * (0: it already does, or it is not empty). An mtime in the future says nothing
+ * about when the file was written (a copy keeps its source's, a skewed clock
+ * writes one), so it never counts as "just now"; a recent ctime still defers
+ * the file through the scan's quiet-period check.
+ */
+export function emptyFileWaitMs(entry: Pick<WalkEntry, "size" | "mtimeMs">, now: number): number {
+  if (entry.size !== 0 || entry.mtimeMs > now) return 0;
+  return Math.max(0, EMPTY_FILE_SETTLE_MS - (now - entry.mtimeMs));
+}
+
 /** Whether a file not yet shared may still be arriving, so its bytes mean nothing yet. */
 export function mayStillBeCopying(entry: Pick<WalkEntry, "size" | "mtimeMs" | "birthtimeMs">, now: number): boolean {
-  return isFinderCopy(entry) || (entry.size === 0 && now - entry.mtimeMs < EMPTY_FILE_SETTLE_MS);
+  return isFinderCopy(entry) || emptyFileWaitMs(entry, now) > 0;
 }
 
 export interface NotebookWalk {
@@ -648,10 +688,10 @@ export async function walkNotebook(root: string, limit = 50_000): Promise<Notebo
 }
 
 /** Removes empty directories from `relative` upwards, stopping at the root or a non-empty one. */
-export async function pruneEmptyDirectories(root: string, relative: string, keep: (relative: string) => boolean, guard?: WriteGuard): Promise<void> {
+export async function pruneEmptyDirectories(root: string, relative: string, keep: (relative: string) => boolean | Promise<boolean>, guard?: WriteGuard): Promise<void> {
   let current = relative;
   while (current && current !== ".") {
-    if (keep(current)) return;
+    if (await keep(current)) return;
     try {
       // Fence each removal: the root may have been replaced since the caller's checks.
       await checkWriteGuard(guard);
