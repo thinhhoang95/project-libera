@@ -183,6 +183,9 @@ interface ProjectHandle {
   leaseSupported: boolean;
   /** Conservative monotonic deadline, never extended by a failed renewal. */
   leaseDeadline?: number;
+  /** The monotonic and wall clock readings when the lease was requested: wall time that outran monotonic time is a sleep. */
+  leaseMono?: number;
+  leaseWall?: number;
   /** A follower refused the lease contests it again at this monotonic time (near the holder's expiry). */
   nextContestAt?: number;
   /** Counts lease releases heard from the server, so a refusal that crossed one is not trusted. */
@@ -209,6 +212,13 @@ function newHandle(projectId: string, name: string, root: string, role: Role, ma
     leaseSupported: true,
   };
 }
+
+/**
+ * The monotonic clock stops while the computer sleeps (macOS, Linux). When the
+ * wall clock has run this much further than it since a lease was granted, the
+ * computer slept and the lease may have lapsed on the server.
+ */
+const SLEEP_SKEW_MS = 2000;
 
 const LOCAL_REVIEW_NOTE =
   "Local review comments stay on this device for now; they move to the shared notebook when shared comments arrive.";
@@ -312,6 +322,8 @@ export class NotebookServiceImpl implements NotebookService {
   private readonly lifecycleChecks = new Set<Promise<void>>();
   /** Between beforeAccountChange and accountChanged: no lease is renewed or taken. */
   private releasing = false;
+  /** Lease time: monotonic for durations, wall only to notice that the computer slept (tests replace it). */
+  private clock: { mono(): number; wall(): number } = { mono: () => performance.now(), wall: () => Date.now() };
   /** Folders being shared or joined right now: their marker is ours before the store knows it. */
   private readonly pendingRoots = new Set<string>();
   private readonly unjoined = new Map<string, UnjoinedFolder>();
@@ -523,7 +535,7 @@ export class NotebookServiceImpl implements NotebookService {
       follower: !handle.writer,
       ...(handle.kind === "album" ? { album: true } : {}),
     });
-    if (handle.writer && (handle.leaseDeadline ?? 0) <= performance.now()) {
+    if (handle.writer && !this.leaseLive(handle)) {
       handle.writer = false;
       runtime.info.follower = true;
     }
@@ -584,27 +596,45 @@ export class NotebookServiceImpl implements NotebookService {
       case "unsupported":
         return false;
       default:
-        return named && (handle.leaseDeadline ?? 0) > performance.now();
+        return named && this.leaseLive(handle);
     }
   }
 
-  private async lease(handle: ProjectHandle): Promise<Lease> {
+  /**
+   * Whether the last confirmed server lease still holds: not past its
+   * monotonic deadline, and no sleep since it was granted (the monotonic
+   * clock does not count sleep, so wall time running ahead of it is one).
+   */
+  private leaseLive(handle: ProjectHandle): boolean {
+    const mono = this.clock.mono();
+    if ((handle.leaseDeadline ?? 0) <= mono) return false;
+    if (handle.leaseMono === undefined || handle.leaseWall === undefined) return true;
+    return this.clock.wall() - handle.leaseWall - (mono - handle.leaseMono) <= SLEEP_SKEW_MS;
+  }
+
+  /** `live` turns false once the caller gave up waiting (the tick's budget): such a renewal asks for nothing. */
+  private async lease(handle: ProjectHandle, live?: () => boolean): Promise<Lease> {
     const api = this.deps.host.api;
     if (!api) return { outcome: "signed-out", contended: false };
     if (!handle.leaseSupported) return { outcome: "unsupported", contended: false };
     if (!handle.folderId) return { outcome: "unavailable", contended: false };
     // A follower already refused tries again near the holder's expiry, not on every tick.
-    if (!handle.writer && (handle.nextContestAt ?? 0) > performance.now()) return { outcome: "refused", contended: false };
-    const requestedAt = performance.now();
+    if (!handle.writer && (handle.nextContestAt ?? 0) > this.clock.mono()) return { outcome: "refused", contended: false };
+    // A renewal that outlived its tick, or that starts after stop, sign-out or removal of the handle, must not take a lease.
+    if (!this.started || this.releasing || this.projects.get(handle.projectId) !== handle || live?.() === false) return { outcome: "unavailable", contended: false };
+    const requestedAt = this.clock.mono();
+    const requestedWall = this.clock.wall();
     const releases = handle.leaseReleases ?? 0;
     try {
       const lease = await api.acquireFolderLease(handle.projectId, { folderId: handle.folderId, holder: this.installationId, ttlMs: this.leaseTtlMs }, { timeoutMs: Math.min(5000, Math.max(100, Math.floor(this.leaseTtlMs / 3))) });
-      if (!this.started || this.releasing) return { outcome: "unavailable", contended: false };
+      if (!this.started || this.releasing || live?.() === false) return { outcome: "unavailable", contended: false };
       // A duration measured from before the request on the monotonic clock:
       // never the server's absolute expiry against this device's wall clock,
       // which a skewed clock turns into a zero-length (or overlong) lease.
       const grantedMs = typeof lease.ttlMs === "number" && Number.isFinite(lease.ttlMs) && lease.ttlMs > 0 ? lease.ttlMs : this.leaseTtlMs;
       handle.leaseDeadline = lease.granted ? requestedAt + Math.min(this.leaseTtlMs, grantedMs) : 0;
+      handle.leaseMono = requestedAt;
+      handle.leaseWall = requestedWall;
       handle.nextContestAt = lease.granted || (handle.leaseReleases ?? 0) !== releases ? 0 : this.contestTime(lease, requestedAt);
       return { outcome: lease.granted ? "granted" : "refused", contended: lease.contended === true };
     } catch (error) {
@@ -685,10 +715,11 @@ export class NotebookServiceImpl implements NotebookService {
           // Only while the folder still carries this project's marker: an
           // installation that cannot write here must let its lease lapse so
           // another one can take the folder over.
+          let abandoned = false;
           const renew = async (): Promise<Lease | undefined> => {
             const renewable = !handle.revoked && handle.runtime && handle.folderId && this.projects.get(handle.projectId) === handle &&
               this.matchesMarker(handle, await readMarker(handle.root).catch(() => null));
-            return renewable ? await this.lease(handle) : undefined;
+            return renewable && !abandoned ? await this.lease(handle, () => !abandoned) : undefined;
           };
           // A renewal that does not answer in time counts as unavailable: the
           // lifecycle check below must not wait for it again.
@@ -697,7 +728,10 @@ export class NotebookServiceImpl implements NotebookService {
           const renewed = await Promise.race([
             renew().catch(() => unanswered),
             new Promise<Lease>((resolve) => {
-              timer = setTimeout(() => resolve(unanswered), budgetMs);
+              timer = setTimeout(() => {
+                abandoned = true;
+                resolve(unanswered);
+              }, budgetMs);
               timer.unref?.();
             }),
           ]);
@@ -1066,8 +1100,7 @@ export class NotebookServiceImpl implements NotebookService {
       layoutChanged: (projectId) => this.reindex(projectId),
       canWriteDisk: (projectId) => {
         const handle = this.projects.get(projectId);
-        return !!handle && handle.writer && !handle.revoked && !handle.revoking && !this.releasing &&
-          (handle.leaseDeadline ?? 0) > performance.now();
+        return !!handle && handle.writer && !handle.revoked && !handle.revoking && !this.releasing && this.leaseLive(handle);
       },
     };
   }
@@ -1243,7 +1276,12 @@ export class NotebookServiceImpl implements NotebookService {
 
   resumed(): void {
     // Leases lapsed during sleep: renew or contest now, not at the old schedule.
-    for (const handle of this.projects.values()) handle.nextContestAt = 0;
+    // The monotonic clock did not run while asleep, so no deadline can be trusted: every lease is
+    // lapsed until the server confirms it again, before the renewal and the runtimes run.
+    for (const handle of this.projects.values()) {
+      handle.nextContestAt = 0;
+      handle.leaseDeadline = 0;
+    }
     void this.tick();
     for (const handle of this.projects.values()) handle.runtime?.resumed();
   }
