@@ -103,12 +103,16 @@ interface ScanScratch {
   renameDeferrals: Map<string, number>;
   /** The latest renames the scanner paired, for a folder whose files pair across scans (S43). */
   recentMoves: Array<{ from: string; to: string; at?: number }>;
+  /** Folders this host re-created on disk (path key to when): only these can be an emptied folder whose files moved away (H8). */
+  recreatedFolders: Map<string, number>;
+  /** When a folder entry was first seen gone from disk (by id); moves before it are not part of the folder's move (H8). */
+  folderGoneSince: Map<string, number>;
 }
 const scanScratches = new WeakMap<object, ScanScratch>();
 function scanScratch(owner: object): ScanScratch {
   let scratch = scanScratches.get(owner);
   if (!scratch) {
-    scratch = { fairness: new ScanFairness(), respellSeen: new Map(), respellLogged: new Set(), ownRespells: new Set(), renameDeferrals: new Map(), recentMoves: [] };
+    scratch = { fairness: new ScanFairness(), respellSeen: new Map(), respellLogged: new Set(), ownRespells: new Set(), renameDeferrals: new Map(), recentMoves: [], recreatedFolders: new Map(), folderGoneSince: new Map() };
     scanScratches.set(owner, scratch);
   }
   return scratch;
@@ -1267,6 +1271,7 @@ export class SharedProject {
           await ensureDirectory(absolute, this.diskGuard());
           if (!(await statIfExists(absolute))?.isDirectory()) throw new Error("the folder was not created");
           touched.add(directory);
+          scanScratch(this).recreatedFolders.set(manifestPathKey(directory), Date.now());
         }
         this.placedFolders.add(directory);
         this.folderErrors.delete(directory);
@@ -1573,6 +1578,8 @@ export class SharedProject {
       }
       // An online-only file nobody explains (existingHash undefined) is archived like any unexplained one.
       if (existingHash !== null && existingHash !== record.hash && !(existingHash !== undefined && existingStats && isStaleCopy(record, existingHash, existingStats.mtimeMs))) {
+        // An album deletes what it displaces, so it never displaces bytes it does not have: the file stays and the scan shares it as the user's (C8).
+        if (this.info.album && !(existingHash && knownHashes(record, entry).includes(existingHash))) return true;
         this.baselineMissing.add(entry.fileId);
         const archived = await this.archive(record.path, guard);
         // An entry never placed here claiming a path: what was there is a local file that was not shared.
@@ -1722,6 +1729,16 @@ export class SharedProject {
     if (!(await this.rootAvailable())) throw new WriteCancelledError();
     const runtime = record.docId ? this.docs.get(record.docId) : undefined;
     if (!runtime || !this.docReady(runtime)) {
+      if (this.info.album) {
+        // An album's removal deletes the file: only bytes the entry had are removed (C8); anything else stays and the scan treats it as the user's.
+        let source: string;
+        try { source = await resolveInside(this.info.root, record.path); } catch { return; }
+        const own = await this.holdsOwnBytes(source, record);
+        if (own === SLOW_READ) throw new WriteCancelledError();
+        if (own === false) return;
+        await this.archive(record.path, this.sourceGuard(source, own.key));
+        return;
+      }
       await this.archive(record.path);
       return;
     }
@@ -2123,9 +2140,9 @@ export class SharedProject {
   }
 
   /** Records bytes already on disk as the materialized state of a document. */
-  private async adopt(fileId: string, record: LayoutRecord, hash: string, text: string, target: string): Promise<void> {
-    const stats = await statIfExists(target);
-    if (stats?.isFile()) this.baselineMissing.delete(fileId);
+  private async adopt(fileId: string, record: LayoutRecord, hash: string, text: string, target: string, read?: { size: number; mtimeMs: number }): Promise<void> {
+    const stats = read ?? await statIfExists(target);
+    if (read || (stats as Stats | null)?.isFile()) this.baselineMissing.delete(fileId);
     const changed = record.hash !== hash;
     // Identical bytes with the stats already recorded: nothing to remember (finding 39).
     if (!changed && record.size === stats?.size && record.mtimeMs === stats?.mtimeMs) return;
@@ -2142,11 +2159,12 @@ export class SharedProject {
    * wrote, the disk edit becomes minimal CRDT edits by the local user.
    * Otherwise both sides moved: open a reconciliation and touch neither.
    */
-  private async takeExternalEdit(runtime: DocRuntime, record: LayoutRecord, disk: Uint8Array, diskHash: string): Promise<void> {
+  private async takeExternalEdit(runtime: DocRuntime, record: LayoutRecord, disk: Uint8Array, diskHash: string, read?: { path: string; size: number; mtimeMs: number }): Promise<void> {
     if (this.follower || !this.docWritable(runtime)) return;
-    const target = await resolveInside(this.info.root, record.path);
+    // The file that was read, which a respelled file is not the record's path (M22).
+    const target = await resolveInside(this.info.root, read?.path ?? record.path);
     const shared = runtime.hub.getText("content");
-    const diskStats = await statIfExists(target);
+    const diskStats = read ?? await statIfExists(target);
     if (diskStats && isStaleCopy(record, diskHash, diskStats.mtimeMs)) {
       // An older version we wrote came back (a sync client restoring or
       // delivering a stale copy). Taking it in would undo newer edits.
@@ -2165,12 +2183,12 @@ export class SharedProject {
     }
     const fileId = runtime.fileId;
     if (shared === diskText) {
-      await this.adopt(fileId, record, diskHash, diskText, target);
+      await this.adopt(fileId, record, diskHash, diskText, target, read);
       return;
     }
     if (!this.follower && !(diskStats && isUncertainCopy(record, diskHash, diskStats.mtimeMs)) && sha256(encodeText(shared)) === record.hash) {
       this.applyText(runtime.hub, shared, diskText, EXTERNAL);
-      await this.adopt(fileId, record, diskHash, diskText, target);
+      await this.adopt(fileId, record, diskHash, diskText, target, read);
       this.filesChanged([record.path]);
       return;
     }
@@ -2869,7 +2887,7 @@ export class SharedProject {
       }
       if (record.kind === "doc" && record.docId) {
         const runtime = this.docs.get(record.docId);
-        if (runtime && !this.reconciliationFor(record.docId)) await this.takeExternalEdit(runtime, record, bytes, hash);
+        if (runtime && !this.reconciliationFor(record.docId)) await this.takeExternalEdit(runtime, record, bytes, hash, { path: seen.relative, size: seen.size, mtimeMs: seen.mtimeMs });
         // Handled: taken in, waiting on the user (a reconciliation), or kept
         // local for good (this role cannot edit, or it is not text). A
         // document not ready yet, or a failed rewrite, stays pending.
@@ -2879,7 +2897,9 @@ export class SharedProject {
       const entry = this.entries.get(fileId);
       // An empty record has no older version to protect: copies keep their
       // source's old mtime, so the bytes filling it are not an old copy.
-      if (entry?.blobHash === record.hash && record.size !== 0 && (isStaleCopy(record, hash, seen.mtimeMs) || isUncertainCopy(record, hash, seen.mtimeMs))) {
+      // Only a strict stale copy (an earlier hash with its own recorded mtime) is put back (C8): any other
+      // changed binary, an uncertain one included, is the user's new version and is shared below.
+      if (entry?.blobHash === record.hash && record.size !== 0 && isStaleCopy(record, hash, seen.mtimeMs)) {
         // An older version we wrote came back; put the current one back.
         this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: ${record.path} was replaced by an older copy; the current file was written again.`);
         if (await this.placeBlob(entry, record)) touched.add(record.path);
@@ -3100,6 +3120,13 @@ export class SharedProject {
       touched.add(from).add(match.entry.relative);
       operations.push((map, doc) => {
         const current = readManifest(doc).get(fileId);
+        if (current && current.kind === entry.kind && current.docId === entry.docId && current.path === match.entry.relative && current.path !== entry.path) {
+          // Its recording's companion move in this same pass already put it at exactly this path (M7): nothing to retire.
+          this.retirePath(from, knownHashes(record));
+          Object.assign(record, { path: match.entry.relative, size: match.entry.size, mtimeMs: match.entry.mtimeMs });
+          if (record.docId) this.ctx.host.store.upsertDoc({ docId: record.docId, projectId: this.info.projectId, fileId, path: record.path, materializedHash: record.hash ?? null });
+          return;
+        }
         if (!current || current.kind !== entry.kind || current.docId !== entry.docId || current.path !== entry.path) {
           // Keep an uncommitted local alias from becoming a fresh file on
           // the next scan after the authoritative deletion/move is applied.
@@ -3211,14 +3238,25 @@ export class SharedProject {
     // identity appearing next to a restored copy of the old one. Works from
     // this pass's pairs; no second walk.
     // A folder entry whose directory is back on disk but empty (this host's own materialization can re-create it between the outside move and the scan) is a candidate too, when every file it held left by a paired move.
+    // Only a folder this host re-created itself can be one (H8): a folder the user kept on disk after dragging its last file elsewhere is not.
     const emptied: string[] = [];
-    const recentMoves = scanScratch(this).recentMoves.filter((move) => move.at === undefined || now - move.at < RECENT_MOVE_MS);
+    const scratch = scanScratch(this);
+    const recentMoves = scratch.recentMoves.filter((move) => move.at === undefined || now - move.at < RECENT_MOVE_MS);
+    for (const [key, at] of scratch.recreatedFolders) if (now - at >= RECENT_MOVE_MS) scratch.recreatedFolders.delete(key);
+    for (const folderId of [...scratch.folderGoneSince.keys()]) if (!missing.includes(folderId)) scratch.folderGoneSince.delete(folderId);
+    for (const folderId of missing) if (this.state.layout[folderId]?.kind === "folder" && !scratch.folderGoneSince.has(folderId)) scratch.folderGoneSince.set(folderId, now);
+    /** Moves that can belong to this folder's own move: not before it went missing or was re-created empty. */
+    const movesSince = (folderId: string, folderRecord: LayoutRecord): typeof recentMoves => {
+      const since = scratch.folderGoneSince.get(folderId) ?? scratch.recreatedFolders.get(manifestPathKey(folderRecord.path));
+      return since === undefined ? [] : recentMoves.filter((move) => move.at === undefined || move.at >= since);
+    };
     if (recentMoves.length > 0 || paired.length > 0) {
       const names = [...files.keys(), ...directories.keys()].map(manifestPathKey);
       for (const [folderId, folderRecord] of Object.entries(this.state.layout)) {
         if (folderRecord.kind !== "folder" || missing.includes(folderId) || !directoryKeys.has(manifestPathKey(folderRecord.path))) continue;
+        if (!scratch.recreatedFolders.has(manifestPathKey(folderRecord.path))) continue;
         const prefix = `${manifestPathKey(folderRecord.path)}/`;
-        if (![...recentMoves, ...paired].some((move) => manifestPathKey(move.from).startsWith(prefix))) continue;
+        if (![...movesSince(folderId, folderRecord), ...paired].some((move) => manifestPathKey(move.from).startsWith(prefix))) continue;
         if (names.some((name) => name.startsWith(prefix))) continue;
         if (Object.values(this.state.layout).some((other) => other.kind !== "folder" && manifestPathKey(other.path).startsWith(prefix) && !paired.some((move) => move.from === other.path))) continue;
         emptied.push(folderId);
@@ -3233,7 +3271,7 @@ export class SharedProject {
       const inside = Object.entries(this.state.layout).filter(([otherId, other]) => otherId !== fileId && other.kind !== "folder" && below(other.path));
       const pairedNow = paired.filter((move) => below(move.from));
       // Every file still below the folder paired in this pass; files that moved in earlier scans are remembered.
-      const moves = [...recentMoves.filter((move) => below(move.from) && !(pairedNow as Array<{ from: string; to: string }>).includes(move)), ...pairedNow];
+      const moves = [...movesSince(fileId, record).filter((move) => below(move.from) && !(pairedNow as Array<{ from: string; to: string }>).includes(move)), ...pairedNow];
       if (moves.length === 0 || !inside.every(([, other]) => pairedNow.some((move) => move.from === other.path))) continue;
       let destination: string | null = null;
       for (const move of moves) {
