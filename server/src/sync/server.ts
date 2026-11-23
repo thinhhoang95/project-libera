@@ -332,7 +332,7 @@ export class SyncServer {
     }
     const access = await session.currentAccess(docId);
     if (!access || !session.isOpen(docId, open) || room.disposed) {
-      session.closeDoc(docId, "access-revoked");
+      session.closeDoc(docId, await session.unreachableReason(docId, "access-revoked"));
       return session.sendReject(message, "not-open", "The document is no longer accessible.");
     }
     open.role = access.role;
