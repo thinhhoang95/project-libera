@@ -120,6 +120,7 @@ interface Own {
   dirtyPaths: Set<string>;
   scheduleScan(delay: number): void;
   startWatching(): void;
+  noteOwnWrite(absolute: string, stats: ReturnType<typeof statSync>): void;
   scan(): Promise<void>;
   enqueue(task: () => Promise<void>): Promise<void>;
   pollTimer: ReturnType<typeof setTimeout> | null;
@@ -155,6 +156,7 @@ describe("finding 37: the writer's own writes", () => {
     const stats = statSync(path.join(root, "note.md"));
     const { project, counts, dispose } = detached(root, { f1: { kind: "doc", path: "note.md", hash: "h", size: stats.size, mtimeMs: stats.mtimeMs } });
     try {
+      project.noteOwnWrite(path.join(root, "note.md"), stats);
       project.dirtyPaths.add(entry.relative);
       project.scheduleScan(10);
       await pause(120);

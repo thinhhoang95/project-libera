@@ -590,9 +590,21 @@ export function isFinderCopy(entry: Pick<WalkEntry, "birthtimeMs">): boolean {
   return entry.birthtimeMs !== undefined && Math.abs(entry.birthtimeMs - FINDER_BUSY_BIRTH_MS) < 1000;
 }
 
+/**
+ * Milliseconds until a new empty file stops looking like the start of a copy
+ * (0: it already does, or it is not empty). An mtime in the future says nothing
+ * about when the file was written (a copy keeps its source's, a skewed clock
+ * writes one), so it never counts as "just now"; a recent ctime still defers
+ * the file through the scan's quiet-period check.
+ */
+export function emptyFileWaitMs(entry: Pick<WalkEntry, "size" | "mtimeMs">, now: number): number {
+  if (entry.size !== 0 || entry.mtimeMs > now) return 0;
+  return Math.max(0, EMPTY_FILE_SETTLE_MS - (now - entry.mtimeMs));
+}
+
 /** Whether a file not yet shared may still be arriving, so its bytes mean nothing yet. */
 export function mayStillBeCopying(entry: Pick<WalkEntry, "size" | "mtimeMs" | "birthtimeMs">, now: number): boolean {
-  return isFinderCopy(entry) || (entry.size === 0 && now - entry.mtimeMs < EMPTY_FILE_SETTLE_MS);
+  return isFinderCopy(entry) || emptyFileWaitMs(entry, now) > 0;
 }
 
 export interface NotebookWalk {

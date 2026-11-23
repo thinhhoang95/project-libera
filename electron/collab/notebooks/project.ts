@@ -50,6 +50,7 @@ import {
   contentGuard,
   decodeText,
   encodeText,
+  emptyFileWaitMs,
   ensureDirectory,
   isActiveSqliteDatabase,
   isDataless,
@@ -78,7 +79,7 @@ import {
 } from "./fs-ops";
 import { MANIFEST_BATCH_BYTES, computeLayout, entriesUnder, entryRecord, manifestEntryBytes, readManifest, splitManifestBatches } from "./layout";
 import { ManifestIntents, trackEntryWrites } from "./manifest-intents";
-import { FRESH_RETAIN_BYTES, MAX_UPLOAD_BYTES, SCAN_READ_BUDGET_BYTES, noteTruncatedWalk, quietWaitMs, readShared, scanReadState, withinMs } from "./scan-reads";
+import { FRESH_RETAIN_BYTES, MAX_SKIPPED_RETRY_MS, MAX_UPLOAD_BYTES, OWN_WRITE_TTL_MS, SCAN_READ_BUDGET_BYTES, noteTruncatedWalk, quietWaitMs, readShared, scanReadState, withinMs } from "./scan-reads";
 import { ScanFairness } from "./scan-fairness";
 import { PdfCommentService } from "./pdf-comments";
 import { AUDIO_EXTENSIONS, MARKDOWN_EXTENSIONS } from "../../../src/lib/storage/constants";
@@ -673,6 +674,7 @@ export class SharedProject {
           expected = null;
         }
         const stats = await writeFileAtomic(target, bytes, contentGuard(target, expected, guard));
+        this.noteOwnWrite(target, stats);
         setMaterialized(record, sha256(bytes), stats.size, stats.mtimeMs);
         await writeBase(this.info.root, record.docId, text, guard);
       } catch (error) {
@@ -1526,6 +1528,7 @@ export class SharedProject {
         expected = null;
       }
       const stats = await writeFileAtomic(target, bytes, guard);
+      this.noteOwnWrite(target, stats);
       setMaterialized(record, hash, stats.size, stats.mtimeMs);
       this.baselineMissing.delete(entry.fileId);
       this.ctx.host.store.putBlob({ hash, localPath: target, size: bytes.byteLength });
@@ -1804,6 +1807,7 @@ export class SharedProject {
     // Fenced on the bytes the caller read (after the file settled): a change
     // made since then is another person's version and is never replaced.
     const stats = await writeFileAtomic(absolute, stripped, contentGuard(absolute, sha256(bytes), this.diskGuard()));
+    this.noteOwnWrite(absolute, stats);
     return { bytes: stripped, size: stats.size, mtimeMs: stats.mtimeMs };
   }
 
@@ -2029,6 +2033,7 @@ export class SharedProject {
         this.scheduleScan(0); this.scheduleRetry(); return false;
       }
     }
+    this.noteOwnWrite(target, stats);
     setMaterialized(record, hash, stats.size, stats.mtimeMs);
     if (!baseCurrent) await this.writeBaseOrRetry(record, runtime.docId, text);
     this.baselineMissing.delete(runtime.fileId);
@@ -2480,21 +2485,54 @@ export class SharedProject {
   }
 
   /**
-   * Whether every path the watcher reported now has the size and mtime the
-   * bookkeeping holds for it: the writer's own atomic write (it records what it
-   * placed), or a touch that changed nothing. Walking the whole notebook for
-   * that is wasted work (the poll still verifies on its schedule). Those paths
-   * are dropped from the dirty set; any other event, or a stat that cannot be
-   * taken quickly, leaves everything for the scan.
+   * Remembers what this host's own write left on disk (the file's exact stat,
+   * under the spelling it was written with), so the watcher event that write
+   * raises can be told from anybody else's change. Recorded after the write
+   * has completed; an event that arrives before that is simply scanned.
+   */
+  private noteOwnWrite(absolute: string, stats: Stats): void {
+    const relative = path.relative(this.info.root, absolute).split(path.sep).join("/");
+    if (!relative || relative.startsWith("..")) return;
+    const writes = scanReadState(this).ownWrites;
+    const at = performance.now();
+    if (writes.size > 512) for (const [key, own] of writes) if (at - own.at > OWN_WRITE_TTL_MS) writes.delete(key);
+    writes.set(manifestPathKey(relative), { relative, size: stats.size, mtimeMs: stats.mtimeMs, ctimeMs: stats.ctimeMs, ino: stats.ino, at });
+  }
+
+  /**
+   * Whether every path the watcher reported is this host's own recent write,
+   * unchanged since: same spelling, size, mtime, ctime and inode as recorded
+   * when it was written (and as the bookkeeping holds). A preserved-size,
+   * preserved-mtime edit still moves the ctime, so it is not mistaken for it.
+   * Walking the whole notebook for that is wasted work (the poll still
+   * verifies on its schedule). Those paths are dropped from the dirty set; any
+   * other event, or a stat that cannot be taken quickly, leaves everything for
+   * the scan.
    */
   private async ownWritesOnly(): Promise<boolean> {
     if (this.stopped || this.verifyAll || this.dirtyPaths.size === 0) return false;
     const records = new Map<string, LayoutRecord>();
     for (const record of Object.values(this.state.layout)) if (record.kind !== "folder" && record.hash) records.set(manifestPathKey(record.path), record);
     const reported = [...this.dirtyPaths];
+    // Out of the dirty set while the stats are read: an event that arrives
+    // meanwhile is then kept, not removed together with these.
+    for (const relative of reported) this.dirtyPaths.delete(relative);
+    if (await this.reportedAreOwnWrites(reported, records)) {
+      // Something arrived while the stats were taken: it has its own debounce.
+      if (this.dirtyPaths.size > 0) this.scheduleScan(this.ctx.timings.settleMs * this.powerScale());
+      return true;
+    }
+    for (const relative of reported) this.dirtyPaths.add(relative);
+    return false;
+  }
+
+  private async reportedAreOwnWrites(reported: string[], records: Map<string, LayoutRecord>): Promise<boolean> {
+    const writes = scanReadState(this).ownWrites;
     for (const relative of reported) {
       const record = records.get(manifestPathKey(relative));
       if (!record || record.size === undefined || record.mtimeMs === undefined) return false;
+      const own = writes.get(manifestPathKey(relative));
+      if (!own || own.relative !== relative || record.path !== relative || performance.now() - own.at > OWN_WRITE_TTL_MS) return false;
       let timer: ReturnType<typeof setTimeout> | undefined;
       const slow = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), HYDRATION_WAIT_MS); timer.unref?.(); });
       const stats = await Promise.race([
@@ -2503,12 +2541,9 @@ export class SharedProject {
       ]);
       clearTimeout(timer);
       if (!stats || !stats.isFile() || stats.size !== record.size || stats.mtimeMs !== record.mtimeMs) return false;
+      if (stats.size !== own.size || stats.mtimeMs !== own.mtimeMs || stats.ctimeMs !== own.ctimeMs || stats.ino !== own.ino) return false;
     }
-    if (this.stopped || this.verifyAll) return false;
-    for (const relative of reported) this.dirtyPaths.delete(relative);
-    // Something arrived while the stats were taken: it has its own debounce.
-    if (this.dirtyPaths.size > 0) this.scheduleScan(this.ctx.timings.settleMs * this.powerScale());
-    return true;
+    return !this.stopped && !this.verifyAll;
   }
 
   /** Turns differences between the folder and the layout into document edits and manifest operations. */
@@ -2586,6 +2621,8 @@ export class SharedProject {
     const touched = new Set<string>();
     const accountId = this.canEdit ? await this.ctx.accountId().catch(() => "") : "";
     let needsRetry = false;
+    /** Files sat out this scan after failed reads: they are looked at again later, with a growing wait. */
+    let skippedRetry = false;
     /** The shortest wait until a file another program is still changing counts as quiet. */
     let quietDeferMs = Infinity;
     /** Bytes still to read this scan, tracked files and new ones alike. */
@@ -2676,7 +2713,10 @@ export class SharedProject {
         continue;
       }
       // A path whose read failed sits out some scans, so it cannot take the budget at every one.
-      if (fair.skipped(fileId)) continue;
+      if (fair.skipped(fileId)) {
+        skippedRetry = true;
+        continue;
+      }
       // One scan reads a bounded amount in all; the rest waits for the next
       // and goes first there.
       if (seen.size > readBudget) {
@@ -2736,13 +2776,13 @@ export class SharedProject {
         try {
           stripped = await this.stripForUpload(absolute, seen.relative, bytes);
         } catch (error) {
-          // The file changed under the rewrite: judge it again next scan
-          // rather than uploading photo bytes that still carry location data.
-          if (error instanceof WriteCancelledError) {
-            this.verified.delete(fileId);
-            needsRetry = true;
-            continue;
-          }
+          // The file changed under the rewrite, or it could not be written
+          // (disk full, read-only, denied): judge it again next scan rather
+          // than uploading photo bytes that still carry location data.
+          if (!(error instanceof WriteCancelledError)) this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: could not remove the location details from ${seen.relative}, so it is not shared yet.`, error);
+          this.verified.delete(fileId);
+          needsRetry = true;
+          continue;
         }
         if (stripped) {
           bytes = stripped.bytes;
@@ -2852,8 +2892,11 @@ export class SharedProject {
     const arriving = new Set<string | null>();
     /** Folders (as manifest keys) holding such files: no folder entry is made for them yet, and a missing folder waits (S43). */
     const unsettledDirectories = new Set<string>();
-    const noteUnsettled = (relative: string) => {
+    /** Sizes of such files: a missing binary of one of them waits too (its bytes are not known yet, so only its size can say it may be that file). */
+    const unsettledSizes = new Set<number>();
+    const noteUnsettled = (relative: string, size: number) => {
       arriving.add(docKindForPath(relative));
+      unsettledSizes.add(size);
       for (let at = relative.lastIndexOf("/"); at > 0; at = relative.lastIndexOf("/", at - 1)) unsettledDirectories.add(manifestPathKey(relative.slice(0, at)));
     };
     for (const [relative, entry] of fair.order([...files], ([name]) => `path:${name}`)) {
@@ -2867,7 +2910,10 @@ export class SharedProject {
       // remain available; leave unexplained disk bytes untouched.
       // Judge a file only once it has arrived; the poll comes back to it.
       if (mayStillBeCopying(entry, now)) {
-        noteUnsettled(relative);
+        noteUnsettled(relative, entry.size);
+        // A new empty file is judged once its settle time is over (no wait is known for a Finder copy: the watcher or the poll comes back).
+        const emptyWait = emptyFileWaitMs(entry, now);
+        if (emptyWait > 0) quietDeferMs = Math.min(quietDeferMs, emptyWait);
         continue;
       }
       // And once no program has changed it for a while: a copy can pause
@@ -2879,7 +2925,7 @@ export class SharedProject {
       const renameCandidate = stillChanging > 0 && missingSizes.has(entry.size);
       if (stillChanging > 0 && !renameCandidate) {
         quietDeferMs = Math.min(quietDeferMs, stillChanging);
-        noteUnsettled(relative);
+        noteUnsettled(relative, entry.size);
         continue;
       }
       // Reading an online-only file downloads it: decide from the stat first.
@@ -2897,11 +2943,17 @@ export class SharedProject {
         && !missingSizes.has(entry.size) && !missingSizes.has(undefined)
         && !this.retired.has(manifestPathKey(relative)) && !this.conflictCopyOf(relative, "")) continue;
       const freshKey = `path:${relative}`;
-      if (fair.skipped(freshKey)) continue;
+      // A file not read this scan (it sits out, or waits for budget or a read slot) may be a missing one moved: those wait for it (H9).
+      if (fair.skipped(freshKey)) {
+        skippedRetry = true;
+        noteUnsettled(relative, entry.size);
+        continue;
+      }
       // One scan hydrates a bounded amount; the rest waits for the next and goes first there.
       if (entry.size > readBudget) {
         fair.leftOut(freshKey);
         needsRetry = true;
+        noteUnsettled(relative, entry.size);
         continue;
       }
       const absolute = await resolveInside(this.info.root, relative).catch(() => null);
@@ -2909,6 +2961,7 @@ export class SharedProject {
       if (read === SLOW_READ) {
         fair.failed(freshKey);
         needsRetry = true;
+        noteUnsettled(relative, entry.size);
         continue;
       }
       fair.served(freshKey);
@@ -2919,6 +2972,8 @@ export class SharedProject {
       // Not the bytes of a missing file after all: judged like any other new file, once quiet.
       if (renameCandidate && ![...missing].some((fileId) => this.state.layout[fileId]?.hash === hash)) {
         quietDeferMs = Math.min(quietDeferMs, stillChanging);
+        // Same size as a missing file but other bytes: a rename and an edit that kept the length is still possible.
+        noteUnsettled(relative, entry.size);
         continue;
       }
       const lateCopy = this.isLateCopy(relative, hash);
@@ -3159,7 +3214,9 @@ export class SharedProject {
     // for a bounded number of scans.
     for (const fileId of missing) {
       const record = this.state.layout[fileId];
-      const waiting = record.kind === "folder" ? unsettledDirectories.size > 0 : record.kind === "doc" && Boolean(record.hash) && arriving.has(docKindForPath(record.path));
+      const waiting = record.kind === "folder" ? unsettledDirectories.size > 0
+        : record.kind === "doc" ? Boolean(record.hash) && arriving.has(docKindForPath(record.path))
+          : Boolean(record.hash) && record.size !== undefined && unsettledSizes.has(record.size);
       if (held.has(fileId) || !this.canEdit || !waiting) continue;
       // Held while the new files settle, for a bounded time (not a number of scans: a busy folder is scanned many times in one quiet period).
       const holdKey = `unsettled:${fileId}`;
@@ -3269,6 +3326,12 @@ export class SharedProject {
     fair.keepOnly(new Set([...Object.keys(this.state.layout), ...[...files.keys()].map((name) => `path:${name}`)]));
     if (quietDeferMs !== Infinity) this.scheduleScan(Math.ceil(quietDeferMs) + 50);
     if (needsRetry) this.scheduleRetry();
+    else if (skippedRetry) {
+      // Only files sitting out after failed reads are left: come back with a growing wait, so a file that stays unreadable is not walked for every few seconds.
+      const delay = Math.min(MAX_SKIPPED_RETRY_MS, this.ctx.timings.retryMs * 2 ** Math.min(6, scanReads.skippedRetries));
+      scanReads.skippedRetries += 1;
+      this.scheduleScan(delay * this.powerScale());
+    } else scanReads.skippedRetries = 0;
   }
 
   /** Whether a missing entry's old path is really gone: the disk may also fail to say (S41). */
@@ -3542,8 +3605,10 @@ export class SharedProject {
     try {
       stripped = await this.stripForUpload(path.join(this.info.root, ...entry.relative.split("/")), entry.relative, bytes);
     } catch (error) {
-      // Changed under the rewrite: not shared until it is judged again.
-      if (error instanceof WriteCancelledError) return null;
+      // Changed under the rewrite, or it could not be written: not shared
+      // (its bytes may still carry location data) until it is judged again.
+      if (!(error instanceof WriteCancelledError)) this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: could not remove the location details from ${entry.relative}, so it is not shared yet.`, error);
+      return null;
     }
     if (stripped) {
       bytes = stripped.bytes;
@@ -3979,6 +4044,7 @@ export class SharedProject {
     try {
       if (arrived) await this.archive(relative, contentGuard(target, sha256(arrived), guard));
       stats = await writeFileAtomic(target, bytes, contentGuard(target, null, guard));
+      this.noteOwnWrite(target, stats);
     } catch (error) {
       if (!(error instanceof WriteCancelledError) || !(await guard.canCommit())) throw error;
       // The server already holds the submitted input. Publish its identity;
