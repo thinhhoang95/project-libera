@@ -194,13 +194,56 @@ test("M17: a local change during the digest round trip skips the check", async (
   divergence.stop();
 });
 
-test("M17: a digest from a different server seq is not conclusive", async () => {
+test("M17: a digest older than what the host has seen is not conclusive", async () => {
+  const { hub, server } = pair();
+  hub.doc.getText("source").delete(1, 1);
+  hub.hasOpened = true;
+  const { log, divergence } = checker(hub, { digest: () => digestFor(server, 3), lastSeen: 5 });
+  const record = await divergence.checkDoc("d1");
+  assert.equal(record.outcome, "inconclusive");
+  assert.equal(log.reopened, 0);
+  divergence.stop();
+});
+
+test("M17: a host behind the digest that never catches up has missed an update: mismatch and recovery", async () => {
   const { hub, server } = pair();
   hub.doc.getText("source").delete(1, 1);
   hub.hasOpened = true;
   const { log, divergence } = checker(hub, { digest: () => digestFor(server, 7), lastSeen: 5 });
+  const keepAlive = setTimeout(() => {}, 5000); // the checker's own timers are unref'd
   const record = await divergence.checkDoc("d1");
-  assert.equal(record.outcome, "inconclusive");
+  clearTimeout(keepAlive);
+  assert.equal(record.outcome, "mismatch");
+  assert.equal(log.reopened, 1);
+  divergence.stop();
+});
+
+test("M17: a host behind the digest that catches up compares again", async () => {
+  const { hub, server } = pair();
+  hub.hasOpened = true;
+  server.getText("source").delete(1, 1); // the server deleted "b"; the host has not received that yet
+  let seen = 5;
+  const log = { reopened: 0 };
+  const dh: DivergenceHost = {
+    api: () => ({ request: async () => digestFor(server, 7) }) as unknown as ApiClient,
+    store: () => ({ getDocMeta: () => ({ lastSeenServerSeq: seen }) }) as unknown as HostStore,
+    openHub: () => hub as unknown as DocHub,
+    openDocIds: () => ["d1"],
+    acquire: () => hub as unknown as DocHub,
+    release: () => {},
+    reopenFull: async () => {
+      log.reopened += 1;
+      return true;
+    },
+  };
+  const divergence = new DivergenceChecker({ host: dh, logger: quietLogger, recoveryTimeoutMs: 2000, retryMs: 10_000_000 });
+  setTimeout(() => {
+    hub.doc.getText("source").delete(1, 1); // the update arrives and the host is level with the digest
+    seen = 7;
+    hub.emit();
+  }, 30);
+  const record = await divergence.checkDoc("d1");
+  assert.equal(record.outcome, "match");
   assert.equal(log.reopened, 0);
   divergence.stop();
 });

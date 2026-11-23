@@ -303,14 +303,27 @@ export class DivergenceChecker {
     // not move the state vector: if the local state changed meanwhile, the
     // digest describes some other moment and proves nothing.
     if (!sameLocalState(before.state, local.state)) return this.record(docId, "skipped", { detail: "changed-during-check" });
-    const outcome = compareDigest(local.state, digest);
+    let current = local.state;
+    let outcome = compareDigest(current, digest);
     if (outcome !== "mismatch") return this.record(docId, outcome);
-    // Equal vectors with different text are conclusive only if the host has seen
-    // everything the server had when it computed the digest.
-    if (this.host.store().getDocMeta(docId)?.lastSeenServerSeq !== digest.serverSeq) return this.record(docId, "inconclusive", { detail: "server-seq-differs" });
+    // Equal vectors with different text are conclusive only once the host has seen everything the server had
+    // when it computed the digest. A host ahead of the digest is looking at something newer: inconclusive.
+    // One that is behind may just not have received the updates yet: wait (bounded, on the hub's own status
+    // events) for it to catch up. If it never does, the update was missed, which is the divergence to report.
+    const seen = () => this.host.store().getDocMeta(docId)?.lastSeenServerSeq ?? 0;
+    if (seen() > digest.serverSeq) return this.record(docId, "inconclusive", { detail: "server-seq-differs" });
+    const hub = seen() < digest.serverSeq ? this.host.openHub(docId) : null;
+    if (hub && (await this.until(hub, () => seen() >= digest.serverSeq))) {
+      const again = this.readLocal(docId);
+      if (!again.ok) return this.record(docId, "skipped", { detail: again.detail });
+      current = again.state;
+      outcome = compareDigest(current, digest);
+      if (outcome !== "mismatch") return this.record(docId, outcome);
+      if (seen() > digest.serverSeq) return this.record(docId, "inconclusive", { detail: "server-seq-differs" });
+    }
 
     this.logger.error(
-      `Divergence: ${docId} (${local.state.subdoc}) differs from the server at the same state vector (server seq ${digest.serverSeq}).`,
+      `Divergence: ${docId} (${current.subdoc}) differs from the server at the same state vector (server seq ${digest.serverSeq}).`,
     );
     if (!recover) return this.record(docId, "mismatch", { detail: "still-differs", recovered: false });
     const recovered = await this.recover(docId);
