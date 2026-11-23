@@ -46,10 +46,18 @@ export async function databasePath(directory: string, authority: AccountAuthorit
       }
     }
     const owner = !foreign && (evidence || (remembered !== null && sameAuthority(remembered, authority))) ? authority : null;
+    if (!owner) {
+      // Foreign or missing evidence (another server's account with the same id,
+      // or the folders holding the markers are not mounted) proves nothing about
+      // the real owner. Pinning the file to nobody would send that owner to an
+      // empty database for good, so it stays unpinned and only this sign-in
+      // uses the scoped one.
+      logger.warn(`The legacy collaboration database ${legacy} was left untouched because its server identity could not be established for this sign-in.`);
+      return scoped;
+    }
     // FULL-synchronous SQLite commits ownership under the existing process
     // lock, without copying a database/WAL or losing unacknowledged batches.
     store.setDatabaseAuthority(owner);
-    if (!owner) logger.warn(`The legacy collaboration database ${legacy} was preserved for recovery because its server identity could not be established.`);
-    return owner ? legacy : scoped;
+    return legacy;
   } finally { store.close(); }
 }
