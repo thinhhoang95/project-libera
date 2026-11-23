@@ -8,7 +8,7 @@
 
 import { promises as fs, type Dirent } from "node:fs";
 import path from "node:path";
-import { readNotebookBinding, readNotebookLifecycle, recordNotebookBinding, recordNotebookLifecycle, sameNotebookIdentity } from "../../../src/lib/collab/local-notebook-state";
+import { compatibleNotebookIdentity, deleteNotebookBinding, readNotebookBinding, readNotebookLifecycle, recordNotebookBinding, recordNotebookLifecycle, sameNotebookIdentity } from "../../../src/lib/collab/local-notebook-state";
 import { reserveLifecycle, ReservationConflictError, type Reservation } from "../../../src/lib/collab/lifecycle-reservation";
 import { recordRootTransition } from "../../../src/lib/collab/root-transitions";
 import { readReviewDocuments } from "../../../src/lib/storage/review-files";
@@ -453,7 +453,7 @@ export class NotebookServiceImpl implements NotebookService {
       if (this.pendingRoots.has(root)) continue;
       const marker = await readMarker(root).catch(() => null);
       if (!marker || marker.projectId !== projectId) continue;
-      if (binding ? !sameNotebookIdentity(binding, marker) :
+      if (binding ? !compatibleNotebookIdentity(binding, marker) :
           !api || marker.accountId !== accountId || marker.serverUrl.replace(/\/+$/, "") !== api.baseUrl) continue;
       candidates.push(root);
     }
@@ -502,6 +502,7 @@ export class NotebookServiceImpl implements NotebookService {
           if (!marker) return;
           this.deps.host.store.upsertProject({ ...row, localRoot: root });
           this.unjoined.delete(root);
+          this.followRebind(row.projectId, row.name, row.localRoot, root);
         }
       }
       if (!this.markerAuthorityMatches(marker)) return;
@@ -536,7 +537,9 @@ export class NotebookServiceImpl implements NotebookService {
     const marker = await readMarker(handle.root);
     if (!this.matchesMarker(handle, marker) || !this.markerAuthorityMatches(marker)) throw new ControlError(409, "notebook-unavailable", "The notebook folder identity changed while it was opening.");
     if (!this.mayRun(handle, marker, epoch)) throw new WriteCancelledError();
+    // An upgraded marker (a folderId a legacy binding lacked) replaces the binding here.
     recordNotebookBinding(this.lifecycleDirectory, handle.root, marker);
+    handle.folderId ??= marker.folderId ?? null;
     const runtime = await SharedProject.open(this.context(), {
       projectId: handle.projectId,
       name: handle.name,
@@ -800,6 +803,19 @@ export class NotebookServiceImpl implements NotebookService {
   }
 
   /**
+   * A project now lives at `moved` instead of `previous` (which is gone). The old path's binding is removed, or any
+   * later notebook at that path would be refused as UNREADABLE and as an ambiguous copy. Stars, tags, review keys,
+   * agent history, attachments and saved workspaces name the notebook by its folder: a rename within one parent
+   * folder is recorded once, durably, for Next to apply.
+   */
+  private followRebind(projectId: string, name: string, previous: string, moved: string): void {
+    if (path.resolve(previous) !== path.resolve(moved)) deleteNotebookBinding(this.lifecycleDirectory, previous);
+    if (path.dirname(previous) !== path.dirname(moved)) return;
+    try { recordRootTransition(this.lifecycleDirectory, { projectId, from: path.basename(previous), to: path.basename(moved) }); }
+    catch (error) { this.logger.warn(`Shared notebook ${name}: the folder rename could not be recorded for its stars, tags and other records.`, error); }
+  }
+
+  /**
    * A running notebook's folder renamed or moved (Finder, a sync client):
    * hands the project to the one compatible folder found, with the startup
    * identity checks (movedRoot); loadStoredProjects then starts it there.
@@ -818,12 +834,7 @@ export class NotebookServiceImpl implements NotebookService {
     if (row) this.deps.host.store.upsertProject({ ...row, localRoot: moved });
     this.projects.delete(handle.projectId);
     this.unjoined.delete(moved);
-    // Stars, tags, review keys, agent history, attachments and saved workspaces name the notebook by its folder:
-    // the rename is recorded once, durably, for Next to apply (it was applied by no one while the host only rebound).
-    if (path.dirname(handle.root) === path.dirname(moved)) {
-      try { recordRootTransition(this.lifecycleDirectory, { projectId: handle.projectId, from: path.basename(handle.root), to: path.basename(moved) }); }
-      catch (error) { this.logger.warn(`Shared notebook ${handle.name}: the folder rename could not be recorded for its stars, tags and other records.`, error); }
-    }
+    this.followRebind(handle.projectId, handle.name, handle.root, moved);
     this.logger.warn(`Shared notebook ${handle.name}: its folder moved to ${path.basename(moved)}; it continues there.`);
     this.deps.emit({ t: "project-changed", projectId: handle.projectId });
     this.deps.statusChanged?.();
@@ -891,6 +902,8 @@ export class NotebookServiceImpl implements NotebookService {
       recordNotebookLifecycle(this.lifecycleDirectory, legacy, outcome);
     }
     this.deps.host.store.deleteProject(projectId);
+    // The outcome above is what keeps this folder's identity ended; the binding would only outlive the project.
+    deleteNotebookBinding(this.lifecycleDirectory, root);
     this.logger.warn(`Shared notebook ${path.basename(root)}: the server no longer has this project, so it ended here.`);
     this.deps.emit({ t: "project-changed", projectId });
   }
@@ -1016,8 +1029,14 @@ export class NotebookServiceImpl implements NotebookService {
           continue;
         }
         if (await this.repairEndedMarker(root, marker)) continue;
-        const binding = readNotebookBinding(this.lifecycleDirectory, root);
-        if (binding && !sameNotebookIdentity(binding, marker) && !readNotebookLifecycle(this.lifecycleDirectory, binding)) {
+        let binding = readNotebookBinding(this.lifecycleDirectory, root);
+        if (binding && !compatibleNotebookIdentity(binding, marker) && !readNotebookLifecycle(this.lifecycleDirectory, binding) &&
+            this.staleBinding(root, binding, accountId)) {
+          // The project it names runs in another folder now (or belongs to another account): a leftover, not a conflict.
+          deleteNotebookBinding(this.lifecycleDirectory, root);
+          binding = null;
+        }
+        if (binding && !compatibleNotebookIdentity(binding, marker) && !readNotebookLifecycle(this.lifecycleDirectory, binding)) {
           this.unjoined.set(root, { notebook: path.basename(root), projectId: marker.projectId, status: 409, reason: "ambiguous-copy" });
           continue;
         }
@@ -1048,9 +1067,17 @@ export class NotebookServiceImpl implements NotebookService {
     }
   }
 
+  /** A binding whose project is registered at another folder, or that belongs to another account, guards nothing here. */
+  private staleBinding(root: string, binding: SharedMarker, accountId: string | null): boolean {
+    const registered = this.projects.get(binding.projectId)?.root ?? this.deps.host.store.getProject(binding.projectId)?.localRoot;
+    const fold = (value: string) => process.platform === "win32" || process.platform === "darwin" ? path.resolve(value).toLowerCase() : path.resolve(value);
+    if (registered) return fold(registered) !== fold(root);
+    return accountId !== null && binding.accountId !== accountId;
+  }
+
   private async repairEndedMarker(root: string, marker: SharedMarker): Promise<"local" | "revoked" | null> {
     const binding = readNotebookBinding(this.lifecycleDirectory, root);
-    if (binding && !sameNotebookIdentity(binding, marker) && !readNotebookLifecycle(this.lifecycleDirectory, binding)) return null;
+    if (binding && !compatibleNotebookIdentity(binding, marker) && !readNotebookLifecycle(this.lifecycleDirectory, binding)) return null;
     const outcome = readNotebookLifecycle(this.lifecycleDirectory, marker);
     if (!outcome) return null;
     const originalRoot = await statIfExists(root).catch(() => null);
@@ -1210,7 +1237,7 @@ export class NotebookServiceImpl implements NotebookService {
         (handle.folderId && marker.folderId !== handle.folderId)) return false;
     const binding = readNotebookBinding(this.lifecycleDirectory, handle.root);
     return !binding || binding.projectId !== handle.projectId || binding.manifestDocId !== handle.manifestDocId ||
-      sameNotebookIdentity(binding, marker);
+      compatibleNotebookIdentity(binding, marker);
   }
 
   private async accountId(): Promise<string> {
