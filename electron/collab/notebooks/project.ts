@@ -344,6 +344,14 @@ export class SharedProject {
   private entries = new Map<string, ManifestEntry>();
   private manifestHub: DocHub | null = null;
   private manifestRebuilt = false;
+  /** A manifest pass or document writes a lapsed writer deferred until its lease is confirmed. */
+  private manifestDeferred = false;
+  private writesDeferred = false;
+  /** Retirements and transition rows held back until the server has the manifest's local edits. */
+  private retiresDeferred = false;
+  private transitionsDeferred = false;
+  /** Layout records of new files, inserted once the manifest entry that names them is written. */
+  private pendingLayout = new Map<string, LayoutRecord>();
   private manifestConnected = false;
   private manifestWasReady = false;
   private readonly docs = new Map<string, DocRuntime>();
@@ -506,8 +514,17 @@ export class SharedProject {
     return project;
   }
 
+  /**
+   * This runtime may not touch the disk now: it follows for good, or it is a writer whose lease has
+   * lapsed. Disk work waits (a lapsed writer resumes when the lease is confirmed; see leaseConfirmed).
+   */
   get follower(): boolean {
     return this.info.follower === true || this.ctx.canWriteDisk?.(this.info.projectId) === false;
+  }
+
+  /** The runtime follows the manifest for good: its layout is the manifest's, never its own bookkeeping. */
+  private get permanentFollower(): boolean {
+    return this.info.follower === true;
   }
 
   get role(): Role {
@@ -566,15 +583,21 @@ export class SharedProject {
           return;
         }
         if (change.origin === "server") this.manifestRebuilt = false;
-        const current = this.readEntries();
-        for (const entry of this.observedEntries.values()) {
-          if (current.get(entry.fileId)?.path !== entry.path) this.retirePath(entry.path, knownHashes(this.state.layout[entry.fileId], entry));
-        }
-        this.observedEntries = current;
+        this.retireObserved();
         this.scheduleManifest(30);
         this.scheduleIntents();
       }),
       hub.onStatus(() => {
+        // A rollback to nothing raises no "server" change: hearing the server again is what ends it (H2).
+        if (this.manifestRebuilt && hub.caughtUp) {
+          this.manifestRebuilt = false;
+          this.scheduleManifest(30);
+        }
+        // The server has the local edits now: the retirements and transition rows they wait for are due (M23).
+        if ((this.retiresDeferred || this.transitionsDeferred) && this.manifestAcknowledged()) {
+          this.retireObserved();
+          if (this.transitionsDeferred) this.scheduleManifest(30);
+        }
         this.scheduleIntents();
         // The retry that saved a change which was only in memory: its disk work may run now (no timer of its own).
         if (this.durableWaiting && hub.unpersistedCount === 0) {
@@ -602,7 +625,8 @@ export class SharedProject {
       if (record.kind === "doc" && record.docId) this.ensureDoc(record.docId, fileId);
     }
     this.scheduleManifest(0);
-    if (!this.follower) this.startWatching();
+    // A lapsed writer still watches: its scans wait for the lease (scheduleScan).
+    if (!this.permanentFollower) this.startWatching();
   }
 
   /**
@@ -988,7 +1012,10 @@ export class SharedProject {
    */
   private manifestReady(): boolean {
     const hub = this.manifestHub;
-    if (!hub || hub.isClosed || this.manifestRebuilt) return false;
+    if (!hub || hub.isClosed) return false;
+    // A rollback to nothing raises no "server" change; hearing the server again ends the rebuilt state (H2).
+    if (this.manifestRebuilt && hub.caughtUp) this.manifestRebuilt = false;
+    if (this.manifestRebuilt) return false;
     return hubHasState(this.ctx.host, hub, "manifest");
   }
 
@@ -1003,6 +1030,25 @@ export class SharedProject {
     if (hub.isClosed || !hub.caughtUp || this.caughtUp.get(hub.docId) === hub.catchUpGeneration) return false;
     this.caughtUp.set(hub.docId, hub.catchUpGeneration);
     return true;
+  }
+
+  /** The manifest has heard the server and the server has every local edit: only then are removals and moves final. */
+  private manifestAcknowledged(): boolean {
+    return this.manifestCaughtUp() && (this.manifestHub?.pendingCount ?? 0) === 0;
+  }
+
+  /** Retires the paths the manifest's entries left, once the server has the edit that moved them (M23). */
+  private retireObserved(): void {
+    if (!this.manifestAcknowledged()) {
+      this.retiresDeferred = true;
+      return;
+    }
+    this.retiresDeferred = false;
+    const current = this.readEntries();
+    for (const entry of this.observedEntries.values()) {
+      if (current.get(entry.fileId)?.path !== entry.path) this.retirePath(entry.path, knownHashes(this.state.layout[entry.fileId], entry));
+    }
+    this.observedEntries = current;
   }
 
   private hubCaughtUp(hub: DocHub): boolean {
@@ -1049,9 +1095,15 @@ export class SharedProject {
       this.pdfLiveSnapshot = pdfLive;
       this.ctx.emit({ t: "project-changed", projectId: this.info.projectId });
     }
-    if (this.follower) {
+    if (this.permanentFollower) {
       this.followManifest();
       this.notifyAlbumChanged();
+      return;
+    }
+    // A writer whose lease has lapsed neither follows the manifest nor touches the disk: its layout holds
+    // the hashes and history of its own files. The pass runs when the lease is confirmed (C1).
+    if (this.follower) {
+      this.manifestDeferred = true;
       return;
     }
     // Hands off the disk until the server has answered; the status listener runs this again then.
@@ -1663,7 +1715,8 @@ export class SharedProject {
 
   /** Keep the latest CRDT text as well as any distinct on-disk version. */
   private async archiveRemoved(record: LayoutRecord): Promise<void> {
-    if (!(await this.rootAvailable())) return;
+    // Not archived is not removed: the pass keeps the record and tries again (M10).
+    if (!(await this.rootAvailable())) throw new WriteCancelledError();
     const runtime = record.docId ? this.docs.get(record.docId) : undefined;
     if (!runtime || !this.docReady(runtime)) {
       await this.archive(record.path);
@@ -1882,6 +1935,8 @@ export class SharedProject {
       }),
       hub.onStatus(() => {
         // Ready from the cache first, then caught up with the server: the second is when a writer may write.
+        // A rollback to an empty document raises no "server" change: hearing the server again ends it (H2).
+        if (runtime.rebuilt && hub.caughtUp) runtime.rebuilt = false;
         if ((!runtime.wasReady && this.docReady(runtime)) || this.noteCaughtUp(hub)) this.scheduleWrite(runtime);
       }),
       hub.onMeta((meta) => this.metaChanged(meta.role, meta.readOnlyReason)),
@@ -1900,14 +1955,22 @@ export class SharedProject {
   }
 
   private docReady(runtime: DocRuntime): boolean {
-    if (runtime.rebuilt || runtime.hub.isClosed) return false;
+    if (runtime.hub.isClosed) return false;
+    // Same as manifestReady: the server's answer after a rollback may carry no change to observe (H2).
+    if (runtime.rebuilt && runtime.hub.caughtUp) runtime.rebuilt = false;
+    if (runtime.rebuilt) return false;
     const ready = hubHasState(this.ctx.host, runtime.hub, "content");
     if (ready) runtime.wasReady = true;
     return ready;
   }
 
   private scheduleWrite(runtime: DocRuntime): void {
-    if (this.stopped || this.follower) return;
+    if (this.stopped) return;
+    if (this.follower) {
+      // A lapsed writer's dirty documents are written once its lease is confirmed.
+      if (!this.permanentFollower) this.writesDeferred = true;
+      return;
+    }
     if (runtime.writeTimer) clearTimeout(runtime.writeTimer);
     const now = Date.now();
     runtime.pendingSince ??= now;
@@ -2341,6 +2404,14 @@ export class SharedProject {
 
   /** The service renewed this writer's lease: a scan refused while it had lapsed runs now. */
   leaseConfirmed(): void {
+    if (this.manifestDeferred) {
+      this.manifestDeferred = false;
+      this.scheduleManifest(0);
+    }
+    if (this.writesDeferred) {
+      this.writesDeferred = false;
+      for (const runtime of this.docs.values()) this.scheduleWrite(runtime);
+    }
     if (!this.scanDeferred) return;
     this.scanDeferred = false;
     this.scheduleScan(0);
@@ -3219,10 +3290,11 @@ export class SharedProject {
           continue;
         }
         operations.push((map, doc) => {
-          if (this.isLateCopy(created.path, candidate.hash) || !this.pathFree(doc, created.path)) {
-            delete this.state.layout[created.fileId];
-            return;
-          }
+          const record = this.pendingLayout.get(created.fileId);
+          this.pendingLayout.delete(created.fileId);
+          if (this.isLateCopy(created.path, candidate.hash) || !this.pathFree(doc, created.path)) return;
+          // The file enters the layout with its manifest entry, never before (C4).
+          if (record) this.state.layout[created.fileId] = record;
           map.set(created.fileId, entryRecord(created));
           if (this.info.album) {
             const photo: AlbumPhotoRecord = { fileId: created.fileId, addedBy: accountId, updatedAt: now };
@@ -3249,10 +3321,16 @@ export class SharedProject {
     if (operations.length > 0) {
       if (this.follower || !(await this.rootAvailable())) {
         this.state.layout = previous;
+        this.pendingLayout.clear();
         this.missingSince.clear();
         return;
       }
-      await this.writeManifestOperations(operations, EXTERNAL);
+      try {
+        await this.writeManifestOperations(operations, EXTERNAL);
+      } finally {
+        // Files whose manifest entry was not written (a cancelled or failed write) never joined the layout.
+        this.pendingLayout.clear();
+      }
       if (addedPhotos.length > 0) this.reportAddedPhotos(addedPhotos);
       for (const reconciliation of openedReconciliations) this.ctx.emit({ t: "reconcile-needed", reconciliation });
       if (openedReconciliations.length > 0) this.ctx.emit({ t: "project-changed", projectId: this.info.projectId });
@@ -3572,7 +3650,7 @@ export class SharedProject {
         await createSharedDocument(api, this.info.projectId, { docId, fileId }, classified.docKind, classified.text);
         if (!(await stillCurrent())) return null;
         this.importAttempts.delete(attemptKey);
-        this.state.layout[fileId] = { path: entry.relative, kind: "doc", docId, docKind: classified.docKind, hash, size: entry.size, mtimeMs: entry.mtimeMs };
+        this.pendingLayout.set(fileId, { path: entry.relative, kind: "doc", docId, docKind: classified.docKind, hash, size: entry.size, mtimeMs: entry.mtimeMs });
         await writeBase(this.info.root, docId, classified.text, this.diskGuard());
         this.ctx.host.store.upsertDoc({ docId, projectId: this.info.projectId, fileId, path: entry.relative, materializedHash: hash });
         return { fileId, path: entry.relative, kind: "doc", docId, docKind: classified.docKind, size: bytes.byteLength, createdBy: accountId, createdAt: now, updatedAt: now };
@@ -3581,7 +3659,7 @@ export class SharedProject {
       await api.uploadBlob(this.info.projectId, bytes, mime);
       if (!(await stillCurrent())) return null;
       this.importAttempts.delete(attemptKey);
-      this.state.layout[fileId] = { path: entry.relative, kind: "blob", hash, size: entry.size, mtimeMs: entry.mtimeMs };
+      this.pendingLayout.set(fileId, { path: entry.relative, kind: "blob", hash, size: entry.size, mtimeMs: entry.mtimeMs });
       this.ctx.host.store.putBlob({ hash, localPath: path.join(this.info.root, ...entry.relative.split("/")), size: bytes.byteLength });
       return { fileId, path: entry.relative, kind: "blob", blobHash: hash, size: bytes.byteLength, mime, createdBy: accountId, createdAt: now, updatedAt: now };
     } catch (error) {
@@ -3915,7 +3993,15 @@ export class SharedProject {
    * and the caller learns the created file's own path, never the other's.
    */
   private async publishCreated(created: ManifestEntry): Promise<string> {
-    await this.writeManifest((map) => map.set(created.fileId, entryRecord(created)), { source: "typing" });
+    try {
+      await this.writeManifest((map) => {
+        map.set(created.fileId, entryRecord(created));
+        const record = this.pendingLayout.get(created.fileId);
+        if (record) this.state.layout[created.fileId] = record;
+      }, { source: "typing" });
+    } finally {
+      this.pendingLayout.delete(created.fileId);
+    }
     return computeLayout(this.readEntries().values()).paths.get(created.fileId) ?? created.path;
   }
 
@@ -3985,14 +4071,15 @@ export class SharedProject {
       // normal materialization will preserve the newer disk arrival too.
       return created;
     }
-    this.state.layout[fileId] = {
+    // The layout takes the file when its manifest entry is written (publishCreated).
+    this.pendingLayout.set(fileId, {
       path: relative,
       kind: created.kind,
       ...(created.docId ? { docId: created.docId, docKind: created.docKind } : {}),
       hash,
       size: stats.size,
       mtimeMs: stats.mtimeMs,
-    };
+    });
     if (created.docId && classified.kind === "doc") {
       await writeBase(this.info.root, created.docId, classified.text, this.diskGuard());
       this.ctx.host.store.upsertDoc({ docId: created.docId, projectId: this.info.projectId, fileId, path: relative, materializedHash: hash });
@@ -4215,6 +4302,12 @@ export class SharedProject {
 
   private recordTransitions(layout: { paths: Map<string, string>; refused: Array<{ fileId: string }> }): void {
     if (this.info.album) return;
+    // A move or removal the server has not acknowledged can still be rolled back (M23).
+    if (!this.manifestAcknowledged()) {
+      this.transitionsDeferred = true;
+      return;
+    }
+    this.transitionsDeferred = false;
     try {
       const next = new Map<string, RecordedPath>();
       for (const [fileId, path] of layout.paths) next.set(fileId, { path, kind: this.entries.get(fileId)?.kind === "folder" ? "folder" : "file" });
