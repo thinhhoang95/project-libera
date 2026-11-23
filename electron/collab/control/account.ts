@@ -10,6 +10,7 @@
 // refresh, so the rotated token is persisted before the new access token is
 // handed out: a crash in between would otherwise strand the session.
 
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -47,9 +48,15 @@ const EXPIRY_MARGIN_MS = 30_000;
 
 async function writeAtomic(file: string, contents: string): Promise<void> {
   await mkdir(path.dirname(file), { recursive: true });
-  const temp = `${file}.${process.pid}.tmp`;
-  await writeFile(temp, contents, { mode: 0o600 });
-  await rename(temp, file);
+  // A unique name: two writes of one file must never share a temp path.
+  const temp = `${file}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temp, contents, { mode: 0o600 });
+    await rename(temp, file);
+  } catch (error) {
+    await rm(temp, { force: true }).catch(() => undefined);
+    throw error;
+  }
 }
 
 async function readJson<T>(file: string): Promise<T | null> {
@@ -149,7 +156,7 @@ class Session implements TokenProvider {
     this.refreshToken = auth.refreshToken;
     this.accessToken = auth.accessToken;
     this.expiresAt = Date.parse(auth.accessTokenExpiresAt) || null;
-    await this.manager.persistSession(auth.account.id, auth.refreshToken);
+    await this.manager.persistSession(auth.account.id, auth.refreshToken, this);
     await this.manager.accountRefreshed(auth.account);
     return this.accessToken;
   }
@@ -167,6 +174,8 @@ export class AccountManager {
   private sessionValue: Session | null = null;
   private readonly listeners = new Set<(change: AccountChange) => void>();
   private persistWarned = false;
+  /** Disk changes to session.bin run one at a time, in the order they were asked for. */
+  private sessionDisk: Promise<unknown> = Promise.resolve();
 
   constructor(options: AccountManagerOptions) {
     this.dir = options.dir;
@@ -238,7 +247,7 @@ export class AccountManager {
       expiresAt: Date.parse(auth.accessTokenExpiresAt) || this.now() + 10 * 60_000,
     });
     await this.writeAccount();
-    await this.persistSession(auth.account.id, auth.refreshToken);
+    await this.persistSession(auth.account.id, auth.refreshToken, this.sessionValue);
     if (previous) void this.logoutQuietly(previous);
     this.notify("signed-in");
   }
@@ -268,7 +277,7 @@ export class AccountManager {
     const session = this.sessionValue;
     this.sessionValue = null;
     this.accountValue = null;
-    await rm(path.join(this.dir, SESSION_FILE), { force: true });
+    await this.sessionDiskTask(() => rm(path.join(this.dir, SESSION_FILE), { force: true }));
     await rm(path.join(this.dir, ACCOUNT_FILE), { force: true });
     if (session) await this.logoutQuietly(session);
     this.notify("signed-out");
@@ -297,25 +306,43 @@ export class AccountManager {
   async sessionInvalid(session: Session): Promise<void> {
     if (this.sessionValue !== session) return;
     this.sessionValue = null;
-    await rm(path.join(this.dir, SESSION_FILE), { force: true });
+    await this.sessionDiskTask(() => rm(path.join(this.dir, SESSION_FILE), { force: true }));
     this.notify("needs-sign-in");
   }
 
-  /** @internal Stores the (rotated) refresh token, encrypted. */
-  async persistSession(accountId: string, refreshToken: string): Promise<void> {
-    let ciphertext: string;
+  private sessionDiskTask<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.sessionDisk.then(task, task);
+    this.sessionDisk = run.catch(() => undefined);
+    return run;
+  }
+
+  /**
+   * @internal Stores the (rotated) refresh token, encrypted. `owner` is the
+   * session the token belongs to: if it is no longer the current one by the
+   * time the write comes up (signed out, signed in again), nothing is written.
+   */
+  async persistSession(accountId: string, refreshToken: string, owner?: Session | null): Promise<void> {
+    const current = () => owner === undefined || (owner !== null && this.sessionValue === owner);
+    let ciphertext: string | null = null;
+    let encryptError: unknown = null;
     try {
       ciphertext = await this.secrets.encrypt(refreshToken);
     } catch (error) {
-      // Without safeStorage the token stays in memory: the user signs in
-      // again after a restart rather than having a plaintext token on disk.
-      if (!this.persistWarned) this.logger.warn("Secure storage is unavailable; the collaboration session will not be remembered", error);
-      this.persistWarned = true;
-      await rm(path.join(this.dir, SESSION_FILE), { force: true });
-      return;
+      encryptError = error;
     }
-    const file: SessionFile = { version: 1, accountId, refreshToken: ciphertext };
-    await writeAtomic(path.join(this.dir, SESSION_FILE), JSON.stringify(file));
+    await this.sessionDiskTask(async () => {
+      if (!current()) return;
+      if (ciphertext === null) {
+        // Without safeStorage the token stays in memory: the user signs in
+        // again after a restart rather than having a plaintext token on disk.
+        if (!this.persistWarned) this.logger.warn("Secure storage is unavailable; the collaboration session will not be remembered", encryptError);
+        this.persistWarned = true;
+        await rm(path.join(this.dir, SESSION_FILE), { force: true });
+        return;
+      }
+      const file: SessionFile = { version: 1, accountId, refreshToken: ciphertext };
+      await writeAtomic(path.join(this.dir, SESSION_FILE), JSON.stringify(file));
+    });
   }
 
   private async writeAccount(): Promise<void> {

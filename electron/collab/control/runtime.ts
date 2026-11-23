@@ -129,7 +129,8 @@ export class CollabRuntime {
       await this.accounts.load();
       const account = this.accounts.account;
       await this.open(account ? { accountId: account.id, serverUrl: account.serverUrl } : null);
-      this.applyAccount();
+      // open() already applied the account before the notebooks started.
+      if (this.current && this.current.host.accountId !== (account?.id ?? null)) this.applyAccount();
       this.statusChanged();
     });
   }
@@ -147,13 +148,22 @@ export class CollabRuntime {
   signedIn(serverUrl: string, auth: AuthResponse, canAdopt: () => boolean = () => true): Promise<void> {
     return this.serial(async () => {
       if (this.stopped || !canAdopt()) return;
-      if (this.accounts.account) await this.notebooks.beforeAccountChange?.();
-      await this.open({ accountId: auth.account.id, serverUrl });
-      if (this.stopped || !canAdopt()) return;
-      await this.accounts.signIn(serverUrl, auth);
-      this.applyAccount();
-      await this.notebooks.accountChanged();
-      this.statusChanged();
+      await this.ensureOpen();
+      try {
+        if (this.accounts.account) await this.current?.notebooks.beforeAccountChange?.();
+        await this.open({ accountId: auth.account.id, serverUrl });
+        if (this.stopped || !canAdopt()) {
+          await this.restore();
+          return;
+        }
+        await this.accounts.signIn(serverUrl, auth);
+        this.applyAccount();
+        await this.current?.notebooks.accountChanged();
+        this.statusChanged();
+      } catch (error) {
+        await this.restore();
+        throw error;
+      }
     });
   }
 
@@ -164,11 +174,17 @@ export class CollabRuntime {
   signOut(): Promise<void> {
     this.current?.host.api?.cancelPending();
     return this.serial(async () => {
-      await this.notebooks.beforeAccountChange?.();
-      await this.accounts.signOut();
-      this.applyAccount();
-      await this.notebooks.accountChanged();
-      this.statusChanged();
+      await this.ensureOpen();
+      try {
+        await this.current?.notebooks.beforeAccountChange?.();
+        await this.accounts.signOut();
+        this.applyAccount();
+        await this.current?.notebooks.accountChanged();
+        this.statusChanged();
+      } catch (error) {
+        await this.restore();
+        throw error;
+      }
     });
   }
 
@@ -178,7 +194,22 @@ export class CollabRuntime {
   }
 
   nudge(): void {
-    this.current?.host.nudge();
+    const generation = this.current;
+    if (generation && this.ownsDatabase(generation)) generation.host.nudge();
+  }
+
+  /**
+   * Whether this process still owns the generation's database. After a long
+   * sleep another process may have taken the lock over; checking it now
+   * fences this one (the store's lost-lock path shuts the host down) before
+   * any resume work writes SQLite or sends batches.
+   */
+  private ownsDatabase(generation: Generation): boolean {
+    try {
+      return generation.host.store.ownsDatabase();
+    } catch {
+      return false;
+    }
   }
 
   /** On battery, shared folders are checked less often (see SharedProject.pollInterval). */
@@ -191,13 +222,47 @@ export class CollabRuntime {
 
   /** The computer woke from sleep: shared folders are checked now. */
   resumed(): void {
-    this.current?.notebooks.resumed?.();
+    const generation = this.current;
+    if (generation && this.ownsDatabase(generation)) generation.notebooks.resumed?.();
   }
 
   private applyAccount(): void {
+    if (this.current) this.applyAccountTo(this.current.host);
+  }
+
+  private applyAccountTo(host: CollabHost): void {
     const account = this.accounts.account;
     const session = this.accounts.session;
-    this.host.setAccount(account && session ? { accountId: account.id, serverUrl: account.serverUrl, tokenProvider: session } : null);
+    host.setAccount(account && session ? { accountId: account.id, serverUrl: account.serverUrl, tokenProvider: session } : null);
+  }
+
+  /** After a failed or abandoned change, a database exists again (the current account's). */
+  private async ensureOpen(): Promise<void> {
+    if (this.current || this.stopped) return;
+    const account = this.accounts.account;
+    try {
+      await this.open(account ? { accountId: account.id, serverUrl: account.serverUrl } : null);
+    } catch (error) {
+      this.logger.error("The collaboration database could not be reopened", error);
+    }
+  }
+
+  /**
+   * Puts the runtime back in step with the account after a change failed or
+   * was abandoned: the current account's database is open, the host carries
+   * its account, and the notebook service is no longer releasing its leases.
+   */
+  private async restore(): Promise<void> {
+    if (this.stopped) return;
+    try {
+      const account = this.accounts.account;
+      await this.open(account ? { accountId: account.id, serverUrl: account.serverUrl } : null);
+      this.applyAccount();
+      await this.current?.notebooks.accountChanged();
+    } catch (error) {
+      this.logger.error("The collaboration runtime could not return to its account after a failed change", error);
+    }
+    this.statusChanged();
   }
 
   private async open(authority: AccountAuthority | null): Promise<void> {
@@ -227,6 +292,10 @@ export class CollabRuntime {
         throw new Error("This collaboration database belongs to another account or server; its data was preserved.");
       }
     }
+    // The notebooks start against a host that already has its account (the
+    // writer lease and discovery need host.api); a different account being
+    // signed in is applied by signedIn once the session exists.
+    if (authority && remembered && sameAuthority({ accountId: remembered.id, serverUrl: remembered.serverUrl }, authority)) this.applyAccountTo(host);
     const factory = this.options.createNotebookService ?? createNotebookService;
     const notebooks = factory({
       host,
