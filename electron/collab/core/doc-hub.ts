@@ -774,6 +774,11 @@ export class DocHub implements CompactionTarget {
     }, delay);
   }
 
+  /** An `open` was sent for this hub outside its own link (divergence recovery): its `opened` is expected too (H13). */
+  noteExternalOpen(): void {
+    this.openInFlight += 1;
+  }
+
   /** Sends `open` with the current state vectors on the current connection; true if the frame went out. */
   private reopenLink(): boolean {
     if (!this.link || !this.canSync()) return false;

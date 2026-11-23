@@ -110,7 +110,9 @@ export class DocHubRegistry {
   }
 
   private hasUnackedWork(hub: DocHub): boolean {
-    return !hub.isClosed && hub.pendingCount > 0 && !hub.readOnlyReason && this.holdUnacked();
+    // Only work that can still drain holds a hub open: a read-only or revoked doc, or one blocked by an
+    // update that cannot be cut, would otherwise keep it open without bound.
+    return !hub.isClosed && hub.pendingCount > 0 && !hub.readOnlyReason && hub.canSync() && !hub.syncBlockedDetail && this.holdUnacked();
   }
 
   private watchDrain(docId: string, entry: Entry): void {

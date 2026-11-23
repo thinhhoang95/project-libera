@@ -618,6 +618,7 @@ export class CollabHost {
         stateVectors: () => {
           if (sentEmpty) return hub.stateVectors();
           sentEmpty = true;
+          hub.noteExternalOpen();
           return hub.subdocs.map((subdoc) => ({ subdoc, stateVector: EMPTY_STATE_VECTOR }));
         },
         pdfTarget: () => hub.pdfTarget(),
