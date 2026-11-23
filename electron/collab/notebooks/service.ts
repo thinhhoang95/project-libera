@@ -312,6 +312,8 @@ export class NotebookServiceImpl implements NotebookService {
   private readonly lifecycleChecks = new Set<Promise<void>>();
   /** Between beforeAccountChange and accountChanged: no lease is renewed or taken. */
   private releasing = false;
+  /** Counts stop() and accountChanged(): a runtime opened across one of them belongs to a project that was let go. */
+  private epoch = 0;
   /** Folders being shared or joined right now: their marker is ours before the store knows it. */
   private readonly pendingRoots = new Set<string>();
   private readonly unjoined = new Map<string, UnjoinedFolder>();
@@ -378,6 +380,7 @@ export class NotebookServiceImpl implements NotebookService {
 
   async stop(): Promise<void> {
     this.started = false;
+    this.epoch += 1;
     this.unsubscribeHost?.();
     this.unsubscribeHost = null;
     if (this.leaseTimer) clearInterval(this.leaseTimer);
@@ -396,6 +399,7 @@ export class NotebookServiceImpl implements NotebookService {
   }
 
   async accountChanged(): Promise<void> {
+    this.epoch += 1;
     this.cachedAccountId = null;
     this.unjoined.clear();
     if (!this.started) {
@@ -455,54 +459,63 @@ export class NotebookServiceImpl implements NotebookService {
   }
 
   private async loadStoredProjects(): Promise<void> {
-    for (const row of this.deps.host.store.listProjects()) {
+    for (const listed of this.deps.host.store.listProjects()) {
       if (!this.started) return;
-      if (!row.localRoot || this.projects.has(row.projectId) || this.pendingRoots.has(row.localRoot)) continue;
-      try {
-        let root = row.localRoot;
-        let marker = await readMarker(root).catch(() => null);
-        if (!marker || marker.projectId !== row.projectId) {
-          // A present foreign/corrupt root is not a move. Rebind only a missing
-          // old directory to one unique compatible discovered identity. A
-          // present root whose marker is gone gets it back from the binding.
-          if (await statIfExists(root)) {
-            if (!(await this.repairMissingMarker(row.projectId, root))) continue;
-            marker = await readMarker(root).catch(() => null);
-            if (!marker || marker.projectId !== row.projectId) continue;
-          } else {
-            const moved = await this.movedRoot(row.projectId, root);
-            if (!moved) continue;
-            root = moved;
-            marker = await readMarker(root);
-            if (!marker) continue;
-            this.deps.host.store.upsertProject({ ...row, localRoot: root });
-            this.unjoined.delete(root);
-          }
-        }
-        if (!this.markerAuthorityMatches(marker)) continue;
-        if (await this.repairEndedMarker(root, marker) === "local") {
-          this.deps.host.store.deleteProject(row.projectId);
-          continue;
-        }
-        marker = await readMarker(root);
-        if (!marker) continue;
-        const handle = newHandle(row.projectId, row.name, root, row.role ?? "viewer", marker);
-        this.projects.set(handle.projectId, handle);
-        if (handle.revoked) {
-          const { docs, reconcilePending } = await SharedProject.readIndex(root);
-          handle.index = indexOf(docs);
-          handle.reconcilePending = reconcilePending;
+      if (!listed.localRoot || this.projects.has(listed.projectId) || this.pendingRoots.has(listed.localRoot)) continue;
+      // A join, a revocation or a takedown of the same project finishes first; the row is read again under the lock.
+      await this.locked(`project:${listed.projectId}`, () => this.startStored(listed.projectId));
+    }
+  }
+
+  private async startStored(projectId: string): Promise<void> {
+    const row = this.deps.host.store.getProject(projectId);
+    if (!this.started || !row?.localRoot || this.projects.has(projectId) || this.pendingRoots.has(row.localRoot)) return;
+    let registered: ProjectHandle | undefined;
+    try {
+      let root = row.localRoot;
+      let marker = await readMarker(root).catch(() => null);
+      if (!marker || marker.projectId !== row.projectId) {
+        // A present foreign/corrupt root is not a move. Rebind only a missing
+        // old directory to one unique compatible discovered identity. A
+        // present root whose marker is gone gets it back from the binding.
+        if (await statIfExists(root)) {
+          if (!(await this.repairMissingMarker(row.projectId, root))) return;
+          marker = await readMarker(root).catch(() => null);
+          if (!marker || marker.projectId !== row.projectId) return;
         } else {
-          handle.writer = await this.claimRole(handle, marker);
-          await this.run(handle);
+          const moved = await this.movedRoot(row.projectId, root);
+          if (!moved) return;
+          root = moved;
+          marker = await readMarker(root);
+          if (!marker) return;
+          this.deps.host.store.upsertProject({ ...row, localRoot: root });
+          this.unjoined.delete(root);
         }
-        this.unjoined.delete(root);
-      } catch (error) {
-        const handle = this.projects.get(row.projectId);
-        await handle?.runtime?.stop({ persist: false }).catch(() => undefined);
-        this.projects.delete(row.projectId);
-        this.logger.warn(`Shared notebook ${row.name} could not start; other notebooks will continue and this one will retry.`, error);
       }
+      if (!this.markerAuthorityMatches(marker)) return;
+      if (await this.repairEndedMarker(root, marker) === "local") {
+        this.deps.host.store.deleteProject(row.projectId);
+        return;
+      }
+      marker = await readMarker(root);
+      if (!marker || !this.started || this.projects.has(projectId)) return;
+      const handle = newHandle(row.projectId, row.name, root, row.role ?? "viewer", marker);
+      registered = handle;
+      this.projects.set(handle.projectId, handle);
+      if (handle.revoked) {
+        const { docs, reconcilePending } = await SharedProject.readIndex(root);
+        handle.index = indexOf(docs);
+        handle.reconcilePending = reconcilePending;
+      } else {
+        handle.writer = await this.claimRole(handle, marker);
+        await this.run(handle);
+      }
+      this.unjoined.delete(root);
+    } catch (error) {
+      // Only what this start registered is let go: a handle another operation installed is not ours to stop.
+      await registered?.runtime?.stop({ persist: false }).catch(() => undefined);
+      if (registered && this.projects.get(projectId) === registered) this.projects.delete(projectId);
+      this.logger.warn(`Shared notebook ${row.name} could not start; other notebooks will continue and this one will retry.`, error);
     }
   }
 
