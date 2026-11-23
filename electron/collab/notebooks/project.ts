@@ -784,6 +784,13 @@ export class SharedProject {
       const { entries, layout } = await this.catchUpWithFence(fence);
       if (hub.pendingCount > 0) throw new ControlError(503, "offline", "Connect and sync this notebook before taking it down.");
       const sequence = this.ctx.host.store.getDocMeta(this.info.manifestDocId)?.lastSeenServerSeq ?? 0;
+      // A readable marker naming another project: a newer share took this folder over, so this device holds no copy of
+      // this project to convert. Nothing is written there (its marker stays); any other doubt fails closed below.
+      const marker = await readMarker(this.info.root).catch(() => null);
+      if (marker && marker.projectId !== this.info.projectId) {
+        this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: its folder now belongs to another share, so nothing was exported into it before the takedown.`);
+        return { sequence, recovery: { threads: 0, messages: 0, suggestions: 0, reviews: 0 } };
+      }
       const needsRoot = [...entries.values()].some((entry) => entry.kind === "blob");
       const current = async () => !this.stopped && hub.getStatus().connected && hub.pendingCount === 0 &&
         this.ctx.host.store.getDocMeta(this.info.manifestDocId)?.lastSeenServerSeq === sequence && (!needsRoot || await this.rootAvailable());
