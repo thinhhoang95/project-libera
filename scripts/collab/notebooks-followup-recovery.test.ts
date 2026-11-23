@@ -4,7 +4,7 @@ import path from "node:path";
 import test from "node:test";
 
 import type { FetchLike } from "../../electron/collab/core";
-import { walkNotebook } from "../../electron/collab/notebooks/fs-ops";
+import { sha256, walkNotebook } from "../../electron/collab/notebooks/fs-ops";
 import { invalidateSharedNotebookCache, sharedNotebookMarker } from "../../src/lib/collab/shared-notebook";
 import { updateMarkdownFile } from "../../src/lib/storage/files";
 import { deleteNotebook } from "../../src/lib/storage/notebooks";
@@ -185,7 +185,7 @@ test("periodic content verification catches an overwrite without watch events or
   }
 });
 
-test("an uncertain binary stays recoverable while its current shared version cannot be downloaded", { timeout: 60_000 }, async () => {
+test("an uncertain binary copy is the user's edit: it stays on disk and is shared, even while blob downloads fail", { timeout: 60_000 }, async () => {
   const temp = tempRoot("libera-uncertain-blob-");
   const server = await startServerProcess();
   let owner: Peer | undefined;
@@ -211,13 +211,13 @@ test("an uncertain binary stays recoverable while its current shared version can
       unavailable = true;
       writeFileSync(file, uncertain);
       utimesSync(file, older / 1000, older / 1000);
+      // C8: new bytes with an older mtime are the user's edit, not an old copy to put back over: they are shared.
+      await until(() => entries()[0].blobHash === sha256(uncertain), "the user's bytes become the shared version");
       await sleep(1800); // Longer than this fixture's shared-delete grace.
-      assert.deepEqual(readFileSync(file), uncertain, "failed download must not leave an artificial missing-file gap");
-      assert.equal(entries()[0].blobHash, originalHash);
+      assert.deepEqual(readFileSync(file), uncertain, "the user's file stays");
+      assert.notEqual(entries()[0].blobHash, originalHash);
+      assert.ok(!existsSync(path.join(root, "_archive/image.png")), "nothing is archived");
       unavailable = false;
-      await until(() => { try { return readFileSync(file).equals(current); } catch { return false; } }, "current binary restored");
-      assert.deepEqual(readFileSync(path.join(root, "_archive/image.png")), uncertain);
-      assert.equal(entries()[0].blobHash, originalHash);
     } finally { owner.host.release(hub.docId); }
   } finally {
     unavailable = false;
