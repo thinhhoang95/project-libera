@@ -111,6 +111,12 @@ export class ManifestIntents {
     const start = earlier && earlier.to === from ? earlier.from : from;
     this.intents.delete(key);
     this.intents.set(key, { fileId, field, from: start, to, other: otherPart(after, field), unit: unitOf(after, field), recordedAt: this.now(), acknowledged: false });
+    // This write changed the entry beside the other field's unit too: that field's intent now compares against the entry as this host last wrote it, or a collaborator's plain revert of it would look like a concurrent whole-entry write (M20).
+    for (const other of Object.keys(UNIT) as IntentField[]) {
+      if (other === field) continue;
+      const sibling = this.intents.get(`${fileId}\u0000${other}`);
+      if (sibling) sibling.other = otherPart(after, other);
+    }
     for (const oldest of this.intents.keys()) {
       if (this.intents.size <= MAX_INTENTS) break;
       this.intents.delete(oldest);

@@ -173,7 +173,11 @@ export async function placeStagedMoves(root: string, destinations: Map<string, s
     const wanted = destinations.get(entry.fileId);
     const destination = wanted ?? entry.destination;
     const target = await resolveInside(root, destination).catch(() => null);
-    if (!target) continue;
+    if (!target) {
+      // A refused path is not a placed or a removed file: its stage is kept, and the pass must not materialize the file elsewhere meanwhile (M6).
+      if (wanted !== undefined || options.listed?.has(entry.fileId)) results.waiting.add(entry.fileId);
+      continue;
+    }
     const archive = async (): Promise<void> => {
       const base = path.posix.basename(destination);
       const extension = path.posix.extname(base);
