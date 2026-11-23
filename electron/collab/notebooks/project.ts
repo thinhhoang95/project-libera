@@ -1884,7 +1884,9 @@ export class SharedProject {
         // Ready from the cache first, then caught up with the server: the second is when a writer may write.
         if ((!runtime.wasReady && this.docReady(runtime)) || this.noteCaughtUp(hub)) this.scheduleWrite(runtime);
       }),
-      hub.onMeta((meta) => this.metaChanged(meta.role, meta.readOnlyReason)),
+      // A file document closing never revokes the notebook (a deleted file, a race): its reason stays its own.
+      // Only the manifest hub's meta, which the server closes with the project, ends access.
+      hub.onMeta((meta) => this.metaChanged(meta.role, undefined)),
     );
     if (this.docReady(runtime)) this.scheduleWrite(runtime);
   }
