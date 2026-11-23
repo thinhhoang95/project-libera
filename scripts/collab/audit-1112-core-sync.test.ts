@@ -26,6 +26,7 @@ function fakeTransport() {
     sendAwareness: () => {},
     reopen: () => {
       reopens += 1;
+      return true;
     },
   };
   return { transport, sent, reopens: () => reopens };

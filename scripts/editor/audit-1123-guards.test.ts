@@ -31,6 +31,9 @@ class StubHost {
   log: ManifestTransition[] = [];
   hits = { transitions: 0, ack: 0, entries: 0 };
   ackSizes: number[] = [];
+  server: Server | null = null;
+  url = "";
+  token = "stub-token";
   private gateOn = 0;
   private gateHit: () => void = () => undefined;
   private released: Promise<void> = Promise.resolve();

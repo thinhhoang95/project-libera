@@ -20,7 +20,7 @@ function fakeTransport() {
   const transport: HubTransport = {
     send: (message) => { sent.push(message); return true; },
     sendAwareness: () => {},
-    reopen: () => {},
+    reopen: () => true,
   };
   return { transport, sent };
 }
@@ -119,7 +119,7 @@ test("H12: batches without local seqs are pending and listed as unacked", () => 
 test("M12: the pieces of a split update are stored in one transaction", async () => {
   const store = new HostStore({ path: ":memory:" });
   const source = new Y.Doc();
-  let update = new Uint8Array();
+  let update: Uint8Array = new Uint8Array();
   source.on("update", (value: Uint8Array) => { update = value; });
   const files = source.getMap("files");
   source.transact(() => { for (let index = 0; index < 300; index += 1) files.set(`f${index}`, { path: `dir/with/a/long/name/${index}.md`, n: index }); });
