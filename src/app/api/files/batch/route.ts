@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/api";
 import { isSharedNotebookPath, sharedNotebookMarker } from "@/lib/collab/shared-notebook";
 import { deleteSharedFile, listSharedEntries, moveSharedFile } from "@/lib/collab/shared-writes";
+import { resolveSharedActionFileId } from "@/lib/collab/tree-file-ids";
 import { StorageError } from "@/lib/storage/errors";
 import {
   assertOneStorageDomain,
@@ -60,7 +61,8 @@ export async function POST(request: NextRequest) {
       // Each delete returns as soon as its own cleanup is done: no tree read and no wait per file (the host's tree event
       // and the app's one refresh after the batch show the result).
       return NextResponse.json(await deleteFiles(items, shared ? {
-        remove: (item) => deleteSharedFile(item.path, { expectedFileId: item.fileId, deferRefresh: true }),
+        // The id is resolved for the one file acted on, as the single-file route does: a row without one (an unverified binary) has its disk copy checked against the manifest entry first.
+        remove: async (item) => deleteSharedFile(item.path, { expectedFileId: await resolveSharedActionFileId(item.path, item.fileId, "deleted", listSharedEntries), deferRefresh: true }),
       } : {}));
     }
 
@@ -73,7 +75,7 @@ export async function POST(request: NextRequest) {
       if (shared) {
         return NextResponse.json(await moveFilesToDirectory(items, destinationDirectory, {
           preflight: (batch, directory) => preflightSharedMove(batch, directory, () => listSharedEntries(destination)),
-          move: (item, directory) => moveSharedFile(item.path, directory, undefined, { expectedFileId: item.fileId }),
+          move: async (item, directory) => moveSharedFile(item.path, directory, undefined, { expectedFileId: await resolveSharedActionFileId(item.path, item.fileId, "moved", listSharedEntries) }),
         }));
       }
       return NextResponse.json(await moveFilesToDirectory(items, destinationDirectory));

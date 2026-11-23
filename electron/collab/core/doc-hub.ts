@@ -78,8 +78,8 @@ export type RejectedEdit = RejectedEditRow;
 /** What the sync client gives a hub while the socket is up. */
 export interface HubTransport extends OutboundTransport {
   sendAwareness(update: Uint8Array): void;
-  /** Sends `open` again with the hub's current state vectors (after a rollback). */
-  reopen(): void;
+  /** Sends `open` again with the hub's current state vectors (after a rollback). False: the frame was not sent. */
+  reopen(): boolean;
 }
 
 export interface DocHubOptions {
@@ -111,7 +111,7 @@ type Origin =
   | { kind: "replica"; replica: ReplicaConnection; provenance?: Provenance }
   | { kind: "local"; provenance?: Provenance }
   | { kind: "remote" }
-  | { kind: "server"; serverSeq: number; persistEffective: boolean };
+  | { kind: "server"; serverSeq: number };
 
 const LOAD_ORIGIN: Origin = { kind: "load" };
 const REMOTE_ORIGIN: Origin = { kind: "remote" };
@@ -222,6 +222,10 @@ export class DocHub implements CompactionTarget {
    */
   private catchUpEpoch = 0;
   private caughtUpEpoch = -1;
+  /** `Open`s sent on this connection whose `Opened` has not arrived (H13). */
+  private openInFlight = 0;
+  /** Of those, the ones sent before the last rollback: their replies describe a state this doc no longer has. */
+  private staleOpens = 0;
   /** A local update exceeded the server limit; shown until the document is closed. */
   private unsendableDetail: string | undefined;
   private lastLocalUpdate: { origin: Origin; update: Uint8Array } | null = null;
@@ -427,7 +431,7 @@ export class DocHub implements CompactionTarget {
 
   /** Unacknowledged local updates. */
   get pendingCount(): number {
-    return this.pendingLocal.size;
+    return this.pendingLocal.size + this.outbound.unlinkedBatchCount;
   }
 
   /** Why this document can never fully sync (an update over the size limit was skipped), if it can't. */
@@ -469,7 +473,7 @@ export class DocHub implements CompactionTarget {
     if (this.meta.readOnlyReason === null || this.meta.readOnlyReason === "document-deleted") return;
     this.store.updateDocMeta(this.docId, { readOnlyReason: null });
     this.refreshMeta();
-    this.link?.reopen();
+    this.reopenLink();
     this.status.changed();
   }
 
@@ -479,7 +483,7 @@ export class DocHub implements CompactionTarget {
     this.outbound.stop();
     this.store.updateDocMeta(this.docId, { role });
     this.refreshMeta();
-    this.link?.reopen();
+    this.reopenLink();
     this.status.changed(true);
   }
 
@@ -497,7 +501,7 @@ export class DocHub implements CompactionTarget {
       }
       this.store.updateDocMeta(this.docId, { role, readOnlyReason: null });
       this.refreshMeta();
-      this.link?.reopen();
+      this.reopenLink();
       this.status.changed(true);
     } else {
       this.setRole(role);
@@ -662,13 +666,7 @@ export class DocHub implements CompactionTarget {
         return;
       }
       case "server":
-        if (origin.persistEffective) {
-          try {
-            this.persistAcked(subdoc, update, origin.serverSeq, { kind: "server" });
-          } catch {
-            // Recorded by persistAcked; a resync re-opens from the durable state.
-          }
-        }
+        // Persisted by applyServerUpdate before it applied the diff.
         this.broadcast({ t: "update", docId: this.docId, subdoc, update, origin: "server" });
         this.changes.emit({ subdoc, update, origin: "server" });
         return;
@@ -753,19 +751,42 @@ export class DocHub implements CompactionTarget {
     this.broadcast({ t: "error", docId: this.docId, message: `Could not save on this device: ${this.resyncError}` });
     this.resyncPending = true;
     this.catchUpEpoch += 1;
-    if (!this.resyncTimer && !this.closed) {
-      // Capped exponential backoff, reset when an `Opened` completes: a database that stays
-      // broken is retried ever less often, and no other document is reopened by this.
-      const delay = Math.min(30_000, 1000 * 2 ** Math.min(this.resyncAttempts, 5));
-      this.resyncAttempts += 1;
-      this.resyncTimer = this.clock.setTimeout(() => {
-        this.resyncTimer = null;
-        if (this.closed || !this.resyncPending) return;
-        this.resyncPending = false;
-        this.link?.reopen();
-      }, delay);
-    }
+    this.armResync();
     this.status.changed();
+  }
+
+  /**
+   * One pending timer that re-opens the document until an `Opened` completes it
+   * (M11): `resyncPending` stays set meanwhile, and a re-open that was not sent
+   * or is never answered is tried again. Capped exponential backoff, reset when
+   * an `Opened` completes; the timer stops when it does, on a new connection,
+   * and when the document cannot sync.
+   */
+  private armResync(): void {
+    if (this.resyncTimer || this.closed) return;
+    const delay = Math.min(30_000, 1000 * 2 ** Math.min(this.resyncAttempts, 5));
+    this.resyncAttempts += 1;
+    this.resyncTimer = this.clock.setTimeout(() => {
+      this.resyncTimer = null;
+      if (this.closed || !this.resyncPending) return;
+      this.reopenLink();
+      if (this.link && this.canSync()) this.armResync();
+    }, delay);
+  }
+
+  /** Sends `open` with the current state vectors on the current connection; true if the frame went out. */
+  private reopenLink(): boolean {
+    if (!this.link || !this.canSync()) return false;
+    const sent = this.link.reopen();
+    if (sent) this.openInFlight += 1;
+    return sent;
+  }
+
+  /** `reopenLink`, and if the frame could not be sent keeps the document in catch-up and retries on the resync timer. */
+  private reopenOrRetry(): void {
+    if (this.closed || this.reopenLink() || !this.link || !this.canSync()) return;
+    this.resyncPending = true;
+    this.armResync();
   }
 
   private noteAppended(subdoc: Subdoc, localSeq: number, bytes: number): void {
@@ -818,6 +839,9 @@ export class DocHub implements CompactionTarget {
     this.connected = transport !== null;
     this.connectionDetail = transport ? undefined : detail;
     this.opened = false;
+    // The sync client sends the first `open` of a connection right after this call.
+    this.openInFlight = transport && this.canSync() ? 1 : 0;
+    this.staleOpens = 0;
     this.outbound.stop();
     if (!transport) this.dropRemoteAwareness();
     this.status.changed();
@@ -832,6 +856,18 @@ export class DocHub implements CompactionTarget {
   handleOpened(message: OpenedMessage): void {
     if (this.closed) return;
     if (this.meta.readOnlyReason === "document-deleted") return;
+    if (this.openInFlight > 0) this.openInFlight -= 1;
+    if (this.staleOpens > 0) {
+      // The reply to an `open` sent before a rollback: its diff was computed for the wiped state, and the
+      // reply to the reopen that followed carries everything. Counting it would mark an empty doc caught up.
+      this.staleOpens -= 1;
+      return;
+    }
+    // This reply completes any pending resync: the server's state is re-delivered and persisted below,
+    // and a failure to persist it sets the flag (and the timer) again.
+    this.resyncPending = false;
+    if (this.resyncTimer) this.clock.clearTimeout(this.resyncTimer);
+    this.resyncTimer = null;
     try {
       this.processOpened(message);
     } catch (error) {
@@ -889,11 +925,12 @@ export class DocHub implements CompactionTarget {
       if (hasStructs(diff)) {
         // Persist before apply, so what replicas see is always on disk.
         this.persistAcked(subdoc, diff, serverSeq, { kind: "server" });
-        Y.applyUpdate(doc, diff, { kind: "server", serverSeq, persistEffective: false } satisfies Origin);
-      } else {
-        // A delete set the server always includes; persist it only if it
-        // changes something, so reconnects do not grow the log.
-        Y.applyUpdate(doc, diff, { kind: "server", serverSeq, persistEffective: true } satisfies Origin);
+        Y.applyUpdate(doc, diff, { kind: "server", serverSeq } satisfies Origin);
+      } else if (deletesSomethingNew(doc, diff)) {
+        // A delete set the server always includes; stored only if it changes something, so
+        // reconnects do not grow the log, and stored before it is applied like any other diff (C7).
+        this.persistAcked(subdoc, diff, serverSeq, { kind: "server" });
+        Y.applyUpdate(doc, diff, { kind: "server", serverSeq } satisfies Origin);
       }
     } catch (error) {
       this.logger.error(`Invalid server diff for ${this.docId}/${subdoc}`, error);
@@ -908,8 +945,30 @@ export class DocHub implements CompactionTarget {
     this.status.changed();
   }
 
+  /**
+   * A reject of a batch in flight. Only a definitive reject of a live document
+   * rolls local work back. `not-open` means the room was disposed, access went
+   * away or the file was deleted (the `Closed` that says which arrives or has
+   * arrived): reopen and resend, never wipe. A document already read-only for
+   * revocation or deletion keeps its text for export whatever the reason.
+   * `rate-limited` (not sent today) is a retry with backoff, not a verdict.
+   */
   handleReject(message: RejectMessage): void {
+    if (this.closed) return;
+    if (this.meta.readOnlyReason === "access-revoked" || this.meta.readOnlyReason === "document-deleted") return;
     if (!this.outbound.hasBatch(message.clientSeq)) return;
+    if (message.reason === "not-open") {
+      this.outbound.stop();
+      this.opened = false;
+      this.catchUpEpoch += 1;
+      this.reopenOrRetry();
+      this.status.changed();
+      return;
+    }
+    if (message.reason === "rate-limited") {
+      this.outbound.retry();
+      return;
+    }
     this.rollback(message.subdoc, message.reason, message.message);
   }
 
@@ -949,7 +1008,9 @@ export class DocHub implements CompactionTarget {
     this.broadcast({ t: "state", docId: this.docId, subdoc, update: Y.encodeStateAsUpdate(fresh) });
     this.changes.emit({ subdoc, update: new Uint8Array(0), origin: "rebuilt" });
     this.rejections.emit(edit);
-    this.link?.reopen();
+    // Opens still unanswered were computed from the state just wiped (H13).
+    this.staleOpens = this.openInFlight;
+    this.reopenOrRetry();
     this.status.changed(true);
     return edit;
   }
@@ -1041,7 +1102,7 @@ export class DocHub implements CompactionTarget {
     if (this.closed || this.meta.readOnlyReason !== "document-deleted") return;
     this.store.updateDocMeta(this.docId, { readOnlyReason: null });
     this.refreshMeta();
-    this.link?.reopen();
+    this.reopenLink();
     this.status.changed(true);
   }
 
@@ -1053,6 +1114,8 @@ export class DocHub implements CompactionTarget {
   private stopSyncing(): void {
     this.transport = null;
     this.opened = false;
+    this.openInFlight = 0;
+    this.staleOpens = 0;
     this.outbound.stop();
     this.dropRemoteAwareness();
   }
@@ -1109,7 +1172,7 @@ export class DocHub implements CompactionTarget {
       connected: this.connected,
       opened: this.opened,
       hasData: this.hasData,
-      pending: this.pendingLocal.size + this.unpersisted.length,
+      pending: this.pendingLocal.size + this.outbound.unlinkedBatchCount + this.unpersisted.length,
       oldestPendingAt,
       lastAckAt: this.lastAckAt,
       readOnlyReason: this.meta.readOnlyReason,
@@ -1161,6 +1224,12 @@ export class DocHub implements CompactionTarget {
     this.closeListeners.clear();
     this.changes.clear();
   }
+}
+
+/** Whether a delete-only diff deletes anything this doc has not already deleted. */
+function deletesSomethingNew(doc: Y.Doc, diff: Uint8Array): boolean {
+  const known = Y.snapshot(doc).ds;
+  return !Y.equalDeleteSets(Y.mergeDeleteSets([known, Y.decodeUpdate(diff).ds]), known);
 }
 
 /** Plain text of a sub-document: the content source, or JSON of the maps. */

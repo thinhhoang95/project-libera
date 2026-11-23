@@ -103,6 +103,12 @@ export function hasStructs(update: Uint8Array): boolean {
   return Y.parseUpdateMeta(update).to.size > 0;
 }
 
+/** True when an update carries neither structs nor deletions (Yjs encodes that as [0, 0]). */
+export function isEmptyUpdate(update: Uint8Array): boolean {
+  if (hasStructs(update)) return false;
+  try { return Y.decodeUpdate(update).ds.clients.size === 0; } catch { return false; }
+}
+
 /**
  * Cuts one oversized update into pieces of about `maxBytes` that apply in
  * order, one after the other (S50). Only an update from a single client can be
@@ -177,6 +183,8 @@ export class OutboundQueue {
   private lastProgressAt = 0;
   private forceRetry = false;
   private readonly reportedUnsendable = new Set<string>();
+  /** Sub-documents holding an update that cannot be cut: nothing later of theirs is formed or sent. */
+  private readonly blocked = new Set<Subdoc>();
   private timer: TimerHandle | null = null;
   private forming = false;
   private epoch = 0;
@@ -217,6 +225,19 @@ export class OutboundQueue {
   get unbatchedCount(): number {
     let count = 0;
     for (const queue of this.unbatched.values()) count += queue.length;
+    return count;
+  }
+
+  /** Batches that cover no local update (encodeMissing, leading pieces of a split update) and await ack. */
+  get unlinkedBatchCount(): number {
+    let count = 0;
+    for (const batch of this.batches) if (batch.localSeqs.length === 0) count += 1;
+    return count;
+  }
+
+  private get formableCount(): number {
+    let count = 0;
+    for (const [subdoc, queue] of this.unbatched) if (!this.blocked.has(subdoc)) count += queue.length;
     return count;
   }
 
@@ -265,18 +286,23 @@ export class OutboundQueue {
     await this.formAndSend();
     if (epoch !== this.epoch || this.transport !== transport || !serverStateVectors || !encodeMissing) return;
     for (const [subdoc, serverStateVector] of serverStateVectors) {
+      // What the server lacks would include the update that cannot be sent.
+      if (this.blocked.has(subdoc)) continue;
       const known = extendStateVector(serverStateVector, [
         ...this.batches.filter((batch) => batch.subdoc === subdoc).map((batch) => batch.update),
         ...(this.unbatched.get(subdoc) ?? []).map((entry) => entry.update),
       ]);
       const update = encodeMissing(subdoc, known);
-      if (!hasStructs(update)) continue;
+      // A delete-only diff has no structs but must still reach the server.
+      if (isEmptyUpdate(update)) continue;
       const pieces = update.length > this.updateLimit() ? this.cut(update) : [update];
       if (!pieces) {
         this.tooLarge(subdoc, update.length, `missing:${subdoc}`);
+        this.blocked.add(subdoc);
         continue;
       }
-      for (const piece of pieces) this.batches.push(this.store.createBatch(this.docId, subdoc, [], piece));
+      const made = this.store.transaction(() => pieces.map((piece) => this.store.createBatch(this.docId, subdoc, [], piece)));
+      this.batches.push(...made);
       this.sendUnsent();
     }
   }
@@ -372,7 +398,7 @@ export class OutboundQueue {
       this.forming = false;
     }
     // Updates that arrived while forming wait for the next window.
-    if (!this.disposed && this.transport && this.unbatchedCount > 0 && !this.timer) {
+    if (!this.disposed && this.transport && this.formableCount > 0 && !this.timer) {
       this.timer = this.clock.setTimeout(() => {
         this.timer = null;
         void this.formAndSend();
@@ -385,7 +411,7 @@ export class OutboundQueue {
     let subdoc: Subdoc | null = null;
     let oldest = Infinity;
     for (const [candidate, queue] of this.unbatched) {
-      if (queue.length > 0 && queue[0].localSeq < oldest) {
+      if (!this.blocked.has(candidate) && queue.length > 0 && queue[0].localSeq < oldest) {
         oldest = queue[0].localSeq;
         subdoc = candidate;
       }
@@ -394,15 +420,17 @@ export class OutboundQueue {
     const queue = this.unbatched.get(subdoc) as PendingEntry[];
     while (queue.length > 0 && queue[0].update.length > this.updateLimit()) {
       // Too large for one frame: send it as several (the last carries its local sequence, so
-      // it counts as pending until every piece is acknowledged). Uncuttable: quarantined, reported once.
+      // it counts as pending until every piece is acknowledged). Uncuttable: quarantined and reported
+      // once; it stays at the head and blocks its sub-document, because every later update of that
+      // sub-document depends on its clocks and the server would reject it as invalid-update.
       const entry = queue[0];
       const pieces = this.cut(entry.update);
       if (!pieces) {
         this.tooLarge(subdoc, entry.update.length, `local:${entry.localSeq}`);
-        queue.shift();
-        continue;
+        this.blocked.add(subdoc);
+        return this.formOne();
       }
-      const made = pieces.map((piece, index) => this.store.createBatch(this.docId, subdoc, index === pieces.length - 1 ? [entry.localSeq] : [], piece, entry.provenance));
+      const made = this.store.transaction(() => pieces.map((piece, index) => this.store.createBatch(this.docId, subdoc, index === pieces.length - 1 ? [entry.localSeq] : [], piece, entry.provenance)));
       queue.shift();
       for (const batch of made.slice(0, -1)) this.batches.push(batch);
       return made[made.length - 1];
@@ -463,9 +491,15 @@ export class OutboundQueue {
       count += 1;
       bytes += batch.update.length;
     }
+    const held = new Set<Subdoc>();
     for (const batch of this.batches) {
       if (this.sent.has(batch.clientSeq)) continue;
-      if (this.tooLarge(batch.subdoc, batch.update.length, `batch:${batch.clientSeq}`)) continue;
+      // An unsendable batch holds back every later batch of its sub-document (they depend on its clocks).
+      if (held.has(batch.subdoc)) continue;
+      if (this.tooLarge(batch.subdoc, batch.update.length, `batch:${batch.clientSeq}`)) {
+        held.add(batch.subdoc);
+        continue;
+      }
       if (count >= maxBatches || (count > 0 && bytes + batch.update.length > maxBytes)) break;
       if (!this.transmit(batch)) break;
       count += 1;
@@ -519,6 +553,7 @@ export class OutboundQueue {
     }
     this.batches = this.batches.filter((batch) => batch.subdoc !== subdoc);
     this.unbatched.delete(subdoc);
+    this.blocked.delete(subdoc);
     if (this.batches.length === 0) this.clearRetry();
   }
 
