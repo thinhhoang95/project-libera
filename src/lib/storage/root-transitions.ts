@@ -12,18 +12,28 @@ import { trackWorkspaceFileChange } from "@/lib/workspaces";
 
 let running: Promise<void> | null = null;
 
+// A record that stays unproven this long is dropped: the folder it names is not coming back.
+const ABANDONED_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
+
 async function apply(directory: string) {
+  // Oldest first; a chain A to B to C arrives as one move A to C (pendingRootTransitions).
   for (const transition of pendingRootTransitions(directory)) {
+    if (transition.from === transition.to) { completeRootTransition(directory, transition); continue; }
     // Only for the folder the host says it bound the project to: the marker there must name the same project.
-    // A folder that is gone, or belongs to something else now, leaves nothing to move to.
     const marker = sharedNotebookMarker(transition.to);
-    if (marker?.projectId === transition.projectId && transition.from !== transition.to) {
+    if (marker?.projectId === transition.projectId) {
       await followNotebookRootRename(transition.from, transition.to);
       const library = await readWorkspaces();
       const next = trackWorkspaceFileChange(library, null, { moved: { from: transition.from, to: transition.to } });
       if (JSON.stringify({ ...next, updatedAt: 0 }) !== JSON.stringify({ ...library, updatedAt: 0 })) await writeWorkspaces(next);
+      completeRootTransition(directory, transition);
+    } else if (marker?.projectId) {
+      // The folder belongs to another project now: there is nothing to move to, for good.
+      completeRootTransition(directory, transition);
+    } else if (!marker && Date.now() - Date.parse(transition.at) > ABANDONED_AFTER_MS) {
+      completeRootTransition(directory, transition);
     }
-    completeRootTransition(directory, transition.id);
+    // An unreadable marker (a cloud provider mid-delivery), or one not there yet: kept for the next look.
   }
 }
 
