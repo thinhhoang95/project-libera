@@ -4,6 +4,7 @@ import { attachFileIds, markFileIdsUnknown } from "@/lib/storage/tree";
 import { StorageError } from "@/lib/storage/errors";
 import { filePathFromParts } from "@/lib/storage/paths";
 import type { FileListEntry } from "@/lib/collab/local-api";
+import { sameManifestPath } from "@/lib/collab/manifest-paths";
 import type { LiberaFileNode, LiberaNotebookNode, LiberaTreeNode } from "@/lib/types";
 
 /** How long the tree waits for the host's listing before it goes without ids. */
@@ -119,7 +120,7 @@ export async function attachSharedFileIdTo(
   let timer: ReturnType<typeof setTimeout> | undefined;
   const signal = { live: true };
   const work = async () => {
-    const entry = (await list(file.notebook)).find((candidate) => candidate.path === file.path && candidate.kind !== "folder");
+    const entry = (await list(file.notebook)).find((candidate) => sameManifestPath(candidate.path, file.path) && candidate.kind !== "folder");
     if (!signal.live) return;
     if (!entry) { file.fileIdState = "mismatch"; return; }
     let verified = isIdentifiedRow(entry, file);
@@ -173,7 +174,7 @@ export async function resolveSharedActionFileId(
   if (given) return given;
   const refused = () => new StorageError(`${liberaPath.split("/").at(-1) || liberaPath} is still being brought up to date by sync, so it cannot be ${action} yet. Try again once sync has caught up.`, 409);
   const notebook = liberaPath.split("/")[0];
-  const entry = (await list(notebook)).find((candidate) => candidate.path === liberaPath && candidate.kind !== "folder");
+  const entry = (await list(notebook)).find((candidate) => sameManifestPath(candidate.path, liberaPath) && candidate.kind !== "folder");
   if (!entry) return undefined;
   if (entry.kind !== "blob") return entry.fileId;
   const disk = filePathFromParts(notebook, liberaPath.split("/").slice(1));
