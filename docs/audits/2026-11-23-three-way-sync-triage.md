@@ -49,4 +49,34 @@ Known failures on `main` that a package may fix: `albums-host` "when access ends
 
 ## Results
 
-To be filled in as packages merge.
+All 14 packages merged into `fix/three-way-sync-audit`. Of the 71 findings, 69 are fixed and 2 partly fixed (H2, H7); none was rejected as not a bug. Every package wrote its tests first; the table notes where a test could not be shown failing for the finding's own reason.
+
+| Package | Fixed | Partly fixed, or left (what) |
+|---|---|---|
+| K2 outbound queue | C12, H11, H12, M12 | A subdoc with an uncuttable update stays blocked for the queue's lifetime (until the hub is reopened or the subdoc dropped); its work counts as pending, so that hub never idles closed. `audit-1112-core-sync` DL-7 asserted the C12 bug and was changed. |
+| K1 doc hub | C6, C7, H13, M11 | none. `not-open` reopens; `forbidden`, `invalid-update`, `too-large`, `annotation-ownership` still roll back; `rate-limited` backs off. The resync timer reschedules itself (1 s to 30 s) until an `Opened` arrives. `HubTransport.reopen()` returns whether the frame was sent. |
+| NX1 Next shared writes | H21, H24, H25, M15 | none. New `src/lib/collab/manifest-paths.ts`. H25's folder rename and delete parts were not seen failing before the fix (the test stopped at its first assertion). |
+| NX2 guards and edges | H22, H23, L6, M3, M18, M21 | M18's Windows paths are tested by faking the platform, not on Windows. The M21 diff test was written after the fix. |
+| CT control plane | C2, H1, H16, H19, H28, M1, M13 | A wall-clock step of more than 2 s (e.g. NTP) briefly lapses a lease until the next renewal. M1 has no "still the writer" check, because followers contest through the same call. |
+| K3 host core | H10, H14, H15, M5, M14, M17, L4, L5 | H15's `touch()` retry (25 ms, only when the lock file looks missing) has no test. Left: a command enqueued during the tail of a replay pass waits for the next kick (pre-existing). |
+| SC1 scanner reads | C9, H4, H9, M8, M19, L2 | An unreadable fresh file holds same-size missing files, and keeps its parent folders unshared, for the existing bounded unsettled window. `deleteGraceMs` and `missingSince` are still unused. |
+| WR writer runtime | C1, C4, M10, M23 (layout, retirement, transitions) | H2: the flags clear lazily once the hub is caught up (the suggested status listener never fires, because status changes are deduplicated); the manifest case cannot be reproduced (the server manifest is never empty), so it has a guard test only. |
+| RV revocation | C3, C10, C11, H3, M16 | A file doc closed as `access-revoked` or `not-found` still sets its own read-only reason; project revocation comes only from the manifest hub, so a member whose manifest hub never connects is not detected through file docs. The client test's later subtests failed before the fix only by cascade from C3. |
+| TD takedown and PDF | C5, H18, H20 | The strict export is takedown-only; revocation and stop keep the lenient text preservation. A normal offline sidecar write still uses cached or empty comments. After a takedown, a doc renamed in the fence manifest leaves its old-path copy on disk as well. |
+| PR1 registration races | H17, H26, H27, M4, M23 (rejoin), M25 | H26 was never seen failing for its own reason (the pre-fix run timed out on a revocation wait). `stop()` and `accountChanged()` bump an epoch that `run()` checks, instead of waiting for in-flight locks. |
+| MV moves, case, respells | H7 (partly), M6, M9, M20, L3 | H7: a remote case-only rename of an ancestor folder with no entry of its own is not applied on disk. The `occupied` key change is untested; on a case-sensitive volume a move to `notes.md` now waits while a failed `Notes.md` is there. L3 is bounded by the manifest's entries (cap 20,000), not by volume detection. |
+| PR2 bindings, transitions | H5, H6, L1, M2, M24 | Bindings are not deleted on an account switch (they still guard the old share); stale ones clear at the next discovery, and until then Next stays fail-closed. A binding written under one casing and looked up under another is found only once rewritten. A root transition whose marker stays absent is kept for up to 30 days. |
+| SC2 scanner classification | C8, H8, M7, M22 | H8: a folder this host re-created that the user then empties and keeps can still lose its entry. |
+
+Fixed while merging: TD and SC1 conflicted in `preserveLatestText` (TD's extracted `writeLatestText` keeps SC1's `noteOwnWrite`); fake transports in three tests return the new `reopen()` result; two new tests' types (a stub host's fields, a server test's `ClosedMessage`).
+
+Known failures on `main` now passing: `albums-host` "when access ends, the member keeps the photos they added" (passes after RV) and `audit-1119-writer-pass` "finding 29" (passes after WR and MV). `audit-1119-fs-exclusive` "movePathExclusive refuses a folder onto an existing folder" passes on macOS before and after; it fails on Windows, which M18 addresses but nobody has checked there.
+
+`collab-integrity-scanner` test 3 ("the old folder is not restored") is flaky on `main` as well: at `be5856a` it passed 2 of 4 runs, and on the merged branch 1 of 4.
+
+Battery: no package added a polling loop or a fixed-interval timer. New schedules are self-rescheduling and stop when idle: the doc hub's resync (1 s to 30 s backoff until `Opened`) and the scanner's skip-only retry (backoff scaled on battery, capped at 2 min). The registry keeps a hub open past its idle delay only while it has unacknowledged work, is signed in and can sync. Extra I/O is limited to the file or project acted on.
+
+### Tests
+
+- Each package ran its own new files and at most two existing ones (TD ran three). Central checks on the merged branch: `npx tsc --noEmit -p tsconfig.json` and `-p server/tsconfig.json` clean, eslint on the changed files clean (warnings only).
+- Full suites: not run yet.
