@@ -332,6 +332,8 @@ export function migratePythonSidecar(documentPath: string, alsoMoving?: string):
 }
 
 async function migrateLegacyPythonSidecar(documentPath: string, alsoMoving?: string) {
+  // A shared notebook's files change only through the host: this would write and delete inside its _assets/.
+  if (isSharedNotebookPath(documentPath)) return;
   const canonical = pythonSidecarFile(documentPath);
   if (await pathExists(canonical.absolutePath)) return;
   const legacyPath = legacyPythonSidecarPath(documentPath);

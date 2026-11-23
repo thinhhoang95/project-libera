@@ -18,13 +18,16 @@ export interface ManifestDiff {
 /**
  * The changes from `recorded` to `next` (the manifest's paths by file ID).
  * An entry not seen before is remembered without a transition. An empty
- * `next` against a recorded manifest is never read as "everything was
+ * `next` against a recorded manifest is not read as "everything was
  * deleted" (a manifest that has not loaded looks the same): nothing is
  * recorded, and a real emptying shows as removals once any entry is back.
+ * `synced` says the manifest has caught up with the server (its hub heard the
+ * server's state), so an empty `next` is the notebook's real state: the last
+ * file was deleted, and it is recorded as such.
  */
-export function diffManifestPaths(recorded: ReadonlyMap<string, RecordedPath>, next: ReadonlyMap<string, RecordedPath>, at: number): ManifestDiff {
+export function diffManifestPaths(recorded: ReadonlyMap<string, RecordedPath>, next: ReadonlyMap<string, RecordedPath>, at: number, synced = false): ManifestDiff {
   const diff: ManifestDiff = { upserts: [], removals: [], transitions: [] };
-  if (next.size === 0 && recorded.size > 0) return diff;
+  if (next.size === 0 && recorded.size > 0 && !synced) return diff;
   for (const [fileId, entry] of next) {
     const before = recorded.get(fileId);
     if (before && before.path === entry.path && before.kind === entry.kind) continue;

@@ -4223,7 +4223,7 @@ export class SharedProject {
         if (before && !next.has(fileId)) next.set(fileId, before);
       }
       this.noteRemoteRespells(next);
-      const diff = diffManifestPaths(this.recordedPaths, next, Date.now());
+      const diff = diffManifestPaths(this.recordedPaths, next, Date.now(), this.manifestHub?.caughtUp === true);
       if (diff.upserts.length === 0 && diff.removals.length === 0) return;
       this.ctx.host.store.commitManifestPaths(this.info.projectId, diff);
       this.recordedPaths = next;

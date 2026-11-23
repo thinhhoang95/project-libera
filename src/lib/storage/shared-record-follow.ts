@@ -107,11 +107,18 @@ const isFinal = (outcome: TransitionOutcome) => outcome.state === "applied" || o
 
 type FollowState = {
   tails: Map<string, Promise<unknown>>;
+  /** The drain running (or queued last) for each notebook. */
+  drains: Map<string, Promise<void>>;
   /** Applied here, acknowledgement not yet confirmed: a later run acknowledges again and does not apply again. */
   applied: Map<string, TransitionOutcome>;
 };
 const STATE_KEY = Symbol.for("libera.sharedRecordFollow");
-const followState = ((globalThis as { [STATE_KEY]?: FollowState })[STATE_KEY] ??= { tails: new Map(), applied: new Map() });
+const followState = ((globalThis as { [STATE_KEY]?: FollowState })[STATE_KEY] ??= { tails: new Map(), drains: new Map(), applied: new Map() });
+// A state object made by an earlier copy of this module (hot reload) has no drain queue.
+followState.drains ??= new Map();
+
+/** The most seqs the host accepts in one acknowledgement (service.ts: transitionsAck). */
+const ACK_BATCH = 5_000;
 
 /** Runs `work` after the notebook's earlier runs. Only local work goes inside: never a host call that can wait. */
 function exclusive<T>(notebook: string, work: () => Promise<T>): Promise<T> {
@@ -466,7 +473,15 @@ function summarize(notebook: string, outcomes: TransitionOutcome[], extra: Parti
  * shared notebook's tree loads, and when the host reports a tree change.
  */
 export async function drainSharedRecordTransitions(notebook: string, options: FollowOptions = {}): Promise<DrainResult> {
-  const result = await drain(notebook, options);
+  // One drain at a time per notebook, from reading the log to acknowledging it: an overlapping drain would hold a log and a file
+  // list that are out of date by the time it gets the lock, and could apply a transition twice or to a file created since.
+  // Host calls are bounded by a timeout, so a drain that waits here cannot wait forever.
+  const previous = followState.drains.get(notebook) ?? Promise.resolve();
+  const run = previous.then(() => drain(notebook, options));
+  const tail = run.then(() => undefined, () => undefined);
+  followState.drains.set(notebook, tail);
+  void tail.then(() => { if (followState.drains.get(notebook) === tail) followState.drains.delete(notebook); });
+  const result = await run;
   noteDrained(notebook, result);
   return result;
 }
@@ -498,10 +513,12 @@ async function drain(notebook: string, options: FollowOptions): Promise<DrainRes
   const outcomes = await applyTransitions(notebook, marker.projectId, marked, manifest);
   const done = outcomes.filter(isFinal).map((outcome) => outcome.seq).filter((seq): seq is number => seq !== undefined);
   let error: string | undefined;
-  if (done.length) {
+  // The host takes at most ACK_BATCH seqs per call (it answers 400 for more); a batch that failed leaves the rest for the next run.
+  for (let start = 0; start < done.length && !error; start += ACK_BATCH) {
+    const batch = done.slice(start, start + ACK_BATCH);
     try {
-      await acknowledgeManifestTransitions(marker.projectId, { seqs: done }, config);
-      for (const seq of done) followState.applied.delete(`${marker.projectId}:${seq}`);
+      await acknowledgeManifestTransitions(marker.projectId, { seqs: batch }, config);
+      for (const seq of batch) followState.applied.delete(`${marker.projectId}:${seq}`);
     } catch (failure) {
       // Applied here already; the next run acknowledges again without applying again.
       error = `The host could not be told which changes were applied: ${failure instanceof Error ? failure.message : String(failure)}`;
