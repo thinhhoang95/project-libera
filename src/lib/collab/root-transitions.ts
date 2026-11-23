@@ -15,6 +15,8 @@ export interface RootTransition {
   from: string;
   to: string;
   at: string;
+  /** Set on a pending transition that folds earlier ones in (A to B, B to C is A to C): their ids, completed with it. */
+  covers?: string[];
 }
 
 const folder = (directory: string) => path.join(directory, "root-transitions");
@@ -36,7 +38,10 @@ export function recordRootTransition(directory: string, input: { projectId: stri
   }
 }
 
-/** The transitions not yet applied. An unreadable record is left alone. */
+/**
+ * The transitions not yet applied, oldest first, with a chain A to B, B to C of one project folded into A to C
+ * (`covers` names the folded ids). An unreadable record is left alone.
+ */
 export function pendingRootTransitions(directory: string | undefined): RootTransition[] {
   if (!directory) return [];
   let names: string[];
@@ -49,9 +54,23 @@ export function pendingRootTransitions(directory: string | undefined): RootTrans
       if (value.version === 1 && typeof value.id === "string" && typeof value.projectId === "string" && typeof value.from === "string" && typeof value.to === "string") found.push(value);
     } catch { /* Left for a later look. */ }
   }
-  return found;
+  found.sort((left, right) => left.at < right.at ? -1 : left.at > right.at ? 1 : left.id < right.id ? -1 : 1);
+  const chained: RootTransition[] = [];
+  for (const next of found) {
+    const earlier = chained.find((item) => item.projectId === next.projectId && item.to === next.from);
+    if (earlier) {
+      earlier.to = next.to;
+      earlier.at = next.at;
+      earlier.covers = [...(earlier.covers ?? []), next.id];
+    } else chained.push({ ...next });
+  }
+  return chained;
 }
 
-export function completeRootTransition(directory: string, id: string): void {
-  try { unlinkSync(path.join(folder(directory), `${id}.json`)); } catch { /* Already applied. */ }
+/** Deletes the record, and the earlier records a chain folded into it. */
+export function completeRootTransition(directory: string, id: string | Pick<RootTransition, "id" | "covers">): void {
+  const ids = typeof id === "string" ? [id] : [id.id, ...(id.covers ?? [])];
+  for (const each of ids) {
+    try { unlinkSync(path.join(folder(directory), `${each}.json`)); } catch { /* Already applied. */ }
+  }
 }

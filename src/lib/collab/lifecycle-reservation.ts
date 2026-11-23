@@ -128,19 +128,22 @@ export function reserveLifecycle(directory: string | undefined, roots: string[],
   const unique = [...new Set(roots.map((root) => path.resolve(root)))];
   const held: Array<{ root: string; file: string; record: Held }> = [];
   const releaseAll = () => { for (const item of held.splice(0)) { try { unlinkSync(item.file); } catch { /* Already gone. */ } } };
-  const now = Date.now();
   try {
     for (const root of unique) {
       const token = randomBytes(8).toString("hex");
-      const record: Held = { version: 1, root, kind, pid: process.pid, token, createdAt: now, renewedAt: now };
       const file = fileOf(directory, root, token);
       // A conflicting live holder already there refuses us before we write anything.
       const other = liveHolders(directory, root).find((candidate) => conflicts(kind, candidate.kind));
       if (other) throw new ReservationConflictError(other.kind);
+      // Read per root, right before this root's write: a clock taken once up front could be older than a rival's
+      // record written while an earlier root was being reserved, and then both would think they came first.
+      const now = Date.now();
+      const record: Held = { version: 1, root, kind, pid: process.pid, token, createdAt: now, renewedAt: now };
       write(file, record);
       held.push({ root, file, record });
-      // Both sides may have written at once: the older record stands, the newer backs out.
-      const rival = liveHolders(directory, root).find((candidate) => candidate.token !== token && conflicts(kind, candidate.kind) && olderThan(candidate, record));
+      // Both sides may have written at once: the record created first stands, a later one backs out. An equal
+      // timestamp cannot be ordered, so both back out (nothing waits; the caller retries).
+      const rival = liveHolders(directory, root).find((candidate) => candidate.token !== token && conflicts(kind, candidate.kind) && candidate.createdAt <= record.createdAt);
       if (rival) throw new ReservationConflictError(rival.kind);
     }
   } catch (error) {
