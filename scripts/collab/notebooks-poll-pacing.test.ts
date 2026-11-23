@@ -16,7 +16,7 @@ import { readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { after, before, describe, test } from "node:test";
 
-import type { WalkEntry } from "../../electron/collab/notebooks/fs-ops";
+import { sha256, type WalkEntry } from "../../electron/collab/notebooks/fs-ops";
 import { DEFAULT_TIMINGS, LARGE_FILE_BYTES, SharedProject, onWindowsNetworkShare, type Timings } from "../../electron/collab/notebooks/project";
 import type { LayoutRecord } from "../../electron/collab/notebooks/state";
 import { closePeer, makePeer, register, sleep, tempRoot, until, writeTree, type Peer } from "./support/notebooks-harness";
@@ -523,40 +523,51 @@ describe("against a server and a real folder", () => {
     assert.equal(inner.verified.get(figure)!.at, at, "settled by its ctime, the file is not read again");
   });
 
-  test("a large file overwritten with its size and mtime kept is put back", { timeout: 30_000 }, async () => {
-    const original = Buffer.alloc(LARGE_FILE_BYTES + 1024, 7);
-    const { root, inner } = await share("Restore", { pollMs: 40, verifyMs: 150, largeFileVerifyMs: 600_000 }, { "figure.bin": original });
+  /**
+   * Shares `original`, then replaces it with a same-size file that keeps its mtime: that edit is the user's and is shared (C8).
+   * Returns once it is the shared version, so `original` written back with the same mtime is a strict stale copy.
+   */
+  async function shareThenReplace(name: string, timings: Partial<Timings>, original: Buffer) {
+    const context = await share(name, timings, { "figure.bin": original });
+    const { root, project, inner } = context;
     inner.watcher?.close();
     inner.watcher = null;
     const file = path.join(root, "figure.bin");
     const before = statSync(file);
-    writeFileSync(file, Buffer.alloc(original.length, 9));
+    const edited = Buffer.alloc(original.length, 9);
+    writeFileSync(file, edited);
+    utimesSync(file, before.atimeMs / 1000, before.mtimeMs / 1000);
+    const figure = fileId(project, "figure.bin");
+    await until(() => inner.state.layout[figure].hash === sha256(edited), "the same-size edit to be shared as the user's version", 15_000);
+    await project.whenIdle();
+    return { ...context, file, before, edited, figure };
+  }
+
+  test("a large file overwritten with its size and mtime kept is put back", { timeout: 60_000 }, async () => {
+    const original = Buffer.alloc(LARGE_FILE_BYTES + 1024, 7);
+    const { file, before, edited } = await shareThenReplace("Restore", { pollMs: 40, verifyMs: 150, largeFileVerifyMs: 600_000 }, original);
+    // An earlier version written back with the recorded size and mtime: only its ctime shows it, and it is a strict stale copy.
+    writeFileSync(file, original);
     utimesSync(file, before.atimeMs / 1000, before.mtimeMs / 1000);
     const after = statSync(file);
     assert.equal(after.size, before.size);
     assert.equal(after.mtimeMs, before.mtimeMs);
-    if (after.ctimeMs === before.ctimeMs) return; // No usable ctime here: only the large-file age would catch it.
-    await until(() => holds(file, original), "the shared version to be written back", 10_000);
+    await until(() => holds(file, edited), "the shared version to be written back", 10_000);
   });
 
-  test("a large file whose recovery failed is retried, not taken as verified", { timeout: 30_000 }, async () => {
+  test("a large file whose recovery failed is retried, not taken as verified", { timeout: 60_000 }, async () => {
     const original = Buffer.alloc(LARGE_FILE_BYTES + 1024, 7);
-    const { root, project, inner } = await share("Retry", { pollMs: 40, verifyMs: 300, largeFileVerifyMs: 600_000, retryMs: 50 }, { "figure.bin": original });
-    inner.watcher?.close();
-    inner.watcher = null;
+    const { file, before, edited, project, inner, figure } = await shareThenReplace("Retry", { pollMs: 40, verifyMs: 300, largeFileVerifyMs: 600_000, retryMs: 50 }, original);
     const placeBlob = inner.placeBlob.bind(project);
     let calls = 0;
     inner.placeBlob = async (...args: unknown[]) => {
       calls += 1;
       return calls === 1 ? false : placeBlob(...args);
     };
-    const file = path.join(root, "figure.bin");
-    const before = statSync(file);
-    writeFileSync(file, Buffer.alloc(original.length, 9));
+    writeFileSync(file, original);
     utimesSync(file, before.atimeMs / 1000, before.mtimeMs / 1000);
     await until(() => calls >= 1, "the first recovery attempt", 10_000);
-    const figure = fileId(project, "figure.bin");
     assert.equal(inner.verified.get(figure)?.pending, true, "the failed recovery leaves the read pending");
-    await until(() => calls >= 2 && holds(file, original), "a second attempt that writes the shared version back", 10_000);
+    await until(() => calls >= 2 && holds(file, edited), "a second attempt that writes the shared version back", 10_000);
   });
 });
