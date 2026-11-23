@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { MessageType } from "../src/protocol.js";
+import { MessageType, type ClosedMessage } from "../src/protocol.js";
 import type { SyncServer } from "../src/sync/server.js";
 import { startSyncEnv } from "./support/sync-fixtures.js";
 
@@ -21,7 +21,7 @@ test("an update that races a file delete closes the document as document-deleted
     // The row is gone before the server's notification reaches the room.
     await env.db.updateTable("documents").set({ deleted_at: new Date() }).where("id", "=", env.docId).execute();
     client.edit(env.docId, "content", (doc) => doc.getText("source").insert(0, "late"));
-    const closed = await client.waitFor<{ type: number; reason: string }>(closedFor(env.docId) as never);
+    const closed = await client.waitFor<ClosedMessage>(closedFor(env.docId) as never);
     assert.equal(closed.reason, "document-deleted");
   } finally { await env.close(); }
 });
@@ -34,7 +34,7 @@ test("a removed member still hears access-revoked when their update races the re
     await client.open(env.docId);
     await env.db.deleteFrom("memberships").where("project_id", "=", env.project.id).where("account_id", "=", editor.id).execute();
     client.edit(env.docId, "content", (doc) => doc.getText("source").insert(0, "late"));
-    const closed = await client.waitFor<{ type: number; reason: string }>(closedFor(env.docId) as never);
+    const closed = await client.waitFor<ClosedMessage>(closedFor(env.docId) as never);
     assert.equal(closed.reason, "access-revoked");
   } finally { await env.close(); }
 });
@@ -57,7 +57,7 @@ test("an open whose document is deleted while it waits in the room queue is docu
     await env.db.updateTable("documents").set({ deleted_at: new Date() }).where("id", "=", env.docId).execute();
     release();
     await job;
-    const closed = await client.waitFor<{ type: number; reason: string }>(closedFor(env.docId) as never);
+    const closed = await client.waitFor<ClosedMessage>(closedFor(env.docId) as never);
     assert.equal(closed.reason, "document-deleted");
   } finally {
     release();
