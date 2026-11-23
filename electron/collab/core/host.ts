@@ -181,6 +181,9 @@ export class CollabHost {
       clock: this.clock,
       logger: this.logger,
       idleMs: this.options.hubIdleMs,
+      // Signed in: an idle hub with unacknowledged edits stays open until the server has them. Signed out
+      // there is nothing to deliver them; connectAccount() picks them up from SQLite.
+      holdUnacked: () => this.syncClient !== null,
       create: (docId, acquireOptions) => this.createHub(docId, acquireOptions),
     });
     this.commandsInstance = new PendingCommands({
@@ -462,6 +465,8 @@ export class CollabHost {
       if (event.type === "state") {
         this.journal.noteConnection(event.state);
         this.commandsInstance?.setOnline(event.state === "connected");
+        // Edits made while offline (their window long closed) go out on every reconnect, not just the first.
+        if (event.state === "connected") this.syncPendingDocs();
       } else if (event.type === "error") {
         this.journal.noteError({ source: "sync", code: event.code, message: event.message, ...(event.docId ? { docId: event.docId } : {}) });
       }
@@ -613,6 +618,7 @@ export class CollabHost {
         stateVectors: () => {
           if (sentEmpty) return hub.stateVectors();
           sentEmpty = true;
+          hub.noteExternalOpen();
           return hub.subdocs.map((subdoc) => ({ subdoc, stateVector: EMPTY_STATE_VECTOR }));
         },
         pdfTarget: () => hub.pdfTarget(),

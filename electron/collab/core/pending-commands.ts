@@ -81,6 +81,8 @@ export class PendingCommands {
   private online = false;
   private running: Promise<void> | null = null;
   private retryTimer: TimerHandle | null = null;
+  /** What the armed retry timer is waiting out: commands about these keys keep their backoff, others go now. */
+  private readonly backedOffKeys = new Set<string>();
   private attempt = 0;
   private stopped = false;
 
@@ -128,23 +130,21 @@ export class PendingCommands {
     if (online) {
       // Coming online is a reason to retry now rather than at the next tick.
       this.attempt = 0;
-      if (this.retryTimer) this.clock.clearTimeout(this.retryTimer);
-      this.retryTimer = null;
+      this.clearBackoff();
       this.kick();
     }
   }
 
   /** Something a deferred command was waiting for happened: retry now instead of at the next backoff tick. */
   retryNow(): void {
-    if (this.retryTimer) this.clock.clearTimeout(this.retryTimer);
-    this.retryTimer = null;
+    this.clearBackoff();
     this.attempt = 0;
     this.kick();
   }
 
-  /** Starts the replay loop unless it is running or waiting for a retry. */
+  /** Starts the replay loop unless it is running. While a retry is armed, only commands it is not waiting for are sent. */
   kick(): void {
-    if (this.stopped || this.running || this.retryTimer || !this.online || !this.api) return;
+    if (this.stopped || this.running || !this.online || !this.api) return;
     this.running = this.replay().finally(() => {
       this.running = null;
     });
@@ -157,22 +157,30 @@ export class PendingCommands {
 
   stop(): void {
     this.stopped = true;
+    this.clearBackoff();
+  }
+
+  private clearBackoff(): void {
     if (this.retryTimer) this.clock.clearTimeout(this.retryTimer);
     this.retryTimer = null;
+    this.backedOffKeys.clear();
   }
 
   private async replay(): Promise<void> {
     // Rows that could not be sent this pass, and what they are about: later rows about the same
     // things wait behind them, every other row goes ahead.
     const tried = new Set<string>();
-    const blockedKeys = new Set<string>();
+    const blockedKeys = new Set<string>(this.backedOffKeys);
     let firstBlocked: { id: string; attempts: number; message: string } | null = null;
     while (!this.stopped && this.online && this.api) {
       const next = this.store.listCommands().find((row) => !tried.has(row.id) && !commandKeys(row.command).some((key) => blockedKeys.has(key)));
       if (!next) {
         // Backoff restarts only when a whole pass went through; while something stays blocked it keeps doubling (capped).
-        if (firstBlocked) this.scheduleRetry(firstBlocked.id, firstBlocked.attempts, firstBlocked.message);
-        else this.attempt = 0;
+        if (firstBlocked) {
+          // A timer already armed keeps its schedule; the newly failed keys wait for it too.
+          if (this.retryTimer) for (const key of blockedKeys) this.backedOffKeys.add(key);
+          else this.scheduleRetry(firstBlocked.id, firstBlocked.attempts, firstBlocked.message, blockedKeys);
+        } else if (!this.retryTimer) this.attempt = 0;
         return;
       }
       const api = this.api;
@@ -218,13 +226,15 @@ export class PendingCommands {
     }
   }
 
-  private scheduleRetry(id: string, attempts: number, message: string): void {
+  private scheduleRetry(id: string, attempts: number, message: string, keys: Set<string>): void {
     const ceiling = Math.min(this.backoffMaxMs, this.backoffBaseMs * 2 ** this.attempt);
     const delayMs = Math.floor(this.random() * ceiling * Math.max(1, this.options.delayScale?.() ?? 1));
     this.attempt += 1;
     this.events.emit({ type: "retrying", id, attempts, error: message, delayMs });
+    for (const key of keys) this.backedOffKeys.add(key);
     this.retryTimer = this.clock.setTimeout(() => {
       this.retryTimer = null;
+      this.backedOffKeys.clear();
       this.kick();
     }, delayMs);
   }
