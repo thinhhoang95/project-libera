@@ -427,7 +427,7 @@ export class DocHub implements CompactionTarget {
 
   /** Unacknowledged local updates. */
   get pendingCount(): number {
-    return this.pendingLocal.size;
+    return this.pendingLocal.size + this.outbound.unlinkedBatchCount;
   }
 
   /** Why this document can never fully sync (an update over the size limit was skipped), if it can't. */
@@ -1109,7 +1109,7 @@ export class DocHub implements CompactionTarget {
       connected: this.connected,
       opened: this.opened,
       hasData: this.hasData,
-      pending: this.pendingLocal.size + this.unpersisted.length,
+      pending: this.pendingLocal.size + this.outbound.unlinkedBatchCount + this.unpersisted.length,
       oldestPendingAt,
       lastAckAt: this.lastAckAt,
       readOnlyReason: this.meta.readOnlyReason,
