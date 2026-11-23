@@ -9,6 +9,7 @@ import test from "node:test";
 
 import { DestinationTakenError, movePathExclusive, writeFileExclusive } from "../../electron/collab/notebooks/fs-ops";
 import { readState } from "../../electron/collab/notebooks/state";
+import { diffManifestPaths } from "../../electron/collab/notebooks/transition-log";
 
 function scratch(): string {
   return mkdtempSync(path.join(tmpdir(), "libera-audit-1123-"));
@@ -59,6 +60,14 @@ test("L6: a malformed displaced or remoteRespells is rejected, a well-formed one
       assert.equal((await readState(root)).externalAdoptionReason, "invalid-state", JSON.stringify(bad));
     }
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("M21: a manifest that has caught up with the server and is legitimately empty records its removals", () => {
+  const recorded = new Map([["f1", { path: "a.md", kind: "file" as const }]]);
+  assert.deepEqual(diffManifestPaths(recorded, new Map(), 7), { upserts: [], removals: [], transitions: [] }, "not synced: an empty list may be a manifest that has not loaded");
+  const synced = diffManifestPaths(recorded, new Map(), 7, true);
+  assert.deepEqual(synced.removals, ["f1"]);
+  assert.deepEqual(synced.transitions.map(({ fileId, from, to }) => [fileId, from, to]), [["f1", "a.md", null]]);
 });
 
 /** Runs `work` with a stand-in for one `fs.promises` function. */
