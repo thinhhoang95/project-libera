@@ -873,7 +873,7 @@ export class HostStore {
 
   /** Doc ids that still have local work the server has not acknowledged. */
   docsWithUnacked(): string[] {
-    return this.all(`SELECT DISTINCT doc_id FROM updates WHERE acked_server_seq IS NULL ORDER BY doc_id`).map((row) =>
+    return this.all(`SELECT doc_id FROM updates WHERE acked_server_seq IS NULL UNION SELECT doc_id FROM outbound_batches ORDER BY doc_id`).map((row) =>
       String(row.doc_id),
     );
   }
