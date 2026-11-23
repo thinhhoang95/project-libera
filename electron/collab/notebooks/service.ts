@@ -183,6 +183,9 @@ interface ProjectHandle {
   leaseSupported: boolean;
   /** Conservative monotonic deadline, never extended by a failed renewal. */
   leaseDeadline?: number;
+  /** The monotonic and wall clock readings when the lease was requested: wall time that outran monotonic time is a sleep. */
+  leaseMono?: number;
+  leaseWall?: number;
   /** A follower refused the lease contests it again at this monotonic time (near the holder's expiry). */
   nextContestAt?: number;
   /** Counts lease releases heard from the server, so a refusal that crossed one is not trusted. */
@@ -209,6 +212,13 @@ function newHandle(projectId: string, name: string, root: string, role: Role, ma
     leaseSupported: true,
   };
 }
+
+/**
+ * The monotonic clock stops while the computer sleeps (macOS, Linux). When the
+ * wall clock has run this much further than it since a lease was granted, the
+ * computer slept and the lease may have lapsed on the server.
+ */
+const SLEEP_SKEW_MS = 2000;
 
 const LOCAL_REVIEW_NOTE =
   "Local review comments stay on this device for now; they move to the shared notebook when shared comments arrive.";
@@ -314,6 +324,8 @@ export class NotebookServiceImpl implements NotebookService {
   private releasing = false;
   /** Counts stop() and accountChanged(): a runtime opened across one of them belongs to a project that was let go. */
   private epoch = 0;
+  /** Lease time: monotonic for durations, wall only to notice that the computer slept (tests replace it). */
+  private clock: { mono(): number; wall(): number } = { mono: () => performance.now(), wall: () => Date.now() };
   /** Folders being shared or joined right now: their marker is ours before the store knows it. */
   private readonly pendingRoots = new Set<string>();
   private readonly unjoined = new Map<string, UnjoinedFolder>();
@@ -520,8 +532,10 @@ export class NotebookServiceImpl implements NotebookService {
   }
 
   private async run(handle: ProjectHandle): Promise<void> {
+    const epoch = this.epoch;
     const marker = await readMarker(handle.root);
     if (!this.matchesMarker(handle, marker) || !this.markerAuthorityMatches(marker)) throw new ControlError(409, "notebook-unavailable", "The notebook folder identity changed while it was opening.");
+    if (!this.mayRun(handle, marker, epoch)) throw new WriteCancelledError();
     recordNotebookBinding(this.lifecycleDirectory, handle.root, marker);
     const runtime = await SharedProject.open(this.context(), {
       projectId: handle.projectId,
@@ -536,13 +550,23 @@ export class NotebookServiceImpl implements NotebookService {
       follower: !handle.writer,
       ...(handle.kind === "album" ? { album: true } : {}),
     });
-    if (handle.writer && (handle.leaseDeadline ?? 0) <= performance.now()) {
+    // Stopped, released, revoked or replaced while the runtime opened: it must not outlive that.
+    if (!this.mayRun(handle, marker, epoch)) {
+      await runtime.stop({ persist: false }).catch(() => undefined);
+      throw new WriteCancelledError();
+    }
+    if (handle.writer && !this.leaseLive(handle)) {
       handle.writer = false;
       runtime.info.follower = true;
     }
     handle.runtime = runtime;
     this.reindex(handle.projectId);
     runtime.start();
+  }
+
+  /** Whether `handle` is still the registered, live project of a running service (same epoch as when the start began). */
+  private mayRun(handle: ProjectHandle, marker: SharedMarker | null, epoch: number): boolean {
+    return !handle.revoked && !marker?.revoked && this.started && !this.releasing && this.epoch === epoch && this.projects.get(handle.projectId) === handle;
   }
 
   // ------------------------------------------------------------ synced folders: writer lease and adoption
@@ -597,27 +621,45 @@ export class NotebookServiceImpl implements NotebookService {
       case "unsupported":
         return false;
       default:
-        return named && (handle.leaseDeadline ?? 0) > performance.now();
+        return named && this.leaseLive(handle);
     }
   }
 
-  private async lease(handle: ProjectHandle): Promise<Lease> {
+  /**
+   * Whether the last confirmed server lease still holds: not past its
+   * monotonic deadline, and no sleep since it was granted (the monotonic
+   * clock does not count sleep, so wall time running ahead of it is one).
+   */
+  private leaseLive(handle: ProjectHandle): boolean {
+    const mono = this.clock.mono();
+    if ((handle.leaseDeadline ?? 0) <= mono) return false;
+    if (handle.leaseMono === undefined || handle.leaseWall === undefined) return true;
+    return this.clock.wall() - handle.leaseWall - (mono - handle.leaseMono) <= SLEEP_SKEW_MS;
+  }
+
+  /** `live` turns false once the caller gave up waiting (the tick's budget): such a renewal asks for nothing. */
+  private async lease(handle: ProjectHandle, live?: () => boolean): Promise<Lease> {
     const api = this.deps.host.api;
     if (!api) return { outcome: "signed-out", contended: false };
     if (!handle.leaseSupported) return { outcome: "unsupported", contended: false };
     if (!handle.folderId) return { outcome: "unavailable", contended: false };
     // A follower already refused tries again near the holder's expiry, not on every tick.
-    if (!handle.writer && (handle.nextContestAt ?? 0) > performance.now()) return { outcome: "refused", contended: false };
-    const requestedAt = performance.now();
+    if (!handle.writer && (handle.nextContestAt ?? 0) > this.clock.mono()) return { outcome: "refused", contended: false };
+    // A renewal that outlived its tick, or that starts after stop, sign-out or removal of the handle, must not take a lease.
+    if (!this.started || this.releasing || this.projects.get(handle.projectId) !== handle || live?.() === false) return { outcome: "unavailable", contended: false };
+    const requestedAt = this.clock.mono();
+    const requestedWall = this.clock.wall();
     const releases = handle.leaseReleases ?? 0;
     try {
       const lease = await api.acquireFolderLease(handle.projectId, { folderId: handle.folderId, holder: this.installationId, ttlMs: this.leaseTtlMs }, { timeoutMs: Math.min(5000, Math.max(100, Math.floor(this.leaseTtlMs / 3))) });
-      if (!this.started || this.releasing) return { outcome: "unavailable", contended: false };
+      if (!this.started || this.releasing || live?.() === false) return { outcome: "unavailable", contended: false };
       // A duration measured from before the request on the monotonic clock:
       // never the server's absolute expiry against this device's wall clock,
       // which a skewed clock turns into a zero-length (or overlong) lease.
       const grantedMs = typeof lease.ttlMs === "number" && Number.isFinite(lease.ttlMs) && lease.ttlMs > 0 ? lease.ttlMs : this.leaseTtlMs;
       handle.leaseDeadline = lease.granted ? requestedAt + Math.min(this.leaseTtlMs, grantedMs) : 0;
+      handle.leaseMono = requestedAt;
+      handle.leaseWall = requestedWall;
       handle.nextContestAt = lease.granted || (handle.leaseReleases ?? 0) !== releases ? 0 : this.contestTime(lease, requestedAt);
       return { outcome: lease.granted ? "granted" : "refused", contended: lease.contended === true };
     } catch (error) {
@@ -698,10 +740,11 @@ export class NotebookServiceImpl implements NotebookService {
           // Only while the folder still carries this project's marker: an
           // installation that cannot write here must let its lease lapse so
           // another one can take the folder over.
+          let abandoned = false;
           const renew = async (): Promise<Lease | undefined> => {
             const renewable = !handle.revoked && handle.runtime && handle.folderId && this.projects.get(handle.projectId) === handle &&
               this.matchesMarker(handle, await readMarker(handle.root).catch(() => null));
-            return renewable ? await this.lease(handle) : undefined;
+            return renewable && !abandoned ? await this.lease(handle, () => !abandoned) : undefined;
           };
           // A renewal that does not answer in time counts as unavailable: the
           // lifecycle check below must not wait for it again.
@@ -710,7 +753,10 @@ export class NotebookServiceImpl implements NotebookService {
           const renewed = await Promise.race([
             renew().catch(() => unanswered),
             new Promise<Lease>((resolve) => {
-              timer = setTimeout(() => resolve(unanswered), budgetMs);
+              timer = setTimeout(() => {
+                abandoned = true;
+                resolve(unanswered);
+              }, budgetMs);
               timer.unref?.();
             }),
           ]);
@@ -955,6 +1001,12 @@ export class NotebookServiceImpl implements NotebookService {
         }
         if (!api || !accountId) continue;
         if (!marker || marker.revoked || marker.accountId !== accountId || marker.serverUrl.replace(/\/+$/, "") !== api.baseUrl) continue;
+        if (await this.rejoinedElsewhere(marker, root)) {
+          // The registered project's access ended here and the account joined it again into this new folder (on another device).
+          await this.locked(`project:${marker.projectId}`, () => this.adopt(api, root, marker, true))
+            .catch((error) => this.logger.warn(`Shared folder ${path.basename(root)} could not be adopted after a rejoin; discovery will retry.`, error));
+          continue;
+        }
         if (this.projects.has(marker.projectId) || this.deps.host.store.getProject(marker.projectId)) {
           // Another folder with the marker of a registered project: report it
           // (the missing-root case is reported as ambiguous-copy by movedRoot).
@@ -1011,8 +1063,24 @@ export class NotebookServiceImpl implements NotebookService {
     }
   }
 
-  private async adopt(api: ApiClient, root: string, marker: SharedMarker): Promise<void> {
-    if (this.projects.has(marker.projectId) || this.deps.host.store.getProject(marker.projectId)) return;
+  /**
+   * Whether `root` carries an active marker of a project whose registered folder here was revoked: the handle is
+   * revoked, or its folder is gone and its recorded outcome is "revoked". A folder of the same share that was
+   * revoked itself, or that is still there and live, is not a rejoin.
+   */
+  private async rejoinedElsewhere(marker: SharedMarker, root: string): Promise<boolean> {
+    if (marker.revoked) return false;
+    const handle = this.projects.get(marker.projectId);
+    const old = handle?.root ?? this.deps.host.store.getProject(marker.projectId)?.localRoot;
+    if (!old || path.resolve(old) === path.resolve(root)) return false;
+    if (handle) return handle.revoked;
+    if (await statIfExists(old)) return false;
+    const binding = readNotebookBinding(this.lifecycleDirectory, old);
+    return !!binding && binding.projectId === marker.projectId && readNotebookLifecycle(this.lifecycleDirectory, binding) === "revoked";
+  }
+
+  private async adopt(api: ApiClient, root: string, marker: SharedMarker, rejoin = false): Promise<void> {
+    if (rejoin ? !(await this.rejoinedElsewhere(marker, root)) : this.projects.has(marker.projectId) || this.deps.host.store.getProject(marker.projectId)) return;
     let project: ProjectSummary;
     try {
       project = await api.getProject(marker.projectId);
@@ -1033,7 +1101,15 @@ export class NotebookServiceImpl implements NotebookService {
       return;
     }
     this.unjoined.delete(root);
+    if (rejoin) {
+      // Membership is confirmed above: the revoked handle and row give way to the new folder, as in finishJoin.
+      const revoked = this.projects.get(project.id);
+      await revoked?.runtime?.stop({ persist: false }).catch(() => undefined);
+      this.projects.delete(project.id);
+      this.deps.host.store.clearProjectRecords(project.id);
+    }
     this.deps.host.store.upsertProject({ projectId: project.id, name: project.name, localRoot: root, role: project.role });
+    if (rejoin) this.deps.host.restoreProjectAccess(project.id, project.role);
     const handle = newHandle(project.id, project.name, root, project.role, { ...marker, manifestDocId: project.manifestDocId });
     this.projects.set(project.id, handle);
     try {
@@ -1079,8 +1155,7 @@ export class NotebookServiceImpl implements NotebookService {
       layoutChanged: (projectId) => this.reindex(projectId),
       canWriteDisk: (projectId) => {
         const handle = this.projects.get(projectId);
-        return !!handle && handle.writer && !handle.revoked && !handle.revoking && !this.releasing &&
-          (handle.leaseDeadline ?? 0) > performance.now();
+        return !!handle && handle.writer && !handle.revoked && !handle.revoking && !this.releasing && this.leaseLive(handle);
       },
     };
   }
@@ -1256,7 +1331,12 @@ export class NotebookServiceImpl implements NotebookService {
 
   resumed(): void {
     // Leases lapsed during sleep: renew or contest now, not at the old schedule.
-    for (const handle of this.projects.values()) handle.nextContestAt = 0;
+    // The monotonic clock did not run while asleep, so no deadline can be trusted: every lease is
+    // lapsed until the server confirms it again, before the renewal and the runtimes run.
+    for (const handle of this.projects.values()) {
+      handle.nextContestAt = 0;
+      handle.leaseDeadline = 0;
+    }
     void this.tick();
     for (const handle of this.projects.values()) handle.runtime?.resumed();
   }
@@ -2090,10 +2170,17 @@ export class NotebookServiceImpl implements NotebookService {
         leaseSupported: true,
       };
       this.projects.set(projectId, handle);
-      handle.writer = await this.claimRole(handle, installedMarker!);
-      await checkWriteGuard(guard);
-      await this.run(handle);
-      await deleteSharePlan(root, guard);
+      try {
+        handle.writer = await this.claimRole(handle, installedMarker!);
+        await checkWriteGuard(guard);
+        await this.run(handle);
+        await deleteSharePlan(root, guard);
+      } catch (error) {
+        // Not registered half-way: the stored row lets the next pass start it again (loadStoredProjects).
+        await handle.runtime?.stop({ persist: false }).catch(() => undefined);
+        if (this.projects.get(projectId) === handle) this.projects.delete(projectId);
+        throw error;
+      }
       finished = true;
       await fs.rm(recoveryFile, { force: true });
       this.progress(notebook, { phase: "done", done: files.length, total: files.length });
@@ -2194,11 +2281,14 @@ export class NotebookServiceImpl implements NotebookService {
       await writeState(root, emptyState(), guard);
       const marker = installedMarker;
       if (marker) recordNotebookBinding(this.lifecycleDirectory, root, marker);
+      // A fresh folder: what the project's earlier folder left (fences, retired paths, manifest paths, unacknowledged transitions) is not its own.
+      this.deps.host.store.clearProjectRecords(project.id);
       this.deps.host.store.upsertProject({ projectId: project.id, name: project.name, localRoot: root, role: project.role });
-    } finally {
+      await checkWriteGuard(guard);
+    } catch (error) {
       this.pendingRoots.delete(root);
+      throw error;
     }
-    await checkWriteGuard(guard);
     if (known) {
       // Joined again after a revocation: the old folder stays as it is.
       this.projects.delete(project.id);
@@ -2220,9 +2310,13 @@ export class NotebookServiceImpl implements NotebookService {
       leaseSupported: true,
     };
     this.projects.set(project.id, handle);
+    // Registered: loadStoredProjects waits on this project's lock either way, and discovery skips the root no more.
+    this.pendingRoots.delete(root);
     this.deps.host.restoreProjectAccess(project.id, project.role);
     try {
       await this.lease(handle);
+      // Stopped, released or replaced while the lease was requested (the lease reports that as unavailable, not as an error).
+      if (!this.started || this.releasing || this.projects.get(project.id) !== handle) throw new WriteCancelledError();
       await this.run(handle);
     } catch (error) {
       // The stored row lets the next tick start it again; no handle without a runtime stays registered.

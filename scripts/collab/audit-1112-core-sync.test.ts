@@ -140,7 +140,7 @@ test("DATA-3: updates that could not be saved when the hub closes are written to
   }
 });
 
-test("DL-7: an update over the size limit is reported, never sent, and does not block the queue behind it", async () => {
+test("DL-7: an update over the size limit is reported and never sent, and holds the later updates of its subdoc (C12)", async () => {
   const store = new HostStore({ path: ":memory:" });
   const hub = new DocHub({ docId: "d1", store, logger: quietLogger, limits: { maxUpdateBytes: 200, batchMaxBytes: 1 } });
   const errors: string[] = [];
@@ -152,7 +152,7 @@ test("DL-7: an update over the size limit is reported, never sent, and does not 
   hub.applyLocalChange("content", (doc) => doc.getText("source").insert(0, "small"));
   await hub.flushOutbound();
   await settle();
-  assert.ok(link.sent.length >= 1);
+  assert.equal(link.sent.length, 0, "later updates depend on the skipped clocks, so they are held too");
   assert.ok(link.sent.every((message) => message.update.length <= 200), "nothing over the limit is written to the socket");
   assert.ok(hub.getStatus().detail?.includes("cannot be synced"), `status explains it: ${hub.getStatus().detail}`);
   void errors;

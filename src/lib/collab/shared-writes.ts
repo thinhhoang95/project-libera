@@ -55,7 +55,9 @@ import { MARKDOWN_ASSETS_DIR } from "@/lib/storage/constants";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { copyReviewPath } from "@/lib/storage/markdown-reviews";
 import { getFileNode, getTree } from "@/lib/storage/tree";
-import { assertCopyKeepsType, assertNoLeftoverFolderRecords, assertNoLeftoverRecords, assertTypeChangeLosesNothing, readLiberaFile } from "@/lib/storage/files";
+import { assertCopyKeepsType, assertNoLeftoverFolderRecords, assertNoLeftoverRecords, assertTypeChangeLosesNothing, readLiberaFile, textVersion } from "@/lib/storage/files";
+import { manifestPathBelow, sameManifestPath } from "@/lib/collab/manifest-paths";
+import { manifestPathKey } from "@/lib/collab/protocol/schema";
 import { HOST_OWNED_SIDECARS } from "@/lib/storage/sidecars";
 import { readSharedAuthorityBytes, readSharedSourceSnapshot, sharedSourceGone } from "@/lib/storage/shared-source";
 import { getMarkdownImageAssetBySource, markdownAssetSourceTarget, markdownImageSources, migratePythonSidecar } from "@/lib/storage/markdown-assets";
@@ -507,7 +509,10 @@ export async function saveSharedFileText(liberaPath: string, content: string, op
   // The path the host answers for (the file's own, even if a collaborator moved it meanwhile).
   liberaPath = saved.paths[0] ?? liberaPath;
   notifySearchChanges([liberaPath]);
-  return savedFile(liberaPath, bytes.byteLength, async () => content);
+  // What was committed, not a read-back: on a follower the old copy is still on disk while the sync client catches up, and its text and hash would make the next save conflict.
+  const { notebook, pathParts } = splitFilePath(liberaPath);
+  const node = await getFileNode(notebook, pathParts).catch(() => fileOnItsWay(liberaPath, bytes.byteLength));
+  return { file: { ...node, size: bytes.byteLength }, content, version: textVersion(content) };
 }
 
 /**
@@ -760,7 +765,7 @@ export async function moveSharedFile(relativePath: string, destinationDirectory:
 /** The manifest file ID at a Libera path, or undefined when the list cannot be read or has nothing there. */
 async function manifestFileIdAt(notebook: string, liberaPath: string, options: SharedWriteOptions): Promise<string | undefined> {
   try {
-    return (await listSharedEntries(notebook, options)).find((entry) => entry.path === liberaPath)?.fileId;
+    return (await listSharedEntries(notebook, options)).find((entry) => sameManifestPath(entry.path, liberaPath))?.fileId;
   } catch {
     return undefined;
   }
@@ -787,9 +792,11 @@ function plannedFolderChanges(entries: import("./local-api").FileListEntry[], fo
   const planned: PlannedChange[] = [];
   let hasFolder = false;
   for (const entry of entries) {
-    if (entry.path !== folderPath && !entry.path.startsWith(`${folderPath}/`)) continue;
-    if (entry.path === folderPath) hasFolder = true;
-    planned.push({ from: entry.path, to: nextPath === null ? null : nextPath + entry.path.slice(folderPath.length), fileId: entry.fileId, kind: entry.kind === "folder" ? "folder" : "file" });
+    const below = manifestPathBelow(entry.path, folderPath);
+    const isFolder = sameManifestPath(entry.path, folderPath);
+    if (below === null && !isFolder) continue;
+    if (isFolder) hasFolder = true;
+    planned.push({ from: entry.path, to: nextPath === null ? null : below === null ? nextPath : `${nextPath}/${below}`, fileId: entry.fileId, kind: entry.kind === "folder" ? "folder" : "file" });
   }
   // A folder the manifest holds only as the directory of its files has no entry of its own; its panel state and tags still follow.
   if (!hasFolder) planned.push({ from: folderPath, to: nextPath, kind: "folder" });
@@ -844,7 +851,7 @@ export async function renameSharedFolder(relativePath: string, name: string, opt
   if (sourcePath !== nextPath) await assertNoLeftoverFolderRecords(current.notebook, parts);
   // The files under the folder, as the manifest has them before the rename: their records move with them below.
   const listed = sourcePath === nextPath ? [] : await listSharedEntries(current.notebook, options);
-  const reviewed = listed.filter((entry) => entry.path.startsWith(`${sourcePath}/`));
+  const reviewed = listed.filter((entry) => manifestPathBelow(entry.path, sourcePath) !== null);
   const config = hostConfig(sourcePath, options);
   // The host renames the folder only if it still holds exactly the entries listed here.
   const result = await host(sourcePath, () => fileOp(source.projectId, { op: "rename", path: source.path, to: parts.join("/"), ...(sourcePath === nextPath ? {} : { expectedDescendantIds: reviewed.map((entry) => entry.fileId) }) }, config));
@@ -871,7 +878,7 @@ export async function deleteSharedFolder(relativePath: string, options: SharedWr
   const config = hostConfig(liberaPath, options);
   // The host deletes the folder only if it still holds exactly the entries listed here.
   const listed = await listSharedEntries(current.notebook, options);
-  const reviewed = listed.filter((entry) => entry.path.startsWith(`${liberaPath}/`));
+  const reviewed = listed.filter((entry) => manifestPathBelow(entry.path, liberaPath) !== null);
   const result = await host(liberaPath, () => fileOp(target.projectId, { op: "delete", path: target.path, expectedDescendantIds: reviewed.map((entry) => entry.fileId) }, config));
   // The host has deleted them and cannot be asked to undo it. The records kept on this computer go too, as in a local folder delete:
   // through the host's log; every step runs and what stayed behind is reported.
@@ -889,12 +896,12 @@ export async function deleteSharedFolder(relativePath: string, options: SharedWr
  * before. The disk side is assertNoLeftoverRecords; a follower's disk can lag.
  */
 function manifestCompanionRecords(entryPaths: string[], notebook: string, parts: string[], fileType: string): string[] {
-  const lower = entryPaths.map((entry) => entry.toLowerCase());
+  const lower = entryPaths.map(manifestPathKey);
   const relative = relativeFilePath(notebook, parts);
   const kept: string[] = [];
-  if (supportsInk(fileType) && lower.some((entry) => entry.startsWith(`${inkLibraryPath(notebook, parts)}/`.toLowerCase()))) kept.push("ink");
-  if (fileType === "markdown" && lower.includes(pythonSidecarPath(relative).toLowerCase())) kept.push("Python code");
-  if (fileType === "audio" && lower.includes(transcriptCompanionPath(relative).toLowerCase())) kept.push("transcript");
+  if (supportsInk(fileType) && lower.some((entry) => entry.startsWith(`${manifestPathKey(inkLibraryPath(notebook, parts))}/`))) kept.push("ink");
+  if (fileType === "markdown" && lower.includes(manifestPathKey(pythonSidecarPath(relative)))) kept.push("Python code");
+  if (fileType === "audio" && lower.includes(manifestPathKey(transcriptCompanionPath(relative)))) kept.push("transcript");
   return kept;
 }
 
@@ -917,12 +924,13 @@ async function readSourceInk(relativePath: string, fileType: string, listed: imp
   if (!supportsInk(fileType)) return [];
   const source = splitFilePath(relativePath);
   if (listed) {
-    const prefix = `${inkLibraryPath(source.notebook, source.pathParts)}/`;
+    const folder = inkLibraryPath(source.notebook, source.pathParts);
     const files: { name: string; bytes: Buffer }[] = [];
     for (const entry of listed) {
-      if (entry.kind !== "blob" || !entry.path.startsWith(prefix) || entry.path.slice(prefix.length).includes("/")) continue;
+      const name = manifestPathBelow(entry.path, folder);
+      if (entry.kind !== "blob" || name === null || name.includes("/")) continue;
       const blob = await readSharedBlob(entry.path);
-      if (blob.contentBase64 !== null) files.push({ name: entry.path.slice(prefix.length), bytes: Buffer.from(blob.contentBase64, "base64") });
+      if (blob.contentBase64 !== null) files.push({ name, bytes: Buffer.from(blob.contentBase64, "base64") });
     }
     return files;
   }
@@ -987,7 +995,7 @@ export async function copyFileIntoSharedDirectory(relativePath: string, destinat
   // A name that holds no file (on disk or in the manifest), nor records of one that was there before.
   const listed = await listSharedEntries(destination.notebook, options);
   const listedPaths = listed.map((entry) => entry.path);
-  const taken = new Set(listedPaths.map((entry) => entry.toLowerCase()));
+  const taken = new Set(listedPaths.map(manifestPathKey));
   const records = await destinationRecords();
   if (records.blocker) throw new StorageError(records.blocker, 409);
   const requestedExtension = path.extname(requestedName);
@@ -995,7 +1003,7 @@ export async function copyFileIntoSharedDirectory(relativePath: string, destinat
   let parts: string[];
   for (let index = 0; ; index += 1) {
     const candidate = [...destination.pathParts, index ? `${stem}-${index}${requestedExtension}` : requestedName];
-    if (taken.has(relativeFilePath(destination.notebook, candidate).toLowerCase())) continue;
+    if (taken.has(manifestPathKey(relativeFilePath(destination.notebook, candidate)))) continue;
     if (await pathExists(itemPath(destination.notebook, candidate))) continue;
     if ((await records.at(destination.notebook, candidate, fileType)).length || manifestCompanionRecords(listedPaths, destination.notebook, candidate, fileType).length) continue;
     parts = candidate;
@@ -1132,7 +1140,7 @@ export async function copyFileIntoSharedDirectory(relativePath: string, destinat
   // The records follow the committed file only: it may have been moved or deleted by a collaborator since.
   let owned = true;
   await step("metadata", "The records of the copy", async () => {
-    const mine = (await listSharedEntries(destination.notebook, options)).find((entry) => entry.path.toLowerCase() === placedPath.toLowerCase());
+    const mine = (await listSharedEntries(destination.notebook, options)).find((entry) => sameManifestPath(entry.path, placedPath));
     if (!mine || (placed.fileId && mine.fileId !== placed.fileId)) {
       owned = false;
       unfinished.push({ step: "metadata", status: "held", message: `${placedPath} was moved or deleted by a collaborator right after it was copied, so its records (annotations, ink, Python code, review comments) were not copied.` });
@@ -1205,7 +1213,7 @@ export async function writeSharedUpload(notebook: string, upload: File, destinat
     : { notebook: assertSafeSegment(notebook, "Notebook name"), pathParts: [] };
   const safeName = assertSafeSegment(upload.name, "File name");
   assertSupportedFileName(safeName);
-  await assertDirectoryExists(itemPath(destination.notebook, destination.pathParts), "Destination folder was not found.");
+  await assertSharedDirectoryExists(itemPath(destination.notebook, destination.pathParts), relativeFilePath(destination.notebook, destination.pathParts), "Destination folder was not found.", options);
   const targetParts = [...destination.pathParts, safeName];
   if (await pathExists(filePathFromParts(destination.notebook, targetParts))) throw new StorageError(`File already exists: ${safeName}`, 409);
   const liberaPath = relativeFilePath(destination.notebook, targetParts);
@@ -1226,7 +1234,7 @@ export async function writeSharedMarkdownImageAsset(documentPath: string, upload
   await ensureAdminRoot();
   const { notebook, name, pathParts } = splitFilePath(documentPath);
   assertMarkdownFileName(name);
-  await stat(filePathFromParts(notebook, pathParts));
+  await getSharedFileNode(notebook, pathParts, options);
   const safeName = normalizeAssetFileName(ensureImageName(upload.name));
   const assetName = await createSharedBlobAtFreeName(markdownAssetsDirectoryPathFromParts(notebook, pathParts), (name) => `${notebook}/${markdownAssetsPathPrefix(pathParts)}/${name}`, safeName, new Uint8Array(await upload.arrayBuffer()), options);
   const assetPath = `${markdownAssetsPathPrefix(pathParts)}/${assetName}`;

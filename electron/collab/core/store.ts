@@ -873,7 +873,7 @@ export class HostStore {
 
   /** Doc ids that still have local work the server has not acknowledged. */
   docsWithUnacked(): string[] {
-    return this.all(`SELECT DISTINCT doc_id FROM updates WHERE acked_server_seq IS NULL ORDER BY doc_id`).map((row) =>
+    return this.all(`SELECT doc_id FROM updates WHERE acked_server_seq IS NULL UNION SELECT doc_id FROM outbound_batches ORDER BY doc_id`).map((row) =>
       String(row.doc_id),
     );
   }
@@ -1426,10 +1426,26 @@ export class HostStore {
     });
   }
 
-  deleteProject(projectId: string): void {
+  /**
+   * What a project's earlier folder left in the store: the external-adoption
+   * fence, retired paths and hashes, the manifest's last-seen paths and the
+   * transitions not yet acknowledged. A fresh folder for the project (a rejoin
+   * after revocation) starts without them: they name paths and moves of the
+   * old folder, which Next would otherwise apply to the new one's records.
+   */
+  clearProjectRecords(projectId: string): void {
     this.transaction(() => {
+      this.run(`DELETE FROM project_adoption_fences WHERE project_id = ?`, projectId);
+      this.run(`DELETE FROM retired_hashes WHERE project_id = ?`, projectId);
+      this.run(`DELETE FROM retired_paths WHERE project_id = ?`, projectId);
       this.run(`DELETE FROM manifest_paths WHERE project_id = ?`, projectId);
       this.run(`DELETE FROM manifest_transitions WHERE project_id = ?`, projectId);
+    });
+  }
+
+  deleteProject(projectId: string): void {
+    this.transaction(() => {
+      this.clearProjectRecords(projectId);
       this.run(`DELETE FROM docs WHERE project_id = ?`, projectId);
       this.run(`DELETE FROM projects WHERE project_id = ?`, projectId);
     });
