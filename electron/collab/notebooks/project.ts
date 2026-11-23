@@ -114,8 +114,14 @@ function scanScratch(owner: object): ScanScratch {
   return scratch;
 }
 
-/** Entries remembered as spelled by a remote normalization-only rename. */
-const MAX_REMOTE_RESPELLS = 200;
+/**
+ * Ceiling on the entries remembered as spelled by a remote normalization-only
+ * rename. A mark is kept for as long as its entry is in the manifest (an
+ * eviction would let the scanner rename that entry back and start a rename
+ * back and forth between devices, L3), so the real bound is the notebook's own
+ * entry count; this only stops a runaway state file.
+ */
+const MAX_REMOTE_RESPELLS = 20_000;
 
 /** How long a paired rename is remembered for recognizing a moved folder. */
 const RECENT_MOVE_MS = 5 * 60_000;
@@ -1102,9 +1108,40 @@ export class SharedProject {
     this.retiresDeferred = false;
     const current = this.readEntries();
     for (const entry of this.observedEntries.values()) {
-      if (current.get(entry.fileId)?.path !== entry.path) this.retirePath(entry.path, knownHashes(this.state.layout[entry.fileId], entry));
+      // A respell (case, Unicode form) leaves the name in use: retiring its key would refuse everything new under it (H7).
+      const now = current.get(entry.fileId)?.path;
+      if (now === undefined || manifestPathKey(now) !== manifestPathKey(entry.path)) this.retirePath(entry.path, knownHashes(this.state.layout[entry.fileId], entry));
     }
     this.observedEntries = current;
+  }
+
+  /**
+   * Gives a folder the spelling the manifest chose when only case or Unicode
+   * form changed (H7). On a volume that treats both spellings as one name the
+   * move loop cannot do it: the destination "exists" already, so the folder
+   * kept its old name here and the scanner renamed the manifest back, over and
+   * over between two devices. The folder goes through a temporary sibling name
+   * (an exclusive move each way). A volume that tells the spellings apart does
+   * nothing here: its files move one by one and the new folder is created.
+   * Not touched when the disk spells the folder some other way: that is
+   * somebody's change the scanner has yet to see.
+   */
+  private async respellFolder(from: string, to: string): Promise<void> {
+    const target = await resolveInside(this.info.root, to);
+    if (!(await statIfExists(target))) return;
+    const parent = path.dirname(target);
+    const names = await fs.readdir(parent);
+    const oldName = path.posix.basename(from);
+    if (names.includes(path.basename(target)) || !names.includes(oldName)) return;
+    const original = path.join(parent, oldName);
+    const temporary = path.join(parent, `.libera-respell-${randomId("case")}`);
+    await movePathExclusive(original, temporary, this.diskGuard());
+    try {
+      await movePathExclusive(temporary, target, this.diskGuard());
+    } catch (error) {
+      await movePath(temporary, original).catch(() => undefined);
+      throw error;
+    }
   }
 
   private hubCaughtUp(hub: DocHub): boolean {
@@ -1230,12 +1267,37 @@ export class SharedProject {
     // Files whose bytes did not reach their new path: the layout keeps the old
     // path (and the hash that goes with it) until a pass places them (finding 29).
     const pending = new Set<string>();
+    // Names as the manifest compares them: on a case-insensitive volume "notes.md" is the file "Notes.md" (M6).
     const occupied = new Set<string>();
+    // Staged bytes that wait, and staged bytes that were archived, concern the file whatever its manifest path is now:
+    // a move back to the old path, or a layout rebuilt without the record, must not place it from authority over them (M6).
+    for (const fileId of stagedWaiting) pending.add(fileId);
+    for (const [fileId, outcome] of stagedMoves) {
+      const record = previous[fileId];
+      if (outcome === "archived" && record && layout.paths.get(fileId) === record.path) next[fileId] = { ...record, hash: undefined, size: undefined, mtimeMs: undefined };
+    }
+    // A folder renamed only in case or Unicode form takes the manifest's spelling on disk (H7).
+    const folderRenames = Object.entries(previous)
+      .filter(([fileId, record]) => record.kind === "folder" && layout.paths.has(fileId) && layout.paths.get(fileId) !== record.path && manifestPathKey(layout.paths.get(fileId) as string) === manifestPathKey(record.path))
+      .sort((a, b) => a[1].path.split("/").length - b[1].path.split("/").length);
+    for (const [fileId, record] of folderRenames) {
+      try {
+        await this.respellFolder(record.path, layout.paths.get(fileId) as string);
+      } catch (error) {
+        this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: could not rename the folder ${record.path} to ${layout.paths.get(fileId)}`, error);
+        // The layout stays at the spelling the disk has, so the scanner does not take it for an outside rename back (H7).
+        next[fileId] = { ...record };
+        needsRetry = true;
+      }
+    }
     for (const [fileId, record] of Object.entries(previous)) {
       const desired = layout.paths.get(fileId);
       if (!desired || desired === record.path) continue;
-      this.retirePath(record.path, knownHashes(record));
+      // The same name in another spelling is a respell, not a path to retire: the key is still in use (H7).
+      const sameName = manifestPathKey(desired) === manifestPathKey(record.path);
+      if (!sameName) this.retirePath(record.path, knownHashes(record));
       if (record.kind === "folder") {
+        // A volume that tells the spellings apart leaves the old folder behind: pruned below once it is empty.
         vacated.add(record.path);
         continue;
       }
@@ -1285,7 +1347,7 @@ export class SharedProject {
         // Still at the old path, so the layout stays there and the next pass tries again.
         next[fileId] = { ...record };
         pending.add(fileId);
-        occupied.add(record.path);
+        occupied.add(manifestPathKey(record.path));
         needsRetry = true;
       }
     }
@@ -1294,7 +1356,7 @@ export class SharedProject {
       try {
         const target = await resolveInside(this.info.root, desired);
         // A file whose own move failed still sits there: it is not ours to archive.
-        if (occupied.has(desired)) throw new DestinationTakenError(target);
+        if (occupied.has(manifestPathKey(desired))) throw new DestinationTakenError(target);
         if (await statIfExists(target)) this.displacedPath(desired, await this.archive(desired));
         await movePathExclusive(staging, target, this.diskGuard());
         if (!this.info.album) await clearMoveJournal(this.info.root, path.basename(staging)).catch(() => undefined);
@@ -1359,9 +1421,31 @@ export class SharedProject {
 
     const layoutChanged = JSON.stringify(previous) !== JSON.stringify(next);
     this.state.layout = next;
+    const keptSpellings = new Map<string, string[]>();
+    for (const directory of layout.directories) {
+      const key = manifestPathKey(directory);
+      keptSpellings.set(key, [...(keptSpellings.get(key) ?? []), directory]);
+    }
+    // A folder is kept when the layout names it; so is one the layout spells differently when the volume does not tell the two apart (the folder just renamed from "Notes" to "notes" is one folder; H7).
+    const keepDirectory = async (relative: string): Promise<boolean> => {
+      if (layout.directories.has(relative)) return true;
+      const spellings = keptSpellings.get(manifestPathKey(relative));
+      if (!spellings) return false;
+      try {
+        const here = await statIfExists(await resolveInside(this.info.root, relative));
+        if (!here) return false;
+        for (const spelling of spellings) {
+          const other = await statIfExists(await resolveInside(this.info.root, spelling));
+          if (other && other.ino === here.ino && other.dev === here.dev) return true;
+        }
+      } catch {
+        return true;
+      }
+      return false;
+    };
     for (const directory of vacated) {
       if (directory && directory !== ".") {
-        await pruneEmptyDirectories(this.info.root, directory, (relative) => layout.directories.has(relative), this.diskGuard());
+        await pruneEmptyDirectories(this.info.root, directory, keepDirectory, this.diskGuard());
       }
     }
     if (layoutChanged) {
@@ -1400,7 +1484,7 @@ export class SharedProject {
       next[fileId] = entry.kind === "doc" ? { path: desired, kind: "doc", docId: entry.docId, docKind: entry.docKind } : { path: desired, kind: entry.kind };
     }
     for (const [fileId, record] of Object.entries(previous)) {
-      if (!next[fileId] || next[fileId].path !== record.path) {
+      if (!next[fileId] || manifestPathKey(next[fileId].path) !== manifestPathKey(record.path)) {
         // A follower's record holds no hashes: the retired bytes are what the
         // manifest said and what the shared text held, so that a later
         // replacement is not taken for the removed file coming back (S44).
@@ -1789,7 +1873,7 @@ export class SharedProject {
     await writeFileUnique(archiveRoot, path.posix.basename(record.path), encodeText(text), this.diskGuard());
     await this.archive(record.path);
     // Writing it back made its folders again if they were deleted with it.
-    const inUse = (relative: string) => Object.values(this.state.layout).some((other) => other.path === relative || other.path.startsWith(`${relative}/`));
+    const inUse = (relative: string) => Object.values(this.state.layout).some((other) => manifestPathKey(other.path) === manifestPathKey(relative) || manifestPathKey(other.path).startsWith(`${manifestPathKey(relative)}/`));
     await pruneEmptyDirectories(this.info.root, path.posix.dirname(record.path), inUse, this.diskGuard());
   }
 
@@ -4034,11 +4118,10 @@ export class SharedProject {
             }
             // A folder of many files is several transactions: one manifest update
             // over the server's limit would never sync.
-            for (const [index, batch] of splitManifestBatches(updates, manifestEntryBytes).entries()) {
+            // The companions go through the same split: a folder with many ink or Python entries would otherwise put them all in one update (M9).
+            for (const batch of splitManifestBatches([...updates, ...planned], manifestEntryBytes)) {
               await this.writeManifest((map) => {
                 for (const entry of batch) map.set(entry.fileId, entryRecord(entry));
-                if (index > 0) return;
-                for (const entry of planned) map.set(entry.fileId, entryRecord(entry));
               }, { source: "typing" });
             }
             break;
@@ -4073,11 +4156,9 @@ export class SharedProject {
               moves.push({ fileId: entry.fileId, from: this.liberaPath(planDisplayed.get(entry.fileId) ?? entry.path), to: null });
             }
             // Many entries are removed in several transactions (see rename).
-            for (const [index, batch] of splitManifestBatches(removing, () => 256).entries()) {
+            for (const batch of splitManifestBatches([...removing, ...extra.values()], () => 256)) {
               await this.writeManifest((map) => {
                 for (const entry of batch) map.delete(entry.fileId);
-                if (index > 0) return;
-                for (const fileId of extra.keys()) map.delete(fileId);
               }, { source: "typing" });
             }
             paths.push(...removing.map((entry) => displayed.get(entry.fileId)!));
@@ -4398,8 +4479,9 @@ export class SharedProject {
    */
   /**
    * Remembers the entries a remote device renamed only in Unicode form (S39),
-   * and forgets one once its path changes again. At most MAX_REMOTE_RESPELLS
-   * are kept (the oldest go first).
+   * and forgets one once its path changes again or its entry leaves the
+   * manifest. The marks are bounded by the manifest (MAX_REMOTE_RESPELLS is
+   * only a ceiling; the oldest go first past it).
    */
   private noteRemoteRespells(next: Map<string, RecordedPath>): void {
     let changed = false;
@@ -4416,9 +4498,14 @@ export class SharedProject {
         changed = true;
       }
     }
+    for (const fileId of Object.keys(marks)) {
+      if (next.has(fileId)) continue;
+      delete marks[fileId];
+      changed = true;
+    }
     if (!changed) return;
-    const keep = Object.entries(marks).sort((a, b) => b[1].at - a[1].at).slice(0, MAX_REMOTE_RESPELLS);
-    this.state.remoteRespells = Object.fromEntries(keep);
+    const entries = Object.entries(marks);
+    this.state.remoteRespells = entries.length > MAX_REMOTE_RESPELLS ? Object.fromEntries(entries.sort((a, b) => b[1].at - a[1].at).slice(0, MAX_REMOTE_RESPELLS)) : marks;
     this.saveSoon();
   }
 
