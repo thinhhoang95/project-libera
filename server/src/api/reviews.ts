@@ -159,7 +159,39 @@ async function latestContentServerSeq(db: Kysely<DB>, docId: string): Promise<nu
   return row?.seq === null || row?.seq === undefined ? 0 : Number(row.seq);
 }
 
+// One replay per review at a time: a request that arrives while one runs waits for it and then reads its
+// cached result (or replays only the updates since), instead of starting a full replay of its own.
+const rangeChangesRuns = new WeakMap<ServerContext, Map<string, Promise<number>>>();
+
 async function changesSinceBase(
+  context: ServerContext,
+  docId: string,
+  reviewId: string,
+  baseSeq: number,
+  latestSeq: number,
+  scope: StoredScope,
+  anchor: ScopeAnchor | null,
+): Promise<number> {
+  if (scope.kind === "document" || !anchor) return computeChangesSinceBase(context, docId, reviewId, baseSeq, latestSeq, scope, anchor);
+  let runs = rangeChangesRuns.get(context);
+  if (!runs) {
+    runs = new Map();
+    rangeChangesRuns.set(context, runs);
+  }
+  const key = `${reviewId}:${baseSeq}:${JSON.stringify(anchor)}`;
+  const previous = runs.get(key);
+  const run = (previous ? previous.catch(() => 0) : Promise.resolve(0)).then(() =>
+    computeChangesSinceBase(context, docId, reviewId, baseSeq, latestSeq, scope, anchor),
+  );
+  runs.set(key, run);
+  try {
+    return await run;
+  } finally {
+    if (runs.get(key) === run) runs.delete(key);
+  }
+}
+
+async function computeChangesSinceBase(
   context: ServerContext,
   docId: string,
   reviewId: string,
@@ -192,9 +224,8 @@ async function changesSinceBase(
   const doc = await loadSubdocState(db, docId, "content", startSeq);
   try {
     const ytext = sourceText(doc);
-    let text = ytext.toString();
     let range = resolveRange(doc, anchor.start, anchor.end);
-    const initialPrint = fingerprint(range ? text.slice(range.start, range.end) : null);
+    const initialPrint = fingerprint(range ? ytext.toString().slice(range.start, range.end) : null);
     const basePrint = cached ? cached.basePrint : initialPrint;
     let lastPrint = cached ? cached.lastPrint : initialPrint;
     let count = cached ? cached.count : 0;
@@ -209,28 +240,20 @@ async function changesSinceBase(
       .orderBy("server_seq")
       .execute();
 
-    // Track Y.Text deltas incrementally so edits strictly outside the anchor
-    // shift [start, end] in O(1) without calling Y.Text.toString() or
-    // re-resolving relative positions on every update.
+    // Track Y.Text deltas incrementally: an edit strictly outside the anchor
+    // shifts [start, end] in O(delta) and costs nothing else. The text is read
+    // (Y.Text.toString(), O(document)) only for an update that touches the
+    // range. Rebuilding the whole text on every update made a replay of a long
+    // history cost seconds per thousand updates and froze the server.
     let touched = false;
-    let textDirty = false;
     const onDelta = (event: Y.YTextEvent) => {
-      if (textDirty) {
-        touched = true;
-        return;
-      }
-      const parts: string[] = [];
-      let oldPos = 0;
       let newPos = 0;
       for (const op of event.delta) {
         if (typeof op.retain === "number") {
-          parts.push(text.slice(oldPos, oldPos + op.retain));
-          oldPos += op.retain;
           newPos += op.retain;
         } else if (op.insert !== undefined) {
           if (typeof op.insert !== "string") {
             touched = true;
-            textDirty = true;
             return;
           }
           if (!touched && range) {
@@ -242,7 +265,6 @@ async function changesSinceBase(
           } else {
             touched = true;
           }
-          parts.push(op.insert);
           newPos += op.insert.length;
         } else if (typeof op.delete === "number") {
           if (!touched && range) {
@@ -254,11 +276,8 @@ async function changesSinceBase(
           } else {
             touched = true;
           }
-          oldPos += op.delete;
         }
       }
-      if (oldPos < text.length) parts.push(text.slice(oldPos));
-      text = parts.join("");
     };
     ytext.observe(onDelta);
     try {
@@ -281,12 +300,8 @@ async function changesSinceBase(
           }
         }
         if (touched) {
-          if (textDirty) {
-            text = ytext.toString();
-            textDirty = false;
-          }
           range = resolveRange(doc, anchor.start, anchor.end);
-          const nowPrint = fingerprint(range ? text.slice(range.start, range.end) : null);
+          const nowPrint = fingerprint(range ? ytext.toString().slice(range.start, range.end) : null);
           if (nowPrint !== lastPrint) {
             count += 1;
             lastPrint = nowPrint;
@@ -366,7 +381,8 @@ async function buildReviews(context: ServerContext, docId: string, reviews: Revi
           outdated: row.outdated,
         }),
       ),
-      changesSinceBase: await changesSinceBase(
+      // A closed review shows no change count, and its replay can span the whole history.
+      changesSinceBase: review.status === "closed" ? 0 : await changesSinceBase(
         context,
         docId,
         review.id,

@@ -196,4 +196,32 @@ describe("reviews", () => {
     await edit(client, docId, at(client, docId, "now"), at(client, docId, "now") + 3, "later");
     assert.equal((await reviews(docId))[0].changesSinceBase, 2);
   });
+
+  test("a long history replays once per review, counts only edits inside the range, and a closed review is not replayed", async () => {
+    const client = await env.connect(env.editor);
+    const filler = "Lorem ipsum dolor sit amet.\n".repeat(400);
+    const docId = await env.document(client, `${filler}Scoped claim stays.\n${filler}`);
+    const start = at(client, docId, "Scoped claim");
+    const scope = await anchor(client, docId, env.editor, start, start + "Scoped claim stays.".length);
+    const created = await create(docId, { scope: { kind: "range", anchorId: scope.id, quote: "Scoped claim stays." }, assignees: [env.editor2.id] });
+    assert.equal(created.status, 201);
+    const review: Review = created.body;
+
+    // Many updates outside the range, before it (shifting it) and after it, inserts and deletes.
+    for (let index = 0; index < 120; index += 1) {
+      if (index % 3 === 0) await edit(client, docId, 0, 0, "x");
+      else if (index % 3 === 1) await edit(client, docId, 0, 1, "");
+      else await edit(client, docId, at(client, docId, "stays.") + 8, at(client, docId, "stays.") + 8, "y");
+    }
+    await edit(client, docId, at(client, docId, "stays"), at(client, docId, "stays") + 5, "holds");
+
+    // Concurrent first reads (nothing cached yet) agree and see exactly the one edit inside.
+    const [first, second, third] = await Promise.all([reviews(docId), reviews(docId), reviews(docId)]);
+    for (const listed of [first, second, third]) assert.equal(listed.find((item) => item.id === review.id)?.changesSinceBase, 1);
+
+    const closed = await env.api("POST", `/v1/reviews/${review.id}/close`, env.owner);
+    assert.equal(closed.status, 200);
+    await edit(client, docId, at(client, docId, "holds"), at(client, docId, "holds") + 5, "fails");
+    assert.equal((await reviews(docId)).find((item) => item.id === review.id)?.changesSinceBase, 0, "a closed review shows no count");
+  });
 });
