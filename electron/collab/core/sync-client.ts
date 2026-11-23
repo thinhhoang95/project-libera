@@ -300,6 +300,8 @@ export class SyncClient {
         const nonce = ++this.nonce;
         this.awaitingPong = nonce;
         this.sendFrame({ type: MessageType.Ping, nonce });
+        // The regular ping timer must not fire during this ping's round trip and mistake it for a missing pong.
+        this.schedulePing();
         this.nudgeTimer = this.clock.setTimeout(() => {
           this.nudgeTimer = null;
           if (this.awaitingPong === nonce) this.drop("no pong after nudge");
