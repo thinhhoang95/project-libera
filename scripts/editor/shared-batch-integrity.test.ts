@@ -128,7 +128,7 @@ const payloadAt = (to: string) => ({ file: { path: to, name: to.split("/").at(-1
 test("S17: composed and decomposed spellings of one name are refused before anything moves", async () => {
   const composed = "Shared/x/\u00e9.md";
   const decomposed = "Shared/y/e\u0301.md";
-  const problems = await preflightSharedMove(items(composed, decomposed), "Shared/z", listing("Shared/x/\u00e9.md", "Shared/y/e\u0301.md"));
+  const problems = await preflightSharedMove(items(composed, decomposed), "Shared/z", listing("Shared/x/\u00e9.md", "Shared/y/e\u0301.md", "Shared/z/keep.md"));
   assert.equal(problems.length, 1);
   assert.equal(problems[0].path, decomposed);
   assert.match(problems[0].message, /would both be named/);

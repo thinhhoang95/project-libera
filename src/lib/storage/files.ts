@@ -457,7 +457,7 @@ async function moveDocumentWithSidecars(move: FileMove, stillTheSource: () => Pr
 }
 
 /** Throws when something that is not a folder blocks a folder the file's records would need at the destination. */
-async function assertSidecarsCanMove(notebook: string, parts: string[], fromType: string, toType: string) {
+export async function assertSidecarsCanMove(notebook: string, parts: string[], fromType: string, toType: string) {
   for (const kind of SIDECAR_KINDS) {
     if (!kind.appliesTo(fromType) || !kind.appliesTo(toType)) continue;
     await assertCanCreateParents(kind.filePath(notebook, parts), `${relativeFilePath(notebook, parts)} can't be moved here: a file is where its ${RECORD_NAMES[kind.id] ?? kind.id} would be kept. Remove it, then move again.`);

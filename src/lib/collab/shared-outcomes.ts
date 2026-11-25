@@ -1,4 +1,5 @@
 import { StorageError } from "@/lib/storage/errors";
+import type { LiberaLinkRewrites } from "@/lib/types";
 
 /**
  * One file the collaboration host has committed in a shared operation: a move
@@ -19,9 +20,12 @@ export type SharedCommittedChange = { from: string; to: string | null; fileId?: 
 export class SharedOperationUnfinishedError extends StorageError {
   readonly committed: SharedCommittedChange[];
   readonly unfinished: string[];
+  /** The link rewrites that were applied before a later step failed: other open tabs still need them. */
+  readonly links?: LiberaLinkRewrites;
 
-  constructor(message: string, committed: SharedCommittedChange[], unfinished: string[]) {
+  constructor(message: string, committed: SharedCommittedChange[], unfinished: string[], links?: LiberaLinkRewrites) {
     super(message, 500);
+    if (links && (links.rewritten.length || links.skipped.length || links.unchecked.length)) this.links = links;
     this.name = "SharedOperationUnfinishedError";
     this.committed = committed;
     this.unfinished = unfinished;
