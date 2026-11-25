@@ -468,6 +468,8 @@ export class SharedProject {
   /** Field changes this host made to entries until the server has them: a concurrent whole-entry write must not undo them (see manifest-intents.ts). */
   private readonly manifestIntents = new ManifestIntents();
   private intentsScheduled = false;
+  /** The disk spelling a remote respelling mark was held against: a different spelling later is a rename made on this computer, which the mark must not swallow (S-H1). Memory only; bounded by the layout. */
+  private readonly heldSpellings = new Map<string, string>();
   /** The intents' revision last copied into the state (S-M2). */
   private intentsSaved = 0;
   readonly pdfs: PdfMarksRuntime;
@@ -2948,10 +2950,12 @@ export class SharedProject {
       const to = variants?.length === 1 ? variants[0].relative : null;
       if (!to || to === record.path || !isShareablePath(to)) {
         this.respellSeen.delete(fileId);
+        this.heldSpellings.delete(fileId);
         return;
       }
       // A difference of spelling only (case or Unicode form: the manifest's name rule, S-H1) in an entry another device spelled that way: this disk or sync client keeps the other form, and renaming it back would start a rename back and forth between devices.
-      if (manifestPathKey(to) === manifestPathKey(record.path) && this.state.remoteRespells?.[fileId]?.path === record.path) {
+      if (manifestPathKey(to) === manifestPathKey(record.path) && this.state.remoteRespells?.[fileId]?.path === record.path && (this.heldSpellings.get(fileId) ?? to) === to) {
+        this.heldSpellings.set(fileId, to);
         if (!this.respellLogged.has(fileId)) {
           this.respellLogged.add(fileId);
           this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: ${record.path} is spelled differently on this computer's disk (Unicode form). The shared name stays as another device set it.`);
@@ -2978,7 +2982,7 @@ export class SharedProject {
           this.missingSince.delete(fileId);
           this.renameDeferrals.delete(fileId);
           this.renameDeferrals.delete(`unsettled:${fileId}`);
-          if (directories.has(record.path)) this.respellSeen.delete(fileId);
+          if (directories.has(record.path)) { this.respellSeen.delete(fileId); this.heldSpellings.delete(fileId); }
           else noteRespelling(fileId, record, directoryByKey.get(recordKey));
         } else missing.push(fileId);
         continue;
@@ -2992,7 +2996,7 @@ export class SharedProject {
       this.missingSince.delete(fileId);
       this.renameDeferrals.delete(fileId);
       this.renameDeferrals.delete(`unsettled:${fileId}`);
-      if (exact) this.respellSeen.delete(fileId);
+      if (exact) { this.respellSeen.delete(fileId); this.heldSpellings.delete(fileId); }
       else noteRespelling(fileId, record, fileVariants.get(recordKey) === 1 ? [seen] : undefined);
       // Finder is replacing this file: its bytes are not the new version yet.
       if (isFinderCopy(seen)) continue;
@@ -3177,6 +3181,7 @@ export class SharedProject {
       const from = record.path;
       const folder = record.kind === "folder";
       this.respellSeen.delete(fileId);
+      this.heldSpellings.delete(fileId);
       this.ownRespells.add(fileId);
       touched.add(from).add(to);
       operations.push((map, doc) => {
