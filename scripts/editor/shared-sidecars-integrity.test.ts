@@ -60,7 +60,7 @@ test("S36: this user's explicit rename carries legacy annotations, outline and d
   await write(pdfPath("new.pdf"), "the paper");
   assert.equal(await followSharedPdfChanges([{ from: "Notes/old.pdf", to: "Notes/new.pdf" }], [], { explicit: true }), 3);
   for (const [index, file] of sidecarsOf("new.pdf").entries()) assert.equal(await exists(file), true, `kind ${index} followed`);
-  assert.equal(await exists(sidecarsOf("old.pdf")[0]), true, "the source is retained");
+  assert.equal(await exists(sidecarsOf("old.pdf")[0]), false, "a rename moves the notes: nothing stays at the old name");
   assert.deepEqual(heldLegacyPdfSidecars("Notes"), []);
 }));
 

@@ -566,8 +566,8 @@ const RECORD_NAMES: Record<string, string> = {
  * Caches are made again, so they may be replaced; so may an empty review,
  * which is what opening a note makes.
  */
-export async function assertNoLeftoverRecords(notebook: string, parts: string[], fileType: string, ownSidecars = false, moving?: string[], again = "move") {
-  const names = await leftoverRecords(notebook, parts, fileType, ownSidecars);
+export async function assertNoLeftoverRecords(notebook: string, parts: string[], fileType: string, ownSidecars = false, moving?: string[], again = "move", hostOwned?: (kind: string) => boolean) {
+  const names = await leftoverRecords(notebook, parts, fileType, ownSidecars, hostOwned);
   // Notes in an older layout that the arriving file would be given when opened (annotations.ts inspectLegacyAnnotations).
   if (!ownSidecars && (await legacyAnnotationSidecars(notebook, parts, fileType, moving)).length && !names.includes("annotations")) names.push("annotations");
   if (!names.length) return;
@@ -580,12 +580,13 @@ export async function assertNoLeftoverRecords(notebook: string, parts: string[],
  * `ownSidecars`: the path is the file's own under another spelling of its name
  * (a case-only rename), so the sidecar paths found there are the file's, not an earlier file's.
  */
-async function leftoverRecords(notebook: string, parts: string[], fileType: string, ownSidecars = false) {
+async function leftoverRecords(notebook: string, parts: string[], fileType: string, ownSidecars = false, hostOwned?: (kind: string) => boolean) {
   const relative = relativeFilePath(notebook, parts);
   const kept = new Set<string>();
   const caches = new Set(SIDECAR_KINDS.filter((kind) => kind.cache).map((kind) => kind.id));
   for (const sidecar of ownSidecars ? [] : await existingSidecars(notebook, parts, fileType)) {
-    if (caches.has(sidecar.kind)) continue;
+    // What the host owns in a shared notebook is not a leftover Check Notebook could clear (it never removes it): its own checks and the live reconciliation settle it.
+    if (caches.has(sidecar.kind) || hostOwned?.(sidecar.kind)) continue;
     // An ink folder with nothing in it holds no strokes.
     if (sidecar.kind === "ink" && !(await readdir(sidecar.path).catch(() => ["?"])).length) continue;
     kept.add(RECORD_NAMES[sidecar.kind] ?? sidecar.kind);

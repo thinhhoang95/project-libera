@@ -209,7 +209,10 @@ export class PdfMarksRuntime {
     for (const doc of [...this.docs.values()]) {
       const entry = next.get(doc.fileId);
       if (!entry) {
-        void this.close(doc, true);
+        // The file was deleted: there is no PDF for a copy to sit beside, and a fresh sidecar at the deleted path would be
+        // a leftover that blocks the name (Next retires the notes through the transition log). Nothing is written.
+        // Takedown and export close through stop()/openForExport and keep their final copy.
+        void this.close(doc, false);
         continue;
       }
       if (entry.path !== doc.path) {
