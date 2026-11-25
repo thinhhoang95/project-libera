@@ -24,7 +24,7 @@ export const runtime = "nodejs";
 function handleError(error: unknown) {
   // The host committed a shared change but a step after it did not finish: say what it did, so the caller retargets and reports what stayed behind.
   if (isSharedOperationUnfinished(error)) {
-    return NextResponse.json({ error: error.message, committed: error.committed, unfinished: error.unfinished }, { status: error.status });
+    return NextResponse.json({ error: error.message, committed: error.committed, unfinished: error.unfinished, ...(error.links ? { links: error.links } : {}) }, { status: error.status });
   }
   const storageError = toStorageError(error);
   // A move that happened but whose result could not be built: say where the file is, so the caller can still retarget.
