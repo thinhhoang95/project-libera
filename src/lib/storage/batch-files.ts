@@ -303,8 +303,7 @@ async function followBatchLinks(result: BatchMoveResult) {
 export async function deleteFiles(items: BatchItem[], hooks: BatchDeleteHooks = {}): Promise<BatchDeleteResult> {
   assertDistinctItems(items);
   const remove = hooks.remove ?? (async (item: BatchItem) => {
-    if (item.fileId) await assertLocalFileIdentity(item.path, item.fileId);
-    await deleteFile(item.path);
+    await deleteFile(item.path, { expectedFileId: item.fileId || undefined });
   });
   const result: BatchDeleteResult = { deleted: [], failed: [] };
   for (const item of items) {

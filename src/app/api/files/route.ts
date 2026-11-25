@@ -6,7 +6,7 @@ import { attachSharedFileIdTo, resolveSharedActionFileId, sharedPathOfFileId } f
 import { isSharedOperationUnfinished } from "@/lib/collab/shared-outcomes";
 import { StorageError } from "@/lib/storage/errors";
 import { assertSafeSegment, splitDirectoryPath, splitFilePath } from "@/lib/storage/paths";
-import { assertLocalFileIdentity, MoveCommittedError } from "@/lib/storage/files";
+import { MoveCommittedError } from "@/lib/storage/files";
 import {
   archiveFile,
   copyFileToDirectory,
@@ -203,9 +203,8 @@ export async function DELETE(request: NextRequest) {
       const sharedId = await resolveSharedActionFileId(filePath, fileId, "deleted", listSharedEntries);
       return NextResponse.json(await deleteSharedFile(filePath, { expectedFileId: sharedId }));
     }
-    // A local file: the one the person chose, not another that took its path (deleteFile's own records are not touched here).
-    if (fileId) await assertLocalFileIdentity(filePath, fileId);
-    return NextResponse.json(await deleteFile(filePath));
+    // A local file: the one the person chose, not another that took its path (checked by deleteFile under the file's lock).
+    return NextResponse.json(await deleteFile(filePath, { expectedFileId: fileId }));
   } catch (error) {
     return handleError(error);
   }
