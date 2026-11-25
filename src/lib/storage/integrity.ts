@@ -8,6 +8,7 @@ import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { latexDependencies } from "@/lib/latex/dependencies";
 import { isLatexCitingPath } from "@/lib/references/latex-cite-syntax";
 import { slideChartBlocks, isSlideChartDataFile, parseSlideChartSpec, resolveDeckRelativePath } from "@/lib/slide-charts";
+import { decideInkSource, foldedAliasOf } from "@/lib/storage/ink";
 import { readTetherTarget } from "@/lib/references/bib-tether";
 import { ARCHIVE_DIR, MARKDOWN_ASSETS_DIR, MARKDOWN_EXTENSIONS, ORPHANED_SIDECARS_DIR } from "@/lib/storage/constants";
 import { planBibMirror } from "@/lib/references/bib-mirror";
@@ -687,6 +688,8 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
       const sources: NonNullable<SidecarInspection["source"]>[] = [];
       /** Ink: each author file's recorded source, by file name. */
       let inkSources: { name: string; size: number; contentHash: string | null }[] = [];
+      /** Ink: the folder holds author files drawn on different bytes, which the upkeep takes whole to no file (ink.ts decideInkSource). */
+      let inkConflict = false;
       if (kind.layout === "folder") {
         if (!kind.inspectFolder) continue;
         let ink;
@@ -697,6 +700,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
         if (ink.droppedStrokes) add({ severity: "warning", path: sidecar.filePath, message: `${plural(ink.droppedStrokes, "stroke")} in the ink of ${sidecar.filePath} can't be read and ${ink.droppedStrokes === 1 ? "is" : "are"} not shown.`, fix: "Restore the ink folder from your sync service's version history before drawing on that page again.", ...say("strokesUnreadable", { count: ink.droppedStrokes, path: sidecar.filePath }, "strokesUnreadableFix") });
         sources.push(...ink.sources.map((source) => ({ size: source.size, contentHash: source.sha256 })));
         inkSources = ink.sourceFiles.map(({ name, source }) => ({ name, size: source.size, contentHash: source.sha256 || null }));
+        inkConflict = decideInkSource(ink.sources) === "conflict";
       } else {
         const bytes = await readWithin(budget, sidecar.path);
         // The budget, not the file, is why nothing more is read: the check says where it stopped.
@@ -714,7 +718,9 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
         if (inspection?.dropped) add({ severity: "warning", path: sidecar.filePath, message: `${inspection.dropped} ${inspection.records} in the saved ${name(sidecar.kind)} of ${sidecar.filePath} can't be read: they are not shown, and are lost the next time it is saved.`, fix: "Restore the side file from your sync service's version history before changing it.", ...say("sideFileDropped", { dropped: inspection.dropped, records: inspection.records, kind: sidecar.kind, path: sidecar.filePath }, "sideFileDroppedFix") });
         if (inspection?.source) sources.push(inspection.source);
       }
-      const identity = sources.find((source) => source.contentHash);
+      // One rule with the upkeep: a folder of several versions names no one file, so none is promised it and its ink is not offered for removal.
+      if (inkConflict) unread.add(sidecar.path);
+      const identity = inkConflict ? undefined : sources.find((source) => source.contentHash);
       if (identity?.contentHash) identities.set(sidecar.path, { size: identity.size, contentHash: identity.contentHash });
       if (!sources.length || orphaned.has(sidecar.path)) continue;
       const size = await sizeOf(sidecar.fileParts);
@@ -801,7 +807,9 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
       if (!budget.allows()) break;
       const what = `Saved ${name(orphan.kind)} of ${orphan.filePath}, which is not in the notebook`;
       // The upkeep reattaches by content only where upkeepReattachesByContent says so: never promised in a shared notebook, where it does not.
-      const moved = upkeepReattachesByContent(notebook) ? await owner(orphan.kind, getFileType(orphan.filePath), identities.get(orphan.path)) : null;
+      let moved = upkeepReattachesByContent(notebook) ? await owner(orphan.kind, getFileType(orphan.filePath), identities.get(orphan.path)) : null;
+      // Ink follows its file renamed only in case or Unicode normalization (ink.ts reconcileInkFolders, by the name rule), with or without recorded bytes.
+      if (moved === null && orphan.kind === "ink" && upkeepReattachesByContent(notebook)) moved = await foldedAliasOf(orphan.filePath);
       // Offered for removal only when every input is known: a side file that could not be read, a listing that was cut, a candidate that could not be hashed may each hide the file it follows.
       const decided = moved === null && !unread.has(orphan.path) && (shared || (!inventoryCut && !candidatesCut));
       add(moved !== null && moved !== "unknown"
