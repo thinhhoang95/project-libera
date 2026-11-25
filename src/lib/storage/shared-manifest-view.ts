@@ -1,6 +1,7 @@
 import { collabHostConfig, getHostStatus, listProjectEntries, livePdfSnapshot, resolveSharedPdf } from "@/lib/collab/host-client";
 import type { FileListEntry } from "@/lib/collab/local-api";
 import { notebookHasLivePdfs, sharedNotebookMarker } from "@/lib/collab/shared-notebook";
+import { foldedFileName } from "@/lib/storage/file-names";
 
 // What Check Notebook, Try to fix and Acknowledge ask the collaboration host
 // about a shared notebook, read only: the manifest (the authoritative file
@@ -19,6 +20,40 @@ export type ManifestView =
     stamp: string;
   }
   | { state: "unavailable"; reason: string };
+
+type OkView = Extract<ManifestView, { state: "ok" }>;
+type FoldedIndex = { files: Map<string, FileListEntry>; folders: Set<string> };
+const foldedIndexes = new WeakMap<OkView, FoldedIndex>();
+
+/** A library path under the round's one name rule (NFC plus case folding, per segment). */
+const foldedPath = (libraryPath: string) => libraryPath.split("/").map(foldedFileName).join("/");
+
+function foldedIndex(view: OkView): FoldedIndex {
+  let index = foldedIndexes.get(view);
+  if (!index) {
+    index = { files: new Map(), folders: new Set() };
+    for (const [libraryPath, entry] of view.files) {
+      const folded = foldedPath(libraryPath);
+      if (!index.files.has(folded)) index.files.set(folded, entry);
+      // A folder holding a listed file is listed too.
+      const parts = folded.split("/");
+      for (let length = 2; length < parts.length; length += 1) index.folders.add(parts.slice(0, length).join("/"));
+    }
+    for (const folder of view.folders) index.folders.add(foldedPath(folder));
+    foldedIndexes.set(view, index);
+  }
+  return index;
+}
+
+/** The manifest's entry for a file: the exact path, else the one that is the same name under the name rule (an OS alias of it). */
+export function manifestFile(view: OkView, libraryPath: string): FileListEntry | undefined {
+  return view.files.get(libraryPath) ?? foldedIndex(view).files.get(foldedPath(libraryPath));
+}
+
+export const manifestHasFile = (view: OkView, libraryPath: string) => manifestFile(view, libraryPath) !== undefined;
+
+/** Whether the manifest lists a folder (a listed file under it makes it one), under the name rule. */
+export const manifestHasFolder = (view: OkView, libraryPath: string) => view.folders.has(libraryPath) || foldedIndex(view).folders.has(foldedPath(libraryPath));
 
 /** The host's own word on whether this computer keeps up. Null when it can't be read. */
 export type SharedSync = { connected: boolean; reconcilePending: number; revoked: boolean; role: string } | null;
