@@ -56,6 +56,7 @@ import { codeMirrorReflowAdapter, keepScrollOnReflow } from "@/lib/reflow-scroll
 import { useHeadingNumbering } from "../heading-numbering-state";
 import { readClipboardText, type MenuPasteMode } from "../paste-menu-items";
 import { CODEMIRROR_TEXT_WIDTH_CLASS, CodeMirrorTextWidth } from "../codemirror-text-width";
+import { forgetPublished, onTextReplaced } from "../link-rewrite-echo";
 
 /* The Markdown Source editor on CodeMirror 6 (decision D8). It keeps the
  * textarea editor's props, keyboard shortcuts, menus and draft flow, and
@@ -519,6 +520,9 @@ export function MarkdownCodeMirrorEditor({
     // The view is created once per mount; everything it calls is read through refs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // A link rewrite is an outside change even when it returns the text to a draft published before.
+  useEffect(() => onTextReplaced((text) => forgetPublished(publishedDraftsRef.current, text)), [publishedDraftsRef]);
 
   // Adopt outside changes to the draft, ignoring echoes of drafts this editor
   // published itself (they may arrive after more typing).
