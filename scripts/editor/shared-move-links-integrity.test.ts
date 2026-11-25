@@ -318,7 +318,7 @@ test("S21: a note the host cannot read as text is reported as not fully checked;
   assert.deepEqual(linksOf(payload)?.unchecked, ["Shared"]);
 }));
 
-test("battery: only notes the link index says can name a moved item are fetched from the host", () => withShared(async ({ host }) => {
+test("battery: every note is read once for a move, and only notes that name a moved item are written", () => withShared(async ({ host }) => {
   host.put("a/other.md", "# Other\n");
   host.put("a/note.md", "[other](other.md)\n");
   host.put("unrelated.md", "no links here\n");
@@ -331,7 +331,9 @@ test("battery: only notes the link index says can name a moved item are fetched 
 
   await moveSharedFile("Shared/a/other.md", "Shared");
 
-  assert.ok(!fetched.has("unrelated.md"), "a note that cannot name the moved file is not read from the host");
+  // R-C1 (2026-11-25): the lagging link index no longer narrows the search (it missed embeds, anchors, charts and live text), so every note is read once; none of them is written unless it names the moved file.
+  assert.ok(fetched.has("unrelated.md"), "a note the index calls unrelated is still read: the index can lag the live text");
+  assert.ok(!host.edited.includes("unrelated.md"), "a note that does not name the moved file is not written");
   assert.equal(host.texts.get("a/note.md"), "[other](../other.md)\n");
   assert.equal(host.texts.get("unindexed.md"), "[other](other.md)\n", "a note the index does not know yet is read");
 }));
