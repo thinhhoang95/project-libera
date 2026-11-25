@@ -24,7 +24,7 @@ import { inspectWorkspaceMetadata } from "@/lib/storage/workspace-metadata";
 
 // What a file's records are called to the user.
 const RECORD_NAMES: Record<string, string> = {
-  "pdf-annotations": "annotations", "image-annotations": "annotations", "pdf-outline": "outline", transcript: "transcript",
+  "pdf-annotations": "annotations", "image-annotations": "annotations", "pdf-outline": "outline", transcript: "transcript", "transcript-companion": "transcript",
   definitions: "definitions", ink: "ink", python: "Python code",
 };
 

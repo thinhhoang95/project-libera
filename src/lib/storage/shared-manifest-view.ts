@@ -133,5 +133,5 @@ export async function livePdfMarkIds(libraryPath: string): Promise<{ state: "ids
 
 /** Side files the host owns in a shared notebook: manifest companions (ink, transcripts) and a live PDF's marks. Everything else is this computer's. */
 export function hostOwnsSideFile(kind: string, notebook: string): boolean {
-  return kind === "ink" || kind === "transcript" || (kind === "pdf-annotations" && notebookHasLivePdfs(notebook));
+  return kind === "ink" || kind === "transcript" || kind === "transcript-companion" || (kind === "pdf-annotations" && notebookHasLivePdfs(notebook));
 }
