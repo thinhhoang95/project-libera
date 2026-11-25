@@ -23,13 +23,15 @@ export type AnnotationWriter<T> = {
   preserveForLive: () => Promise<T[] | null>;
 };
 
-function createAnnotationWriter<T>(kind: "pdf" | "image", initialPath: string) {
+export function createAnnotationWriter<T>(kind: "pdf" | "image", initialPath: string) {
   const key = `annotations:${kind}`;
   // A move or rename retargets the writer (pending-saves.ts), unsaved annotations and all.
   let filePath = initialPath;
   let callbacks: WriterCallbacks<T> | null = null;
   let pending: T[] | null = null;
   let saving: Promise<void> | null = null;
+  /** The request in flight, and the path it was sent to: a move cancels it (retarget). */
+  let flight: { path: string; controller: AbortController; cancelled: boolean } | null = null;
   let version = 0;
   let enabled = true;
 
@@ -57,6 +59,13 @@ function createAnnotationWriter<T>(kind: "pdf" | "image", initialPath: string) {
     schedule: (annotations: T[]) => setPending(annotations),
     discard: () => setPending(null),
     retarget(path: string) {
+      // A request aimed at the old path must not report success for the new one, broadcast the old path, or write
+      // onto a file that took the old path's place: it is cancelled, and the unsaved annotations are sent again to
+      // the new path by the next save.
+      if (flight && flight.path !== path) {
+        flight.cancelled = true;
+        flight.controller.abort();
+      }
       filePath = path;
       if (pending !== null) setPending(pending);
     },
@@ -69,30 +78,40 @@ function createAnnotationWriter<T>(kind: "pdf" | "image", initialPath: string) {
       return pending;
     },
     async save(): Promise<void> {
-      while (saving) await saving.catch(() => undefined);
-      if (!enabled) return;
-      const sent = pending;
-      const path = filePath;
-      if (!sent) return;
-      saving = (async () => {
-        try {
-          const payload = await apiRequest<{ annotations: T[] }>(`/api/${kind}-annotations`, {
-            method: "PATCH", body: JSON.stringify({ path, annotations: sent }),
-          });
-          broadcastSavedAnnotations(kind, path, payload.annotations);
-          // An edit made during the request stays unsaved, and is not replaced.
-          if (pending === sent) {
-            setPending(null);
-            callbacks?.onSaved(payload.annotations);
+      for (;;) {
+        while (saving) await saving.catch(() => undefined);
+        if (!enabled) return;
+        const sent = pending;
+        const path = filePath;
+        if (!sent) return;
+        const request = { path, controller: new AbortController(), cancelled: false };
+        flight = request;
+        saving = (async () => {
+          try {
+            const payload = await apiRequest<{ annotations: T[] }>(`/api/${kind}-annotations`, {
+              method: "PATCH", body: JSON.stringify({ path, annotations: sent }), signal: request.controller.signal,
+            });
+            // The file moved while this ran: what came back belongs to the old path. The annotations stay unsaved.
+            if (request.cancelled || filePath !== path) { request.cancelled = true; return; }
+            broadcastSavedAnnotations(kind, path, payload.annotations);
+            // An edit made during the request stays unsaved, and is not replaced.
+            if (pending === sent) {
+              setPending(null);
+              callbacks?.onSaved(payload.annotations);
+            }
+          } catch (error) {
+            if (request.cancelled || filePath !== path) { request.cancelled = true; return; }
+            callbacks?.onError(error);
+            throw error;
+          } finally {
+            if (flight === request) flight = null;
+            saving = null;
           }
-        } catch (error) {
-          callbacks?.onError(error);
-          throw error;
-        } finally {
-          saving = null;
-        }
-      })();
-      return saving;
+        })();
+        await saving;
+        // Cancelled by a move: send the same annotations again, to the new path.
+        if (!request.cancelled) return;
+      }
     },
   };
   return writer;

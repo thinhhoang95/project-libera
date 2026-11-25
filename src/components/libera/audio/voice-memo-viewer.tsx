@@ -89,6 +89,7 @@ export function VoiceMemoViewer({
   const draft = useSegmentDraft({
     base: transcript?.segments ?? NO_SEGMENTS,
     saved: null,
+    pendingPath: file.path,
     save: ({ segments }, closing) => saveSegments(segments, { keepalive: closing }),
   });
   const segments = draft.segments;
