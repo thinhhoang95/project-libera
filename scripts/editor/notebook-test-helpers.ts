@@ -148,9 +148,11 @@ const describe = (finding: IntegrityFinding) => `${finding.severity} ${finding.c
  * shared notebook does not list, an index row for something that moved). They fail `assertNotebookSound` whatever `severities` says; a test
  * that expects one names it in `allow` (by its code, e.g. `reviewFileMissing`).
  */
+// The link and citation indexes are brought up to date lazily by design (when the notebook is next opened, when
+// citations are next listed), so being out of date right after a move is not something it left behind.
 export const LEFTOVER_INFO_CODES: ReadonlySet<string> = new Set([
   "reviewFileMissing", "agentRunFileMissing", "imageLeftBehind", "imageUnused", "sharedFileNotListed",
-  "linkIndexOutOfDate", "citationIndexOutOfDate", "indexCorrupt", "globalSearchStale", "globalSearchChanged",
+  "indexCorrupt", "globalSearchStale", "globalSearchChanged",
 ]);
 
 /**

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createReadStream, type Dirent, type Stats } from "node:fs";
+import { createReadStream, existsSync, type Dirent, type Stats } from "node:fs";
 import { copyFile, cp, link, lstat, mkdir, open, readdir, readFile, readlink, realpath, rename, rm, rmdir, stat, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { transformReviewBaselines, withMovedReview } from "@/lib/agent/review-store";
@@ -583,12 +583,10 @@ async function expandSelection(source: string, paths: string[]) {
   };
   /** Folders already walked: a selected folder inside one of them is part of that walk, not a second one. */
   const walked = new Set<string>();
-  /** A recording's companion transcript (`<name>.transcript`, left beside it by a shared notebook's takedown) travels with it. */
-  const addCompanion = async (recordingParts: string[]) => {
-    const parts = [...recordingParts.slice(0, -1), `${recordingParts.at(-1)}.transcript`];
-    const stats = await lstatOrNull(rawItemPath(source, parts));
-    if (stats?.isFile()) add(parts, { kind: "other", fileType: null, identity: identityOf(stats), bytes: stats.size });
-  };
+  /** A recording's companion transcript (`<name>.transcript`, left beside it by a shared notebook's takedown) is one of its side files
+   * (sidecars.ts "transcript-companion"): it travels with the recording's own move, under the name the recording gets, never as an item of its own. */
+  const isCompanion = (folderParts: string[], name: string) => name.endsWith(COMPANION_SUFFIX) && getFileType(name.slice(0, -COMPANION_SUFFIX.length)) === "audio"
+    && existsSync(rawItemPath(source, [...folderParts, name.slice(0, -COMPANION_SUFFIX.length)]));
   const walk = async (folderParts: string[]) => {
     walked.add(folderParts.join("/"));
     folders.push({ parts: folderParts, base });
@@ -605,11 +603,10 @@ async function expandSelection(source: string, paths: string[]) {
       } else if (entry.isDirectory() && visible) await walk(parts);
       else if (entry.isFile() && visible && getFileType(entry.name)) {
         add(parts, { kind: "file", fileType: getFileType(entry.name), identity: identityOf(stats), bytes: stats.size });
-        if (getFileType(entry.name) === "audio") await addCompanion(parts);
       } else if (entry.isDirectory()) {
         const inner = await summarize(rawItemPath(source, parts));
         add(parts, { kind: "other", fileType: null, identity: identityOf(stats), bytes: inner.bytes, count: inner.count });
-      } else add(parts, { kind: "other", fileType: null, identity: identityOf(stats), bytes: stats.size });
+      } else if (!(entry.isFile() && isCompanion(folderParts, entry.name))) add(parts, { kind: "other", fileType: null, identity: identityOf(stats), bytes: stats.size });
     }
   };
   for (const selected of [...new Set(paths)].sort()) {
@@ -625,7 +622,6 @@ async function expandSelection(source: string, paths: string[]) {
     if (stats.isDirectory()) await walk(parts);
     else if (stats.isFile() && getFileType(parts.at(-1) ?? "")) {
       add(parts, { kind: "file", fileType: getFileType(parts.at(-1) ?? ""), identity: identityOf(stats), bytes: stats.size });
-      if (getFileType(parts.at(-1) ?? "") === "audio") await addCompanion(parts);
     } else throw new StorageError(`${selected} can't be migrated.`, 400);
   }
   return { candidates: [...candidates.values()], folders, problems };

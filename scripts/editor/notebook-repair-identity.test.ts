@@ -80,13 +80,13 @@ test("name rule: several files of the name are never guessed, whatever their byt
   assert.deepEqual(plan.unmatched.map((item) => [item.reason, item.candidates]), [["several", ["Nb/one/a.pdf", "Nb/two/a.pdf"]]]);
 }));
 
-test("name rule: records of a note moved to another notebook are not held, nor paired there", () => withTemporaryLibrary(["Nb", "Other"], async () => {
+test("name rule: records of a note moved to another notebook are not paired there, and are held while a file of the name is there (E-M7)", () => withTemporaryLibrary(["Nb", "Other"], async () => {
   await writeLibraryFile("Nb/notes/n.md", "# Note\n");
   await setStarredFilePath("Nb/notes/n.md", true);
   await finderMove("Nb/notes/n.md", "Other/n.md");
   const repair = await planNotebookRepair("Nb");
   assert.deepEqual(repair.moves, []);
-  assert.deepEqual(repair.unmatched.map((item) => [item.from, item.reason, item.candidates]), [["Nb/notes/n.md", "none", []]]);
+  assert.deepEqual(repair.unmatched.map((item) => [item.from, item.reason, item.candidates]), [["Nb/notes/n.md", "elsewhere", ["Other/n.md"]]]);
 }));
 
 test("parked annotations of a PDF are paired by name, including into the archive, and not by their bytes", () => withTemporaryLibrary(["Nb"], async () => {

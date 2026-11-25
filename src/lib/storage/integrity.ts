@@ -32,7 +32,7 @@ import { inspectReferenceLibrary } from "@/lib/storage/references";
 import { inspectLegacyReviewKeys, inspectReviewDocumentProblems, inspectReviewKeys } from "@/lib/storage/review-files";
 import { listSidecars, findOrphanedSidecars, SIDECAR_KINDS, type SidecarInspection } from "@/lib/storage/sidecars";
 import { matchByIdentity, mayBeBack, readOrphans, slotTakenBy, upkeepReattachesByContent } from "@/lib/storage/pdf-sidecars";
-import { hostOwnsSideFile, livePdfMarkIds, manifestFile, manifestHasFile, manifestHasFolder, mayBeArriving, parseHostRecords, readManifestView, readSharedSync, type ManifestView } from "@/lib/storage/shared-manifest-view";
+import { hostOwnsSideFile, livePdfMarkIds, manifestFile, manifestHasFile, mayBeArriving, parseHostRecords, readManifestView, readSharedSync, type ManifestView } from "@/lib/storage/shared-manifest-view";
 import { isGeneratedPath, isShareablePath, STATE_DIRECTORY } from "../../../electron/collab/notebooks/fs-ops";
 import { getFileType } from "@/lib/storage/file-types";
 import { pythonSidecarDocumentPath, pythonSidecarPath } from "@/lib/python/sidecar";
@@ -1192,19 +1192,12 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
       if (disk.unknown(libraryPath) || (byManifest && !disk.exists(libraryPath))) { unknownPaths.add(libraryPath); return false; }
       return !disk.exists(libraryPath);
     };
-    /** A starred or tagged path may be a folder: the manifest's folders for a shared path, and a folder only this computer has (or any folder in a local notebook) is judged on the disk. */
-    const folderThere = async (libraryPath: string) => {
-      if (manifestBefore?.state === "ok" && isSharedNotebookPath(libraryPath) && manifestHasFolder(manifestBefore, libraryPath)) return true;
-      const [owner, ...parts] = libraryPath.split("/");
-      if (!parts.length || parts.some((part) => !part || part === "." || part === "..")) return false;
-      try { return (await lstat(path.join(notebookPath(owner), ...parts))).isDirectory(); } catch { return false; }
-    };
-    const missingEntry = async (libraryPath: string) => (await missing(libraryPath)) && !(await folderThere(libraryPath));
+    // Stars and tags are given to files only (notebook-panel.tsx, file-tags-dialog.tsx): a folder at the path does not keep them.
     for (const starred of metadata.starredFilePaths) {
-      if (under(starred, notebook) && await missingEntry(starred)) add({ severity: "warning", path: starred, message: "Starred, but the file is missing.", fix: "Unstar it, or put the file back.", clear: [{ type: "star", path: starred, gone: starred }], ...say("starredFileMissing", undefined, "starredFileMissingFix") });
+      if (under(starred, notebook) && await missing(starred)) add({ severity: "warning", path: starred, message: "Starred, but the file is missing.", fix: "Unstar it, or put the file back.", clear: [{ type: "star", path: starred, gone: starred }], ...say("starredFileMissing", undefined, "starredFileMissingFix") });
     }
     for (const tagged of Object.keys(metadata.fileTags)) {
-      if (under(tagged, notebook) && await missingEntry(tagged)) add({ severity: "warning", path: tagged, message: "Has tags, but the file is missing.", fix: "Put the file back, or its tags stay unused.", clear: [{ type: "tags", path: tagged, gone: tagged }], ...say("taggedFileMissing", undefined, "taggedFileMissingFix") });
+      if (under(tagged, notebook) && await missing(tagged)) add({ severity: "warning", path: tagged, message: "Has tags, but the file is missing.", fix: "Put the file back, or its tags stay unused.", clear: [{ type: "tags", path: tagged, gone: tagged }], ...say("taggedFileMissing", undefined, "taggedFileMissingFix") });
     }
     // Read without migrating older review storage (readReviewKeys would).
     const reviews = await inspectReviewKeys(getStateRoot());

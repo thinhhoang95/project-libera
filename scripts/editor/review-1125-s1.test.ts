@@ -186,15 +186,15 @@ test("O-M1: the shared .bib tether follows the manifest, and what it reports can
   assert.equal(plan.items.length, 1);
 }));
 
-test("O-M2: a starred or tagged folder in a shared notebook is checked against the manifest's folders, and the disk for local ones", () => withShared({}, async ({ host, root }) => {
+test("O-M2: stars belong to files: a listed shared file keeps its star, a folder or a name that is gone does not", () => withShared({}, async ({ host, root }) => {
   host.entries = [entry("docs", { kind: "folder" }), entry("docs/a.md")];
   put(path.join(root, "docs", "a.md"), "a\n");
-  mkdirSync(path.join(root, "mine"), { recursive: true });
-  await setStarredFilePath("Shared/docs", true);
-  await setFileTagsForPath("Shared/mine", ["local-only"]);
+  await setStarredFilePath("Shared/docs/a.md", true);
   assert.deepEqual(codes(await verifyNotebook("Shared"), "records"), []);
+  // Only files are starred (notebook-panel.tsx): a star on a folder is one a file left behind.
+  await setStarredFilePath("Shared/docs", true);
   await setStarredFilePath("Shared/nowhere", true);
-  assert.deepEqual(codes(await verifyNotebook("Shared"), "records"), ["warning:starredFileMissing:Shared/nowhere"]);
+  assert.deepEqual(codes(await verifyNotebook("Shared"), "records").sort(), ["warning:starredFileMissing:Shared/docs", "warning:starredFileMissing:Shared/nowhere"]);
 }));
 
 test("E-M4: an orphan live-marks sidecar at a path the manifest no longer lists is reported and clearable", () => withShared({ pdfLive: true }, async ({ host, root }) => {

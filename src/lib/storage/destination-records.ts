@@ -43,6 +43,9 @@ class PathSet {
 }
 const pathSet = (paths: Iterable<string>) => { const set = new PathSet(); for (const item of paths) set.add(item); return set; };
 
+/** The side file kind of each kind of set-aside record (pdf-sidecars.ts readOrphans). */
+const SET_ASIDE_SIDE_FILE_KINDS: Record<string, string> = { annotations: "pdf-annotations", outline: "pdf-outline", definitions: "definitions" };
+
 export type DestinationOptions = {
   /** The path is the file's own under another spelling of its name (a case-only rename): the sidecars found there are its own. */
   ownSidecars?: boolean;
@@ -99,12 +102,22 @@ export async function destinationRecords() {
   if (runs.unreadable) unreadable.push(`${runs.unreadable} agent undo ${runs.unreadable === 1 ? "record" : "records"}`);
   for (const file of runs.files) if (!file.shared && !file.reverted) undo.add(file.path);
   // Side files set aside for a path, per notebook, read when first asked.
-  const setAside = new Map<string, Promise<PathSet>>();
+  // Kept by side file kind, so a kind the host owns can be left out (DestinationOptions.hostOwned).
+  const setAside = new Map<string, Promise<Map<string, PathSet>>>();
   const setAsideFor = (notebook: string) => {
     let known = setAside.get(notebook);
     if (!known) {
       // Only a record with no identity is given to whatever file arrives at its path (one with an identity waits for its own bytes).
-      known = readOrphans(notebook).then((orphans) => pathSet(orphans.filter(({ record }) => !record.source).map(({ record }) => record.originalPath)));
+      known = readOrphans(notebook).then((orphans) => {
+        const byKind = new Map<string, PathSet>();
+        for (const { record } of orphans) {
+          if (record.source) continue;
+          const kind = SET_ASIDE_SIDE_FILE_KINDS[record.kind] ?? record.kind;
+          if (!byKind.has(kind)) byKind.set(kind, new PathSet());
+          byKind.get(kind)!.add(record.originalPath);
+        }
+        return byKind;
+      });
       setAside.set(notebook, known);
     }
     return known;
@@ -138,7 +151,7 @@ export async function destinationRecords() {
             if (await pathExists(filePathFromParts(found.notebook, found.pathParts))) kept.add("Python code");
           }
         }
-        if ((await setAsideFor(notebook)).has(relative, exact)) kept.add("set-aside side file");
+        if ([...(await setAsideFor(notebook))].some(([kind, paths]) => !options.hostOwned?.(kind) && paths.has(relative, exact))) kept.add("set-aside side file");
       }
       // A review that can't be read can't be shown to be empty; an empty one is what opening a note makes.
       if (reviewKeys.damaged !== undefined || reviewed.has(relative, true)) {
