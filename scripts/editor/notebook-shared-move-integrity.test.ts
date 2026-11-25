@@ -63,9 +63,14 @@ class StubHost {
         this.ops.push(op);
         if (op.op === "rename" && op.to) {
           renameSync(path.join(this.notebook, op.path), path.join(this.notebook, op.to));
+          // The manifest lists the file (or each file under the folder) at its new path, as the real host's list does once it committed (S-C2: records follow what the list shows).
+          this.entries = this.entries.map((item) => item.path === op.path ? { ...item, path: op.to as string } : item.path.startsWith(`${op.path}/`) ? { ...item, path: `${op.to}${item.path.slice(op.path.length)}` } : item);
           this.onRename?.();
         }
-        if (op.op === "delete") rmSync(path.join(this.notebook, op.path), { recursive: true, force: true });
+        if (op.op === "delete") {
+          rmSync(path.join(this.notebook, op.path), { recursive: true, force: true });
+          this.entries = this.entries.filter((item) => item.path !== op.path && !item.path.startsWith(`${op.path}/`));
+        }
         return send(200, { paths: [`Shared/${op.to ?? op.path}`] });
       });
     });
