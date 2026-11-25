@@ -234,6 +234,14 @@ export function lastBibMirrorResult(notebook: string) {
   return scheduler.results.get(notebook);
 }
 
+/** A notebook was deleted: its pending regeneration and timer go, so nothing writes into the folder that is gone. */
+export function dropBibMirror(notebook: string) {
+  clearTimeout(scheduler.timers.get(notebook));
+  scheduler.timers.delete(notebook);
+  scheduler.pending.delete(notebook);
+  scheduler.results.delete(notebook);
+}
+
 /** Drop pending regenerations (tests, before the data directory changes). */
 export function resetBibMirrorScheduler() {
   for (const timer of scheduler.timers.values()) clearTimeout(timer);

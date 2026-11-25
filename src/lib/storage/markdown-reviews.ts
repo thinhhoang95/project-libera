@@ -120,24 +120,17 @@ export async function updateReview(id: string, revision: number, change: (doc: R
 }
 const under = (key: string, folder: string) => key === folder || key.startsWith(`${folder}/`);
 /**
- * A folder's (or file's) reviews follow it. With `replaceEmpty` (a folder
- * move), an empty review already at a destination key (opening the file made
- * it) gives way to the review that really is at the source, so the moved
- * review is the one `findReviewDocument` returns; one with anything in it is kept.
+ * Every review at or under `from` follows to `to`. With `replaceEmpty` (a notebook folder renamed, whose
+ * destination may hold a review that opening a file there made), an empty review at a destination gives way;
+ * one with anything in it is kept and the review moving there stays (the paths whose reviews stayed are returned).
  */
-export async function moveReviewPath(from: string, to: string, options: { replaceEmpty?: boolean } = {}) {
+export async function moveReviewPath(from: string, to: string, options: { replaceEmpty?: boolean } = {}): Promise<string[]> {
+  if (from === to) return [];
   return transaction(async (tx) => {
-    if (options.replaceEmpty && from !== to) {
-      const entries = tx.keys();
-      const reviewed = new Set(entries.map(([, key]) => key));
-      for (const [id, key] of entries) {
-        if (!under(key, to) || under(key, from)) continue;
-        const source = from + key.slice(to.length);
-        if (!reviewed.has(source)) continue;
-        // A review whose file has not synced yet can't be shown to be empty.
-        const doc = await tx.getIfPresent(id);
-        if (doc && isEmptyReview(doc)) tx.remove(id);
-      }
+    if (options.replaceEmpty) {
+      const moves = new Map<string, string>();
+      for (const [, key] of tx.keys()) if (under(key, from)) moves.set(key, to + key.slice(from.length));
+      return moveWithin(tx, moves, options);
     }
     // A review whose file has not synced yet still follows its file.
     for (const [id, key] of tx.keys()) if (under(key, from)) {
@@ -145,6 +138,7 @@ export async function moveReviewPath(from: string, to: string, options: { replac
       if (doc) { doc.key = to + doc.key.slice(from.length); doc.revision++; }
       else tx.rekey(id, to + key.slice(from.length));
     }
+    return [];
   });
 }
 /**
@@ -156,32 +150,33 @@ export async function moveReviewPath(from: string, to: string, options: { replac
  */
 export async function moveReviewPaths(moves: ReadonlyMap<string, string>, options: { replaceEmpty?: boolean } = {}): Promise<string[]> {
   if (!moves.size) return [];
-  return transaction(async (tx) => {
-    const stayed = new Set<string>();
-    if (options.replaceEmpty) {
-      const sourceOf = new Map([...moves].map(([from, to]) => [to, from]));
-      const replaced = new Map<string, string[]>();
-      // An empty destination review gives way only to a review that really is at the source.
-      const reviewed = new Set(tx.keys().map(([, key]) => key));
-      for (const [id, key] of tx.keys()) {
-        const from = sourceOf.get(key);
-        if (from === undefined || moves.has(key) || !reviewed.has(from)) continue;
-        // A review whose file has not synced yet can't be shown to be empty.
-        const doc = await tx.getIfPresent(id);
-        if (doc && isEmptyReview(doc)) replaced.set(key, [...replaced.get(key) ?? [], id]);
-        else stayed.add(from);
-      }
-      for (const [key, ids] of replaced) if (!stayed.has(sourceOf.get(key)!)) for (const id of ids) tx.remove(id);
-    }
+  return transaction((tx) => moveWithin(tx, moves, options));
+}
+async function moveWithin(tx: ReviewTransaction<ReviewDocument>, moves: ReadonlyMap<string, string>, options: { replaceEmpty?: boolean }): Promise<string[]> {
+  const stayed = new Set<string>();
+  if (options.replaceEmpty) {
+    const sourceOf = new Map([...moves].map(([from, to]) => [to, from]));
+    const replaced = new Map<string, string[]>();
+    // An empty destination review gives way only to a review that really is at the source.
+    const reviewed = new Set(tx.keys().map(([, key]) => key));
     for (const [id, key] of tx.keys()) {
-      const to = moves.get(key);
-      if (to === undefined || to === key || stayed.has(key)) continue;
+      const from = sourceOf.get(key);
+      if (from === undefined || moves.has(key) || !reviewed.has(from)) continue;
+      // A review whose file has not synced yet can't be shown to be empty.
       const doc = await tx.getIfPresent(id);
-      if (doc) { doc.key = to; doc.revision++; }
-      else tx.rekey(id, to);
+      if (doc && isEmptyReview(doc)) replaced.set(key, [...replaced.get(key) ?? [], id]);
+      else stayed.add(from);
     }
-    return [...stayed];
-  });
+    for (const [key, ids] of replaced) if (!stayed.has(sourceOf.get(key)!)) for (const id of ids) tx.remove(id);
+  }
+  for (const [id, key] of tx.keys()) {
+    const to = moves.get(key);
+    if (to === undefined || to === key || stayed.has(key)) continue;
+    const doc = await tx.getIfPresent(id);
+    if (doc) { doc.key = to; doc.revision++; }
+    else tx.rekey(id, to);
+  }
+  return [...stayed];
 }
 /**
  * A move rewrote these notes' paths (storage/move-links.ts). A review taken

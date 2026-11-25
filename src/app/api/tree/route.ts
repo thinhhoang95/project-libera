@@ -28,6 +28,8 @@ export async function GET(request: NextRequest) {
     // One notebook, without the library-wide upkeep: what a shared edit refreshes.
     const notebookName = request.nextUrl.searchParams.get("notebook");
     if (notebookName) {
+      // A rebind of a shared notebook's renamed folder is applied here too, as the unscoped tree does.
+      await applyPendingRootTransitions().catch(() => undefined);
       const notebook = await getNotebookNode(notebookName, { includeArchive });
       if (notebook) await attachSharedFileIds([notebook], listSharedEntries, isShared);
       followRecordsInBackground([notebookName]);

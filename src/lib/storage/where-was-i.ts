@@ -6,10 +6,14 @@ import { sharedNotebookMarker } from "@/lib/collab/shared-notebook";
 import { writeJsonState } from "@/lib/storage/json-state";
 import { assertSafeSegment, notebookPath, notebookSystemDirectoryPath } from "@/lib/storage/paths";
 import {
+  decodeKnownFiles,
+  hashRecapPath,
   isRecapDate,
+  MAX_KNOWN_FILES,
   normalizeKnownFiles,
   normalizeRecapFileEntry,
   rankRecapFiles,
+  type RecapFileEntry,
   type RecapSession,
   type RecapSessionUpdate,
   type RecapSummary,
@@ -108,10 +112,12 @@ async function notebookExists(notebook: string) {
 // Read-modify-write of this installation's file, one at a time per notebook.
 const updates = new Map<string, Promise<unknown>>();
 
-function updateOwnFile(notebook: string, update: (file: RecapFile) => RecapFile) {
+function updateOwnFile(notebook: string, update: (file: RecapFile) => RecapFile, { existingOnly = false } = {}) {
   const target = ownFilePath(notebook);
   const task = (updates.get(target) ?? Promise.resolve()).catch(() => undefined).then(async () => {
     const existing = await readRecapFile(target);
+    // A record kept up with a move or a delete is never started by one.
+    if (existingOnly && !existing) return;
     const next = update(existing ?? { version: 1, device: { id: deviceId(), name: deviceName() }, sessions: [] });
     await writeJsonState(target, { ...next, device: { id: deviceId(), name: deviceName() } });
   });
@@ -199,4 +205,139 @@ export async function saveRecapSummary(notebookName: string, summary: RecapSumma
   const notebook = assertSafeSegment(notebookName, "Notebook name");
   if (!(await notebookExists(notebook))) return;
   await updateOwnFile(notebook, (file) => ({ ...file, summary }));
+}
+
+// ---- Following the library -------------------------------------------------------
+//
+// Entries name files by path inside the notebook. A move, rename, archive or delete in the app updates this
+// installation's own file (never another device's: a synced notebook must not have two computers writing one
+// file), so a moved file keeps its position in the recap and is not reported as new. Nothing is started by it:
+// a notebook without a recap file is left alone, and one pass serves all the moves of one operation.
+
+/** One move of library paths: a file, or a folder and everything under it. */
+export type RecapPathChange = { from: string; to: string; folder?: boolean };
+
+type RelativeChange = { from: string; to: string; folder: boolean; toNotebook: string };
+
+const insideFolder = (relative: string, folder: string) => relative === folder || relative.startsWith(`${folder}/`);
+
+function splitLibraryPath(libraryPath: string) {
+  const slash = libraryPath.indexOf("/");
+  return slash <= 0 || slash === libraryPath.length - 1 ? null : { notebook: libraryPath.slice(0, slash), relative: libraryPath.slice(slash + 1) };
+}
+
+function changeFor(relative: string, changes: readonly RelativeChange[]) {
+  return changes.find((change) => change.folder ? insideFolder(relative, change.from) : relative === change.from);
+}
+
+/** The notebook's files under a folder, by path inside the notebook; null when there are too many to list. Looks only at that folder. */
+async function filesUnder(notebook: string, folder: string): Promise<string[] | null> {
+  const found: string[] = [];
+  const queue = [folder];
+  while (queue.length) {
+    const current = queue.pop()!;
+    const entries = await readdir(path.join(notebookPath(notebook), ...current.split("/")), { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (entry.name.startsWith(".")) continue;
+      if (entry.isDirectory()) queue.push(`${current}/${entry.name}`);
+      else if (entry.isFile() && found.push(`${current}/${entry.name}`) > MAX_KNOWN_FILES) return null;
+    }
+  }
+  return found;
+}
+
+function encodeHashes(hashes: Set<number>) {
+  if (hashes.size > MAX_KNOWN_FILES) return undefined;
+  let binary = "";
+  for (const hash of [...hashes].sort((a, b) => a - b)) binary += String.fromCharCode(hash >>> 24, (hash >>> 16) & 255, (hash >>> 8) & 255, hash & 255);
+  return btoa(binary);
+}
+
+/** The session's inventory with the moved files' new names added (the old hashes stay: they only hide a new file by the old name). Omitted when it can't be kept right. */
+function knownAfter(session: RecapSession, additions: readonly { from: string; to: string }[] | null) {
+  if (!session.knownFiles) return {};
+  const known = decodeKnownFiles(session.knownFiles);
+  if (!known || !additions) return {};
+  for (const { from, to } of additions) if (known.has(hashRecapPath(from))) known.add(hashRecapPath(to));
+  const encoded = encodeHashes(known);
+  return encoded ? { knownFiles: encoded } : {};
+}
+
+/**
+ * Files moved, renamed or archived: the recap entries follow, in the same notebook or to another one
+ * (a migration), and the inventory of known files learns the new names.
+ */
+export async function followRecapPaths(changes: readonly RecapPathChange[]) {
+  const bySource = new Map<string, RelativeChange[]>();
+  for (const change of changes) {
+    const from = splitLibraryPath(change.from);
+    const to = splitLibraryPath(change.to);
+    if (!from || !to) continue; // A notebook's own rename: its record is inside the folder that moved.
+    bySource.set(from.notebook, [...bySource.get(from.notebook) ?? [], { from: from.relative, to: to.relative, folder: change.folder === true, toNotebook: to.notebook }]);
+  }
+  const carried = new Map<string, { entry: RecapFileEntry; from: string }[]>();
+  for (const [notebook, list] of bySource) {
+    const existing = await readRecapFile(ownFilePath(notebook));
+    if (!existing) continue;
+    list.sort((a, b) => b.from.length - a.from.length);
+    // The new names of moved files, for the inventories; only listed when a session has one.
+    const additions: { from: string; to: string }[] = [];
+    let complete = true;
+    if (existing.sessions.some((session) => session.knownFiles)) {
+      for (const change of list.filter((item) => item.toNotebook === notebook)) {
+        if (!change.folder) { additions.push({ from: change.from, to: change.to }); continue; }
+        const files = await filesUnder(notebook, change.to);
+        if (!files) { complete = false; break; }
+        for (const file of files) additions.push({ from: `${change.from}${file.slice(change.to.length)}`, to: file });
+      }
+    }
+    await updateOwnFile(notebook, (file) => ({
+      ...file,
+      sessions: file.sessions.map((session) => {
+        const entries = new Map<string, RecapFileEntry>();
+        const moved: RecapFileEntry[] = [];
+        for (const entry of session.files) {
+          const change = changeFor(entry.path, list);
+          if (!change) { entries.set(entry.path, entry); continue; }
+          const next = `${change.to}${entry.path.slice(change.from.length)}`;
+          if (change.toNotebook !== notebook) { carried.set(change.toNotebook, [...carried.get(change.toNotebook) ?? [], { entry: { ...entry, path: next }, from: entry.path }]); continue; }
+          moved.push({ ...entry, path: next, name: !change.folder && entry.name === change.from.split("/").at(-1) ? next.split("/").at(-1)! : entry.name });
+        }
+        // A moved file takes the place of an old entry at its new name (a file can't land on a live one).
+        for (const entry of moved) entries.set(entry.path, entry);
+        const { knownFiles: _old, ...rest } = session;
+        return { ...rest, files: rankRecapFiles([...entries.values()]), ...knownAfter(session, complete ? additions : null) };
+      }),
+    }), { existingOnly: true });
+  }
+  for (const [notebook, items] of carried) {
+    await updateOwnFile(notebook, (file) => {
+      const [newest, ...older] = file.sessions;
+      if (!newest) return file;
+      const entries = new Map(newest.files.map((entry) => [entry.path, entry]));
+      for (const { entry } of items) entries.set(entry.path, entry);
+      const known = decodeKnownFiles(newest.knownFiles);
+      if (known) for (const { entry } of items) known.add(hashRecapPath(entry.path));
+      const encoded = known ? encodeHashes(known) : undefined;
+      const { knownFiles: _old, ...rest } = newest;
+      return { ...file, sessions: [{ ...rest, files: rankRecapFiles([...entries.values()]), ...(encoded ? { knownFiles: encoded } : {}) }, ...older] };
+    }, { existingOnly: true });
+  }
+}
+
+/** Files or folders deleted: their entries leave the recap, so it never offers a file that is gone. */
+export async function dropRecapPaths(deleted: readonly string[]) {
+  const byNotebook = new Map<string, string[]>();
+  for (const libraryPath of deleted) {
+    const split = splitLibraryPath(libraryPath);
+    if (split) byNotebook.set(split.notebook, [...byNotebook.get(split.notebook) ?? [], split.relative]);
+  }
+  for (const [notebook, folders] of byNotebook) {
+    const existing = await readRecapFile(ownFilePath(notebook));
+    if (!existing?.sessions.some((session) => session.files.some((entry) => folders.some((folder) => insideFolder(entry.path, folder))))) continue;
+    await updateOwnFile(notebook, (file) => ({
+      ...file,
+      sessions: file.sessions.map((session) => ({ ...session, files: session.files.filter((entry) => !folders.some((folder) => insideFolder(entry.path, folder))) })),
+    }), { existingOnly: true });
+  }
 }
