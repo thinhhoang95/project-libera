@@ -4,7 +4,7 @@ import path from "node:path";
 import { DEFINITIONS_FILE_TYPES, parseDefinitionsFile } from "@/lib/definitions";
 import { parseInkFileName } from "@/lib/ink/authors";
 import { parsePdfOutlineFile } from "@/lib/pdf-outline";
-import { inspectImageSidecar, inspectLegacyAnnotations, inspectPdfSidecar } from "@/lib/storage/annotations";
+import { inspectImageSidecar, inspectLegacyAnnotations, inspectPdfSidecar, isPdfAnnotationsBackupName } from "@/lib/storage/annotations";
 import { inspectPdfTextCache } from "@/lib/storage/pdf-text-cache";
 import { parseTranscript } from "@/lib/storage/transcripts";
 import { inspectAudioPeaksCache } from "@/lib/transcription/peaks";
@@ -359,7 +359,8 @@ export async function listSidecars(notebook: string): Promise<{ sidecars: Listed
       for (const child of children) {
         const target = path.join(directory, child.name);
         if (child.isDirectory()) await walk(target, [...parts, child.name]);
-        else if (kind.layout === "json" && child.isFile() && child.name.endsWith(".json")) {
+        // `<name>.pdf.json.replaced-<hash>.json` is a backup of notes a sidecar replaced, not the sidecar of a file called that.
+        else if (kind.layout === "json" && child.isFile() && child.name.endsWith(".json") && !isPdfAnnotationsBackupName(child.name)) {
           const fileParts = [...parts, child.name.slice(0, -".json".length)];
           listed.push({ kind: kind.id, kindInfo: kind, path: target, filePath: `${notebook}/${fileParts.join("/")}`, fileParts });
         }

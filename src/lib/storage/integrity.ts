@@ -95,9 +95,10 @@ export type IntegrityFinding = {
  * is still gone right before removing anything.
  */
 export type CleanupAction = (
-  | { type: "side-file"; kind: string; filePath: string }
+  /** `identified`: the side file records the bytes of the file it was made for and no file in the notebook has them (never set in a shared notebook, where owners are not looked for by content). */
+  | { type: "side-file"; kind: string; filePath: string; identified?: true }
   | { type: "ink-files"; filePath: string; names: string[] }
-  | { type: "set-aside"; file: string }
+  | { type: "set-aside"; file: string; identified?: true }
   | { type: "asset"; path: string }
   | { type: "star"; path: string }
   | { type: "tags"; path: string }
@@ -695,6 +696,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
         let ink;
         try { ink = await kind.inspectFolder(sidecar.path, getFileType(sidecar.fileParts.at(-1) ?? "") ?? ""); } catch { unreadSidecars += 1; unread.add(sidecar.path); continue; }
         budget.read(ink.bytes);
+        if (ink.unreadable.length && orphaned.has(sidecar.path)) unread.add(sidecar.path);
         if (ink.unreadable.length) add({ severity: "error", path: sidecar.filePath, message: `${plural(ink.unreadable.length, "ink file")} of ${sidecar.filePath} can't be read, so ${ink.unreadable.length === 1 ? "its" : "their"} ink is not shown (${ink.unreadable.slice(0, 3).join(", ")}).`, fix: "Restore them from your sync service's version history.", ...say("inkUnreadable", { count: ink.unreadable.length, path: sidecar.filePath, names: ink.unreadable.slice(0, 3).join(", ") }, "inkUnreadableFix") });
         if (ink.misplaced.length) add({ severity: "info", path: sidecar.filePath, message: `${plural(ink.misplaced.length, "ink file")} of ${sidecar.filePath} ${ink.misplaced.length === 1 ? "belongs" : "belong"} to a page or block this kind of file doesn't have, so ${ink.misplaced.length === 1 ? "it is" : "they are"} never shown.`, clear: [{ type: "ink-files", filePath: sidecar.filePath, names: ink.misplaced }], ...say("inkMisplaced", { count: ink.misplaced.length, path: sidecar.filePath }) });
         if (ink.droppedStrokes) add({ severity: "warning", path: sidecar.filePath, message: `${plural(ink.droppedStrokes, "stroke")} in the ink of ${sidecar.filePath} can't be read and ${ink.droppedStrokes === 1 ? "is" : "are"} not shown.`, fix: "Restore the ink folder from your sync service's version history before drawing on that page again.", ...say("strokesUnreadable", { count: ink.droppedStrokes, path: sidecar.filePath }, "strokesUnreadableFix") });
@@ -714,7 +716,8 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
           if (!valid || (inspection?.source && !orphaned.has(sidecar.path) && await sizeOf(sidecar.fileParts) !== inspection.source.size)) outdatedCaches.set(kind.id, [...outdatedCaches.get(kind.id) ?? [], { type: "side-file", kind: kind.id, filePath: sidecar.filePath }]);
           continue;
         }
-        if (!valid) { add({ severity: "error", path: sidecar.filePath, message: `The saved ${name(sidecar.kind)} of ${sidecar.filePath} can't be read.`, fix: "Restore it from a backup or your sync service's version history.", ...say("sideFileUnreadable", { kind: sidecar.kind, path: sidecar.filePath }, "sideFileUnreadableFix") }); continue; }
+        // What a damaged side file says about its file is unknown: if its file is gone it is not offered for removal (it may be the only copy of an identity that finds the file).
+        if (!valid) { if (orphaned.has(sidecar.path)) unread.add(sidecar.path); add({ severity: "error", path: sidecar.filePath, message: `The saved ${name(sidecar.kind)} of ${sidecar.filePath} can't be read.`, fix: "Restore it from a backup or your sync service's version history.", ...say("sideFileUnreadable", { kind: sidecar.kind, path: sidecar.filePath }, "sideFileUnreadableFix") }); continue; }
         if (inspection?.dropped) add({ severity: "warning", path: sidecar.filePath, message: `${inspection.dropped} ${inspection.records} in the saved ${name(sidecar.kind)} of ${sidecar.filePath} can't be read: they are not shown, and are lost the next time it is saved.`, fix: "Restore the side file from your sync service's version history before changing it.", ...say("sideFileDropped", { dropped: inspection.dropped, records: inspection.records, kind: sidecar.kind, path: sidecar.filePath }, "sideFileDroppedFix") });
         if (inspection?.source) sources.push(inspection.source);
       }
@@ -814,7 +817,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
       const decided = moved === null && !unread.has(orphan.path) && (shared || (!inventoryCut && !candidatesCut));
       add(moved !== null && moved !== "unknown"
         ? { severity: "info", path: orphan.filePath, message: `${what}, belong to ${moved}: the same file, moved outside the app. They go to it the next time the notebook is opened.`, ...say("orphanSideFileMoved", { kind: orphan.kind, path: orphan.filePath, moved }) }
-        : { severity: "warning", path: orphan.filePath, message: `${what}.`, fix: "Put the file back where it was and it is found again. If it is gone for good, the side file can be removed from the notebook's .libera folder; keep a copy if unsure.", ...(decided ? { clear: [{ type: "side-file", kind: orphan.kind, filePath: orphan.filePath, gone: orphan.filePath }] } : {}), ...say("orphanSideFile", { kind: orphan.kind, path: orphan.filePath }, shared ? "orphanSideFileSharedFix" : "orphanSideFileFix") });
+        : { severity: "warning", path: orphan.filePath, message: `${what}.`, fix: "Put the file back where it was and it is found again. If it is gone for good, the side file can be removed from the notebook's .libera folder; keep a copy if unsure.", ...(decided ? { clear: [{ type: "side-file", kind: orphan.kind, filePath: orphan.filePath, gone: orphan.filePath, ...(identities.has(orphan.path) && upkeepReattachesByContent(notebook) ? { identified: true as const } : {}) }] } : {}), ...say("orphanSideFile", { kind: orphan.kind, path: orphan.filePath }, shared ? "orphanSideFileSharedFix" : "orphanSideFileFix") });
     }
     // Notes still in an older layout, keyed by file name alone: read without
     // upgrading them (annotations.ts listLegacyAnnotations). The migrator gives
@@ -861,41 +864,61 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
       if (identity) await hashSameSize(candidates.filter((candidate) => candidate.size === identity.size));
       return mayBeBack({ originalPath, source: identity }, candidates, hashes, (libraryPath) => disk.isFile(libraryPath));
     };
-    /** Set-aside records whose fate is unknown (a candidate could not be hashed): kept, never offered for removal. */
+    /** Set-aside records whose fate is unknown (a candidate could not be hashed, the budget ran out): kept, never offered for removal. */
     const unsettled: string[] = [];
     const returning: string[] = [];
+    /** Records read, judged and not coming back: what each covers (a record file, or an ink folder), and whether it names the bytes it was kept for. */
+    const settled = new Map<string, { identified: boolean }>();
+    /** Ink folders that have their record but no ink (a move that failed halfway left them): nothing is kept in them. */
+    const leaked: string[] = [];
     const kinds = { annotations: "pdf-annotations", outline: "pdf-outline", definitions: "definitions" } as const;
+    const byContent = upkeepReattachesByContent(notebook);
     for (const { file, record } of await readOrphans(notebook)) {
-      if (!budget.allows()) break;
+      if (!budget.allows()) { unsettled.push(file); continue; }
       const moved = await comesBack(kinds[record.kind], "pdf", record.originalPath, record.source ?? null);
       if (moved === "unknown" || (moved === null && await mayReturn(kinds[record.kind], "pdf", record.originalPath, record.source ?? null))) unsettled.push(file);
       else if (moved) { returning.push(file); add({ severity: "info", path: moved, message: `Saved ${name(kinds[record.kind])} set aside when ${record.originalPath} left the notebook belong to ${moved}${record.source ? ", the same file" : ""}. They go to it the next time the notebook is opened.`, ...say("sideSetAside", { kind: kinds[record.kind], originalPath: record.originalPath, path: moved, sameFile: record.source ? "yes" : "no" }) }); }
+      else settled.set(file, { identified: byContent && !!record.source });
     }
     const setAsideInk = orphanedSidecarsDirectoryPath(notebook, "ink");
     for (const entry of await readdir(setAsideInk, { withFileTypes: true }).catch(() => [])) {
-      if (!entry.isDirectory() || !budget.allows()) continue;
+      if (!entry.isDirectory()) continue;
       const directory = path.join(setAsideInk, entry.name);
+      if (!budget.allows()) { unsettled.push(directory); continue; }
       let record: { originalPath?: unknown; source?: { size?: unknown; sha256?: unknown } | null } | null = null;
-      try { record = JSON.parse(await readFile(path.join(directory, "record.json"), "utf8")); } catch { /* Not a set-aside record the owner reads. */ }
+      try { record = JSON.parse(await readFile(path.join(directory, "record.json"), "utf8")); } catch { /* Not a set-aside record the owner reads: not judged below, and so never offered. */ }
       if (typeof record?.originalPath !== "string") continue;
+      // A record with no ink beside it promises nothing to anyone: it is not a file that may come back, nor one kept for it.
+      const holdsInk = (await lstat(path.join(directory, "ink")).catch(() => null))?.isDirectory() === true;
+      if (!holdsInk) { leaked.push(directory); continue; }
       const source = record.source && typeof record.source.size === "number" && typeof record.source.sha256 === "string" ? { size: record.source.size, contentHash: record.source.sha256 } : null;
       const moved = await comesBack("ink", getFileType(record.originalPath), record.originalPath, source);
       if (moved === "unknown" || (moved === null && await mayReturn("ink", getFileType(record.originalPath), record.originalPath, source))) unsettled.push(directory);
       else if (moved) { returning.push(directory); add({ severity: "info", path: moved, message: `Ink set aside when ${record.originalPath} left the notebook belongs to ${moved}. It goes to it the next time the notebook is opened.`, ...say("inkSetAside", { originalPath: record.originalPath, path: moved }) }); }
+      else settled.set(directory, { identified: byContent && !!source });
     }
     returning.push(...unsettled);
-    const isReturning = (file: string) => returning.some((kept) => file === kept || file.startsWith(`${kept}${path.sep}`));
+    const under = (file: string, root: string) => file === root || file.startsWith(`${root}${path.sep}`);
+    const isReturning = (file: string) => returning.some((kept) => under(file, kept));
     const setAside = path.join(notebookSystemDirectoryPath(notebook), ORPHANED_SIDECARS_DIR);
     const kept: CleanupAction[] = [];
+    /** Files whose record could not be read or does not say whose they are: what they were kept for is unknown, so they are never offered. */
+    const unattributed: string[] = [];
     const walk = async (directory: string) => {
       for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
         const file = path.join(directory, entry.name);
         if (entry.isDirectory()) await walk(file);
-        else if (entry.isFile() && !isReturning(file)) kept.push({ type: "set-aside", file: path.relative(setAside, file).split(path.sep).join("/") });
+        else if (entry.isFile() && !isReturning(file) && !leaked.some((folder) => under(file, folder))) {
+          const owner = [...settled].find(([root]) => under(file, root));
+          if (owner) kept.push({ type: "set-aside", file: path.relative(setAside, file).split(path.sep).join("/"), ...(owner[1].identified ? { identified: true as const } : {}) });
+          else unattributed.push(path.relative(setAside, file).split(path.sep).join("/"));
+        }
       }
     };
     await walk(setAside);
     if (kept.length) add({ severity: "info", path: notebook, message: `${kept.length} side ${kept.length === 1 ? "file is" : "files are"} kept for files that left the notebook outside the app, in case they come back.`, ...(!inventoryCut && !candidatesCut && !budget.reached ? { clear: kept } : {}), ...say("sideFilesKept", { count: kept.length }) });
+    if (unattributed.length) add({ severity: "warning", path: notebook, message: unattributed.length === 1 ? "1 set-aside side file can't be matched to the file it was kept for (its record is missing or damaged), so it is left alone." : `${unattributed.length} set-aside side files can't be matched to the files they were kept for (their records are missing or damaged), so they are left alone.`, fix: "Look in the notebook's .libera/orphaned-sidecars folder; remove what you no longer need by hand.", ...say("sideFilesUnattributed", { count: unattributed.length }, "sideFilesUnattributedFix") });
+    if (leaked.length) add({ severity: "info", path: notebook, message: leaked.length === 1 ? "1 set-aside ink folder has a record but no ink (a move that did not finish left it): nothing is kept in it, and nothing comes back from it." : `${leaked.length} set-aside ink folders have a record but no ink (a move that did not finish left them): nothing is kept in them, and nothing comes back from them.`, fix: "They can be removed by hand from the notebook's .libera/orphaned-sidecars/ink folder.", ...say("setAsideInkEmpty", { count: leaked.length }, "setAsideInkEmptyFix") });
     const partial: Said[] = [];
     if (unreadable.length || unreadSidecars) partial.push(said("sideFilesUnreadable", `${unreadable.length + unreadSidecars} side ${unreadable.length + unreadSidecars === 1 ? "file or folder" : "files or folders"} could not be read.`, { count: unreadable.length + unreadSidecars }));
     // A file the budget no longer covered was not compared with what its side files were made for: it is not passed.

@@ -49,10 +49,14 @@ import { readWorkspaceMetadata, setFileTagsForPath, setStarredFilePath } from "@
 // transcripts, live marks, Python code, the notebook's images), and a file is
 // gone when the host's manifest does not list it, read again right before the
 // removals; when the host can't confirm it, nothing is removed.
-// Two things are never offered
-// either: records Try to fix could not pair only because several files have
-// their file's name (they may belong to one of them), and anything a check that
-// ran only in part found (it can't tell what is stale).
+// Some things are never offered
+// either: records Try to fix could not pair because several files have their
+// file's name (they may belong to one of them) or because a store could not be
+// read or two copies were set aside (each said as it is); records of a name a
+// file with records of its own now has, unless the record names the bytes it
+// was made for and no file has them; set-aside files whose record can't be
+// read; and anything a check that ran only in part found (it can't tell what
+// is stale).
 
 /** One concrete record an item removes, and the file it was kept for (null when the record is not a file's own). */
 export type CleanupEntry = { record: string; origin: string | null };
@@ -144,7 +148,7 @@ function partsIn(notebook: string, libraryPath: string) {
 const setAsideRoot = (notebook: string) => path.join(notebookSystemDirectoryPath(notebook), ORPHANED_SIDECARS_DIR);
 const setAsideFile = (notebook: string, file: string) => path.join(setAsideRoot(notebook), ...file.split("/").map(assertName));
 
-/** The path a set-aside file was kept for, from its record; null when it has none. */
+/** The path a set-aside file was kept for, from its record; null when it has none, or the record can't be read (never a reason to delete the file). */
 async function setAsideOrigin(notebook: string, file: string) {
   try {
     const parts = file.split("/").map(assertName);
@@ -219,7 +223,7 @@ async function versionOf(notebook: string, action: CleanupAction) {
   return found;
 }
 
-type HoldReason = "ambiguous" | "back" | "alias" | "unchecked" | "tether" | "image-used" | "images-unscanned" | "shared";
+type HoldReason = "ambiguous" | "own" | "unread" | "conflict" | "unattributed" | "back" | "alias" | "unchecked" | "tether" | "image-used" | "images-unscanned" | "shared";
 type Hold = { reason: HoldReason; message: string };
 
 /** What a library path physically opens, whatever spelling it is given (a disk that ignores case or Unicode form answers for an alias). */
@@ -274,7 +278,9 @@ async function staleness(notebook: string, action: CleanupAction, disk = fileExi
   if (action.gone) { const hold = await gone(action.gone); if (hold) return hold; }
   if (action.type === "set-aside") {
     const origin = await setAsideOrigin(notebook, action.file);
-    if (origin) return gone(origin);
+    // A file whose record can't be read has no known owner: whether that file is back can't be told, so it is held, never removed.
+    if (!origin) return { reason: "unattributed", message: `${action.file}: its record is missing or can't be read, so it can't be told what it was kept for; it is kept.` };
+    return gone(origin);
   }
   if (action.type === "tether" && !action.gone) return absoluteTetherHold(action.target);
   return null;
@@ -296,8 +302,9 @@ async function collect(notebook: string, repair: RepairPlan, options: CleanupOpt
   const report = await verifyNotebook(notebook, { limits: options.limits });
   // What a check that ran only in part found can't be told stale: a loop that protects records may not have run.
   const partial = new Set(report.checks.filter((check) => check.status === "incomplete" || check.status === "failed").map((check) => check.id));
-  // Records of a name that Try to fix could not pair for there being several files by it: one of them may be the file.
-  const ambiguous = new Set(repair.unmatched.filter((item) => item.candidates.length).map((item) => item.from));
+  // Records of a name Try to fix did not pair though a file has the name, and why: several files have it (one of them may be the file; held), or the one file has records of its own
+  // (`own`: stale when the record names the bytes it was made for and no file has them), or Try to fix could not read a store or found two copies (held, with that said).
+  const named = new Map(repair.unmatched.filter((item) => item.candidates.length).map((item) => [item.from, item.reason] as const));
   const clearable: Array<IntegrityFinding & { clear: CleanupAction[] }> = [];
   const holds = new Map<HoldReason, number>();
   const hold = (reason: HoldReason) => holds.set(reason, (holds.get(reason) ?? 0) + 1);
@@ -313,8 +320,12 @@ async function collect(notebook: string, repair: RepairPlan, options: CleanupOpt
     if (partial.has(finding.check)) { heldPartial += 1; continue; }
     const clear: CleanupAction[] = [];
     for (const action of finding.clear) {
-      const subject = ambiguous.size ? await subjectOf(notebook, action) : null;
-      if (subject && ambiguous.has(subject)) { hold("ambiguous"); continue; }
+      const subject = named.size ? await subjectOf(notebook, action) : null;
+      const why = subject ? named.get(subject) : undefined;
+      if (why) {
+        if (why === "own" && "identified" in action && action.identified) { /* the check found no file with the bytes it was made for: the file now called that is not its file */ }
+        else { hold(why === "own" || why === "unread" || why === "conflict" ? why : "ambiguous"); continue; }
+      }
       const stale = await staleness(notebook, action, disk, view);
       if (stale) { hold(stale.reason); continue; }
       if (isImage(action)) {
@@ -337,6 +348,10 @@ async function collect(notebook: string, repair: RepairPlan, options: CleanupOpt
   const count = (reason: HoldReason) => holds.get(reason) ?? 0;
   const them = (n: number) => (n === 1 ? "it" : "they");
   if (count("ambiguous")) notes.push(`${plural(count("ambiguous"), "record")} left out: more than one file has the name of the file ${count("ambiguous") === 1 ? "it was" : "they were"} kept for, so ${them(count("ambiguous"))} may belong to one of them.`);
+  if (count("own")) notes.push(`${plural(count("own"), "record")} left out: a file now has the name of the file ${count("own") === 1 ? "it was" : "they were"} kept for and has records of its own, so Try to fix can't give ${them(count("own"))} to it, and it can't be told that ${them(count("own"))} ${count("own") === 1 ? "is" : "are"} not that file's.`);
+  if (count("unread")) notes.push(`${plural(count("unread"), "record")} left out: some records could not be read, so it can't be ruled out that ${them(count("unread"))} belong${count("unread") === 1 ? "s" : ""} to a file that is there now.`);
+  if (count("conflict")) notes.push(`${plural(count("conflict"), "record")} left out: more than one copy was set aside for the same file, and Try to fix can't choose between them. Keep the one you want, and remove the others by hand.`);
+  if (count("unattributed")) notes.push(`${plural(count("unattributed"), "set-aside file")} left out: ${count("unattributed") === 1 ? "its record is" : "their records are"} missing or can't be read, so it can't be told what ${count("unattributed") === 1 ? "it was" : "they were"} kept for.`);
   if (heldPartial) notes.push(`${plural(heldPartial, "finding")} left out: a check that ran only in part can't tell what is stale.`);
   // A check the budget kept from starting has no findings to hold back; the plan still says it is not the whole picture.
   else if (partial.size) notes.push(`${plural(partial.size, "check")} ran only in part, so what ${partial.size === 1 ? "it" : "they"} could not look at is not offered.`);
