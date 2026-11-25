@@ -4,6 +4,7 @@ import { access, chmod, copyFile, cp, link, lstat, mkdir, readdir, readFile, ren
 import path from "node:path";
 import { DestinationTakenError, movePathExclusive } from "../../../electron/collab/notebooks/fs-ops";
 import { StorageError } from "@/lib/storage/errors";
+import { foldedFileName } from "./file-names";
 import { assertFileContentHash, assertFileSignature } from "./file-signature";
 
 export async function pathExists(targetPath: string) {
@@ -89,7 +90,12 @@ export async function moveFileWithoutReplacing(currentPath: string, nextPath: st
   }
 }
 
-const PATH_LOCKS_KEY = Symbol.for("libera.pathLocks");
+/** A path with each segment under the round's one name rule (NFC and case folding), so aliases of one name compare equal. */
+export function foldedPath(target: string) {
+  return path.resolve(target).split(path.sep).map(foldedFileName).join(path.sep);
+}
+
+const PATH_LOCKS_KEY =Symbol.for("libera.pathLocks");
 const lockHolder = globalThis as { [PATH_LOCKS_KEY]?: Map<string, Promise<void>> };
 const pathLocks = lockHolder[PATH_LOCKS_KEY] ??= new Map<string, Promise<void>>();
 
@@ -101,7 +107,7 @@ const pathLocks = lockHolder[PATH_LOCKS_KEY] ??= new Map<string, Promise<void>>(
  * pair of names is harmless, missing a case-only alias is not.
  */
 export async function withPathLocks<T>(paths: string[], task: () => Promise<T>): Promise<T> {
-  const keys = [...new Set(paths.map((target) => path.resolve(target).toLowerCase()))];
+  const keys = [...new Set(paths.map(foldedPath))];
   const before = keys.map((key) => pathLocks.get(key));
   let release!: () => void;
   const mine = new Promise<void>((resolve) => { release = resolve; });
@@ -153,7 +159,7 @@ export async function replaceFileIfUnchanged(absolute: string, bytes: Uint8Array
  * (same device and inode, names equal ignoring case): a case-only rename.
  */
 export async function isCaseOnlyRename(currentPath: string, nextPath: string) {
-  if (currentPath === nextPath || currentPath.toLowerCase() !== nextPath.toLowerCase()) return false;
+  if (currentPath === nextPath || foldedPath(currentPath) !== foldedPath(nextPath)) return false;
   try {
     const [current, next] = await Promise.all([stat(currentPath, { bigint: true }), stat(nextPath, { bigint: true })]);
     return current.ino !== BigInt(0) && current.ino === next.ino && current.dev === next.dev;
@@ -205,14 +211,52 @@ export async function moveWithoutReplacing(currentPath: string, nextPath: string
     await rename(currentPath, nextPath);
     return;
   }
-  if (await holdsFiles(nextPath)) throw new StorageError("A record of another file is already at the destination, so it was left where it is.", 409);
-  // Only empty folders are cleared; the move itself publishes exclusively, so a record that arrives after the check above is kept, not removed.
-  await rm(nextPath, { force: true, recursive: true });
+  // Only empty folders are cleared, bottom-up with rmdir (which refuses a folder that has anything in it),
+  // so a record that arrives while this runs is kept and the move is refused, never removed.
+  await clearEmptyDirectories(nextPath);
   try { await movePathExclusive(currentPath, nextPath); }
   catch (error) {
-    if (error instanceof DestinationTakenError) throw new StorageError("A record of another file is already at the destination, so it was left where it is.", 409);
+    if (error instanceof DestinationTakenError) throw recordAtDestination();
     if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
-    await movePath(currentPath, nextPath);
+    // Another drive: copy into a staging sibling and publish it with one exclusive rename, so a failed
+    // copy leaves nothing half-made at the destination and a record that arrived meanwhile is kept.
+    const staging = `${nextPath}.${process.pid}.${randomUUID()}.moving`;
+    try {
+      await cp(currentPath, staging, { recursive: true, errorOnExist: true, force: false, preserveTimestamps: true });
+      try { await movePathExclusive(staging, nextPath); }
+      catch (publishError) {
+        if (publishError instanceof DestinationTakenError) throw recordAtDestination();
+        throw publishError;
+      }
+    } catch (copyError) {
+      await rm(staging, { force: true, recursive: true }).catch(() => undefined);
+      throw copyError;
+    }
+    await rm(currentPath, { recursive: true, force: true });
+  }
+}
+
+const recordAtDestination = () => new StorageError("A record of another file is already at the destination, so it was left where it is.", 409);
+
+/** Removes a path that is only empty folders (deepest first); a file, or a folder that gains one meanwhile, is a 409. */
+async function clearEmptyDirectories(targetPath: string): Promise<void> {
+  let stats;
+  try { stats = await lstat(targetPath); } catch (error) {
+    if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) return;
+    throw error;
+  }
+  if (!stats.isDirectory()) throw recordAtDestination();
+  let names: string[];
+  try { names = await readdir(targetPath); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  for (const name of names) await clearEmptyDirectories(path.join(targetPath, name));
+  try { await rmdir(targetPath); } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return;
+    if (code === "ENOTEMPTY" || code === "EEXIST") throw recordAtDestination();
+    throw error;
   }
 }
 

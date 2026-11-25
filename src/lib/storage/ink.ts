@@ -12,7 +12,7 @@ import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { INK_DIR } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
 import { getFileType } from "@/lib/storage/file-types";
-import { moveFileIfExists, pathExists, writeJsonAtomically } from "@/lib/storage/fs-utils";
+import { moveFileIfExists, pathExists, withPathLocks, writeJsonAtomically } from "@/lib/storage/fs-utils";
 import { fileExistence } from "@/lib/storage/library-links";
 import { cachedPdfIdentity } from "@/lib/storage/pdf-identity";
 import { matchByIdentity, mayBeBack, moveToFreeSlot, ORPHAN_GRACE_MS, ORPHAN_RETENTION_MS, slotTakenBy, upkeepReattachesByContent } from "@/lib/storage/pdf-sidecars";
@@ -355,7 +355,10 @@ export async function writeInk(relativePath: string, chunk: string, opsValue: un
   const libraryPath = relativeFilePath(notebook, pathParts);
   const shared = isSharedNotebookPath(libraryPath);
 
-  return withInkLock(target, async () => {
+  // Under the source's lock: a move or delete in progress finishes first, and a source that is gone by then is refused, so no sidecar is made at its old path.
+  return withPathLocks([sourcePath], async () => {
+    await assertInkSourceStillThere(sourcePath);
+    return withInkLock(target, async () => {
     // The rendering's version before anything is merged: if another device
     // publishes a newer one meanwhile, ours (merged from older strokes) must not replace it.
     const renderingAuthority = shared && rendering ? await (await import("@/lib/collab/shared-writes")).readSharedBlob(`${notebook}/${rendering.normalized}`).catch(() => null) : null;
@@ -443,7 +446,13 @@ export async function writeInk(relativePath: string, chunk: string, opsValue: un
       if (onDisk !== svg) await publishRendering(notebook, rendering, svg, shared, renderingAuthority);
     }
     return { path: libraryPath, author: author.key, chunks: [payload] };
+    });
   });
+}
+
+async function assertInkSourceStillThere(sourcePath: string) {
+  const stats = await stat(sourcePath).catch(() => null);
+  if (!stats?.isFile()) throw new StorageError("The file was moved or deleted, so its ink was not saved.", 409);
 }
 
 function renderingTarget(notebook: string, chunk: string, source: unknown) {

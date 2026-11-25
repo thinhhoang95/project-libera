@@ -7,6 +7,7 @@ import { isNotebookMigrating } from "@/lib/storage/migration-fence";
 import { withMovedReviewsUnder } from "@/lib/agent/review-store";
 import { StorageError } from "@/lib/storage/errors";
 import { pathExists } from "@/lib/storage/fs-utils";
+import { foldedFileName } from "@/lib/storage/file-names";
 import {
   normalizeNotebookMetadata,
   readNotebookMetadata,
@@ -116,7 +117,7 @@ export async function renameNotebook(
 
     if (currentPath !== nextPath) {
       // On a case-insensitive disk the new spelling finds the notebook itself: that is a rename, not a clash.
-      const caseOnly = safeCurrentName.toLowerCase() === safeNextName.toLowerCase() && await isSameDirectory(currentPath, nextPath);
+      const caseOnly = foldedFileName(safeCurrentName) === foldedFileName(safeNextName) && await isSameDirectory(currentPath, nextPath);
       if (!caseOnly && (await pathExists(nextPath))) {
         throw new StorageError("Destination notebook already exists.", 409);
       }

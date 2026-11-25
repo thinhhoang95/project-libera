@@ -2,7 +2,7 @@ import { readFile, rm, stat } from "node:fs/promises";
 import { StorageError } from "@/lib/storage/errors";
 import { readFileContentHash } from "@/lib/storage/file-signature";
 import { getFileType } from "@/lib/storage/file-types";
-import { writeJsonAtomically } from "@/lib/storage/fs-utils";
+import { withPathLocks, writeJsonAtomically } from "@/lib/storage/fs-utils";
 import { definitionsPath, filePathFromParts, splitFilePath } from "@/lib/storage/paths";
 import { DEFINITIONS_FILE_TYPES, parseDefinitionsFile, type DefinitionsFile, type DefinitionsPayload } from "@/lib/definitions";
 import { assertNotMigrating } from "@/lib/storage/migration-fence";
@@ -55,8 +55,14 @@ export async function readDefinitions(relativePath: string): Promise<Definitions
 export async function writeDefinitions(relativePath: string, definitions: DefinitionsFile) {
   // A file a notebook migration is moving is written after the migration.
   await assertNotMigrating(relativePath);
-  const { sidecar } = locate(relativePath);
-  await writeJsonAtomically(sidecar, definitions);
+  const { document, sidecar } = locate(relativePath);
+  // Under the document's lock: a move or delete in progress finishes first, and a document that is gone by then
+  // is refused, so no sidecar is made at its old path. Nothing here is called with that lock already held.
+  await withPathLocks([document], async () => {
+    const stats = await stat(document).catch(() => null);
+    if (!stats?.isFile()) throw new StorageError("The document was moved or deleted, so its definitions were not saved.", 409);
+    await writeJsonAtomically(sidecar, definitions);
+  });
 }
 
 export async function deleteDefinitions(relativePath: string) {
