@@ -486,6 +486,32 @@ export async function drainSharedRecordTransitions(notebook: string, options: Fo
   return result;
 }
 
+/**
+ * A move a collaborator (or Finder or Explorer on the host's disk) made is not followed by this user's own notes:
+ * the mover rewrote the shared notes that linked in, but a local note elsewhere in this library (or in the notebook's
+ * `_archive/`) is on this computer only. Each moved file's net move (a chain a to b to c is one a to c) is followed
+ * by those local notes, on disk. One pass per drain, only when the log had such moves; the shared notes are left to
+ * the mover. Never throws: a note left behind is what Check Notebook reports.
+ */
+async function followLocalLinksOfRemoteMoves(transitions: readonly FollowTransition[], outcomes: readonly TransitionOutcome[]) {
+  const net = new Map<string, { from: string; to: string; folder: boolean }>();
+  transitions.forEach((t, index) => {
+    const outcome = outcomes[index];
+    if (t.explicit || t.to === null || !outcome || outcome.state !== "applied" || t.from === t.to) return;
+    const key = t.fileId ?? `${t.kind ?? "file"}:${t.from}`;
+    const earlier = net.get(key);
+    net.set(key, { from: earlier?.from ?? t.from, to: t.to, folder: t.kind === "folder" });
+  });
+  const moves = [...net.values()].filter((move) => move.from !== move.to).map((move) => ({ from: move.from, to: move.to, ...(move.folder ? { folder: true } : {}) }));
+  if (!moves.length) return;
+  try {
+    const { followSharedMovedLinks } = await import("@/lib/storage/shared-move-links");
+    await followSharedMovedLinks(moves, { localOnly: true });
+  } catch (error) {
+    console.error("[shared-record-follow] Local links did not follow a collaborator's move:", error);
+  }
+}
+
 async function drain(notebook: string, options: FollowOptions): Promise<DrainResult> {
   const marker = sharedNotebookMarker(notebook);
   const config = options.config === undefined ? collabHostConfig() : options.config;
@@ -511,6 +537,7 @@ async function drain(notebook: string, options: FollowOptions): Promise<DrainRes
   const own = options.own ?? [];
   const marked: FollowTransition[] = transitions.map((t) => own.some((change) => change.from === t.from && change.to === t.to && (change.fileId === undefined || change.fileId === t.fileId)) ? { ...t, explicit: true } : t);
   const outcomes = await applyTransitions(notebook, marker.projectId, marked, manifest);
+  await followLocalLinksOfRemoteMoves(marked, outcomes);
   const done = outcomes.filter(isFinal).map((outcome) => outcome.seq).filter((seq): seq is number => seq !== undefined);
   let error: string | undefined;
   // The host takes at most ACK_BATCH seqs per call (it answers 400 for more); a batch that failed leaves the rest for the next run.
