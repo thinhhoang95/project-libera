@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { cp, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import type { Dirent } from "node:fs";
+import { cp, lstat, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { parseInkBlockSource } from "@/lib/ink/block";
 import { createInkAuthorKey, inkFileName, isInkAuthorKey, isInkChunkName, pageNumberOfChunk, parseInkFileName } from "@/lib/ink/authors";
@@ -11,6 +12,7 @@ import type { InkAuthor, InkAuthorFile, InkFrame, InkOps, InkSource, InkStroke, 
 import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { INK_DIR } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
+import { foldedFileName } from "@/lib/storage/file-names";
 import { getFileType } from "@/lib/storage/file-types";
 import { moveFileIfExists, pathExists, withPathLocks, writeJsonAtomically } from "@/lib/storage/fs-utils";
 import { fileExistence } from "@/lib/storage/library-links";
@@ -576,11 +578,23 @@ async function listInkFolders(notebook: string) {
  */
 async function folderSource(folder: string): Promise<InkSource | null | "conflict"> {
   const names = await readdir(folder).catch(() => [] as string[]);
-  let found: InkSource | null = null;
+  const recorded: InkSource[] = [];
   for (const name of names) {
     if (!parseInkFileName(name)) continue;
     const source = (await readAuthorFile(path.join(folder, name)))?.source;
-    if (!source) continue;
+    if (source) recorded.push(source);
+  }
+  return decideInkSource(recorded);
+}
+
+/**
+ * The one rule for what an ink folder's recorded sources say (upkeep here, the
+ * notebook check in storage/integrity.ts): null when none recorded any,
+ * "conflict" when two name different bytes, else the one.
+ */
+export function decideInkSource(recorded: InkSource[]): InkSource | null | "conflict" {
+  let found: InkSource | null = null;
+  for (const source of recorded) {
     if (found && (found.size !== source.size || found.sha256 !== source.sha256)) return "conflict";
     found ??= source;
   }
@@ -592,11 +606,169 @@ function fileExists(libraryPath: string, existence = fileExistence()): Promise<b
   return existence.isFile(libraryPath);
 }
 
+type Listings = Map<string, Promise<Dirent[] | null>>;
+
+function listOnce(listings: Listings, directory: string) {
+  if (!listings.has(directory)) listings.set(directory, readdir(directory, { withFileTypes: true }).catch(() => null));
+  return listings.get(directory)!;
+}
+
+/**
+ * The spelling under which a file is really there when the library path
+ * names it by another spelling of the same name: a case-only or
+ * Unicode-normalization-only rename (`foldedFileName` per segment, the one
+ * name rule of the check and Try to fix). Null when a file by that exact path
+ * is there, when no file or several (two that only fold together, on a
+ * case-sensitive disk) have the name, or when a folder could not be listed.
+ * Lists only the folders along the path.
+ */
+export async function foldedAliasOf(libraryPath: string, listings: Listings = new Map()): Promise<string | null> {
+  const [notebook, ...parts] = libraryPath.split("/");
+  if (!notebook || !parts.length) return null;
+  let directory: string;
+  try { directory = notebookPath(notebook); } catch { return null; }
+  const spelled: string[] = [];
+  for (const [index, part] of parts.entries()) {
+    const entries = await listOnce(listings, directory);
+    if (!entries) return null;
+    const last = index === parts.length - 1;
+    const fits = (entry: Dirent) => (last ? entry.isFile() : entry.isDirectory());
+    const exact = entries.find((entry) => entry.name === part && fits(entry));
+    if (exact) {
+      // The whole path is spelled as asked: nothing to follow.
+      if (last) return null;
+      spelled.push(part);
+      directory = path.join(directory, part);
+      continue;
+    }
+    const folded = foldedFileName(part);
+    const alike = entries.filter((entry) => fits(entry) && foldedFileName(entry.name) === folded);
+    if (alike.length !== 1) return null;
+    spelled.push(alike[0].name);
+    directory = path.join(directory, alike[0].name);
+  }
+  const found = [notebook, ...spelled].join("/");
+  return found === libraryPath ? null : found;
+}
+
+/** Whether two paths are one entry of the disk (same device and inode) under different spellings. */
+async function sameEntry(first: string, second: string) {
+  if (first === second) return false;
+  try {
+    const [a, b] = await Promise.all([stat(first, { bigint: true }), stat(second, { bigint: true })]);
+    return a.ino !== BigInt(0) && a.ino === b.ino && a.dev === b.dev;
+  } catch { return false; }
+}
+
+/**
+ * Renames a folder to another spelling of its own name on a disk that treats
+ * the two as one (case, or Unicode normalization): through a hidden temporary
+ * name, since the exclusive move would find the new name taken by the folder
+ * itself. The second step never replaces; a failure puts the folder back.
+ */
+async function respellFolder(from: string, to: string) {
+  const aside = path.join(path.dirname(from), `.${path.basename(from)}.${process.pid}.${randomUUID()}.respell`);
+  await rename(from, aside);
+  try {
+    if (await moveToFreeSlot(aside, to)) return true;
+  } catch (error) {
+    await rename(aside, from).catch(() => undefined);
+    throw error;
+  }
+  await rename(aside, from).catch(() => undefined);
+  return false;
+}
+
+/**
+ * Takes an ink folder along with its file renamed outside Libera to another
+ * spelling of the same name: the folders of `_ink` are renamed to match (all
+ * ink under a renamed folder follows it), through a case-alias-safe rename
+ * where the disk takes both spellings for one entry, else moved into a free
+ * slot. False when nothing moved (the new slot is taken, or the folder is gone).
+ */
+async function followRespelling(oldPath: string, newPath: string) {
+  let oldParts: string[]; let newParts: string[]; let notebook: string;
+  try {
+    const old = splitFilePath(oldPath);
+    notebook = old.notebook;
+    oldParts = old.pathParts;
+    newParts = splitFilePath(newPath).pathParts;
+  } catch { return false; }
+  if (oldParts.length !== newParts.length) return false;
+  const current = [...oldParts];
+  for (const [index, spelling] of newParts.entries()) {
+    if (current[index] === spelling) continue;
+    const from = inkFolderPath(notebook, current.slice(0, index + 1));
+    const to = inkFolderPath(notebook, [...current.slice(0, index), spelling]);
+    if (await sameEntry(from, to)) {
+      if (!(await respellFolder(from, to))) return false;
+      current[index] = spelling;
+      continue;
+    }
+    // Two folders of the disk: only the file's own ink folder can be moved as a unit.
+    return moveFolderToFreeSlot(inkFolderPath(notebook, current), inkFolderPath(notebook, newParts));
+  }
+  return true;
+}
+
+/** A copy of a folder across volumes that did not complete; the folder it was made from is untouched. */
+class CrossVolumeMoveError extends Error {
+  constructor(readonly original: unknown) { super("The ink folder could not be copied to its new volume.", { cause: original }); }
+}
+
+/** A folder's files and their sizes and times, as one string: equal before and after a copy means nothing was saved meanwhile. Null when the folder is gone. */
+async function folderSnapshot(folder: string): Promise<string | null> {
+  const lines: string[] = [];
+  async function visit(directory: string, prefix: string): Promise<boolean> {
+    let entries: Dirent[];
+    try { entries = await readdir(directory, { withFileTypes: true }); } catch { return false; }
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (entry.isDirectory()) { if (!(await visit(path.join(directory, entry.name), `${prefix}${entry.name}/`))) return false; continue; }
+      const stats = await lstat(path.join(directory, entry.name)).catch(() => null);
+      if (!stats) return false;
+      lines.push(`${prefix}${entry.name}|${stats.size}|${stats.mtimeMs}`);
+    }
+    return true;
+  }
+  return (await visit(folder, "")) ? lines.join("\n") : null;
+}
+
+/**
+ * Moves an ink folder into a slot that must be free (`moveToFreeSlot`), also
+ * across volumes: a linked folder's `_ink` and the notebook's set-aside
+ * directory can be on different drives, where a rename fails with EXDEV. The
+ * folder is then copied beside its destination, published there by a rename
+ * on that volume, and the original removed only if nothing was saved into it
+ * meanwhile (else it stays, and nothing moved). False: the slot is taken, the
+ * folder is gone or it changed while being copied.
+ */
+async function moveFolderToFreeSlot(from: string, to: string): Promise<boolean> {
+  try { return await moveToFreeSlot(from, to); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error; }
+  const staging = path.join(path.dirname(to), `.${path.basename(to)}.${process.pid}.${randomUUID()}.copy`);
+  try {
+    const before = await folderSnapshot(from);
+    if (before === null || await pathExists(to)) return false;
+    await mkdir(path.dirname(to), { recursive: true });
+    await cp(from, staging, { recursive: true, errorOnExist: true, force: false, preserveTimestamps: true });
+    if (await folderSnapshot(from) !== before) return false;
+    if (!(await moveToFreeSlot(staging, to))) return false;
+    await rm(from, { recursive: true, force: true });
+    return true;
+  } catch (error) {
+    throw new CrossVolumeMoveError(error);
+  } finally {
+    await rm(staging, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
 /**
  * Re-attaches or sets aside the ink of files renamed, moved or deleted
  * outside Libera, as `reconcilePdfSidecars` does for PDF side-cars. `files`
  * are the notebook's PDFs and images (library path and size). Shared
- * notebooks are skipped: the host moves their ink with their files.
+ * notebooks are skipped: the host moves their ink with their files. One
+ * folder that fails does not stop the others; the first failure is thrown
+ * once all were tried.
  */
 export async function reconcileInkFolders(notebook: string, files: Array<{ path: string; size: number }>, { now = Date.now() }: { now?: number } = {}) {
   if (!upkeepReattachesByContent(notebook)) return { reattached: 0, setAside: 0 };
@@ -607,75 +779,109 @@ export async function reconcileInkFolders(notebook: string, files: Array<{ path:
 
   const missing: Array<(typeof folders)[number] & { source: InkSource | null | "conflict" }> = [];
   const existence = fileExistence();
+  const listings: Listings = new Map();
+  let failure: { error: unknown } | null = null;
+  const failed = (error: unknown) => { failure ??= { error: error instanceof CrossVolumeMoveError ? error.original : error }; };
   for (const found of folders) {
-    if (await fileExists(found.libraryPath, existence) === false) missing.push({ ...found, source: await folderSource(found.folder) });
+    const there = await fileExists(found.libraryPath, existence);
+    // A file that is back has its full grace again the next time it goes.
+    if (there === true) missingSince.delete(found.folder);
+    else if (there === false) {
+      try { missing.push({ ...found, source: await folderSource(found.folder) }); } catch (error) { failed(error); }
+    }
   }
 
   const hashes = new Map<string, Promise<string | null>>();
   // A slot is taken by the file system's own rules (case included), as it is for PDF side-cars and in the check.
   const slotTaken = slotTakenBy(inkFolderPath);
   const match = (source: InkSource) => matchByIdentity({ size: source.size, contentHash: source.sha256 }, files, slotTaken, hashes);
+  /** The file is there under its old path or, by the name rule, another spelling of it. */
+  const presentAs = async (libraryPath: string): Promise<string | null> => (await fileExists(libraryPath, existence)) === true ? libraryPath : foldedAliasOf(libraryPath, listings);
 
   let reattached = 0;
   let setAside = 0;
   for (const found of missing) {
-    // Whole-folder reattachment needs one file for all pages: with several versions in it, nothing is moved or set aside.
-    if (found.source === "conflict") continue;
-    const target = found.source ? await match(found.source) : null;
-    if (target) {
-      const { notebook: owner, pathParts } = splitFilePath(target);
-      // Exclusive: ink saved there since the check above is kept, and the folder stays until the move has published it.
-      if (await moveToFreeSlot(found.folder, inkFolderPath(owner, pathParts))) {
+    try {
+      // The same file under the round's name rule (case or normalization only): its ink follows the new spelling.
+      const respelled = await foldedAliasOf(found.libraryPath, listings);
+      if (respelled && await followRespelling(found.libraryPath, respelled)) {
         missingSince.delete(found.folder);
         reattached += 1;
         continue;
       }
-    }
-    const first = missingSince.get(found.folder) ?? now;
-    missingSince.set(found.folder, first);
-    if (now - first >= ORPHAN_GRACE_MS) {
-      // The origin is recorded before the folder moves, so an interruption leaves a record to find, not ink with no past.
-      const name = `${now}-${randomUUID().slice(0, 8)}`;
-      const directory = path.join(orphanDirectory, name);
-      const record: InkOrphanRecord = { originalPath: found.libraryPath, orphanedAt: new Date(now).toISOString(), source: found.source };
-      await writeJsonAtomically(path.join(directory, "record.json"), record);
-      if (await moveToFreeSlot(found.folder, path.join(directory, "ink"))) setAside += 1;
-      // Nothing moved (the folder is gone): the record names nothing.
-      else await rm(directory, { recursive: true, force: true });
-      missingSince.delete(found.folder);
-    }
+      // Whole-folder reattachment needs one file for all pages: with several versions in it, nothing is moved or set aside.
+      if (found.source === "conflict") continue;
+      const target = found.source ? await match(found.source) : null;
+      if (target) {
+        const { notebook: owner, pathParts } = splitFilePath(target);
+        // Exclusive: ink saved there since the check above is kept, and the folder stays until the move has published it.
+        if (await moveFolderToFreeSlot(found.folder, inkFolderPath(owner, pathParts))) {
+          missingSince.delete(found.folder);
+          reattached += 1;
+          continue;
+        }
+      }
+      const first = missingSince.get(found.folder) ?? now;
+      missingSince.set(found.folder, first);
+      if (now - first >= ORPHAN_GRACE_MS) {
+        // The origin is recorded before the folder moves, so an interruption leaves a record to find, not ink with no past.
+        const name = `${now}-${randomUUID().slice(0, 8)}`;
+        const directory = path.join(orphanDirectory, name);
+        const record: InkOrphanRecord = { originalPath: found.libraryPath, orphanedAt: new Date(now).toISOString(), source: found.source };
+        await writeJsonAtomically(path.join(directory, "record.json"), record);
+        let moved = false;
+        try { moved = await moveFolderToFreeSlot(found.folder, path.join(directory, "ink")); }
+        catch (error) {
+          // A copy that did not complete (another volume): no record without ink is left, so a retry does not pile up empty ones.
+          if (error instanceof CrossVolumeMoveError) await rm(directory, { recursive: true, force: true }).catch(() => undefined);
+          throw error;
+        }
+        if (moved) setAside += 1;
+        // Nothing moved (the folder is gone, or changed while it was copied): the record names nothing.
+        else await rm(directory, { recursive: true, force: true });
+        missingSince.delete(found.folder);
+      }
+    } catch (error) { failed(error); }
   }
 
   for (const name of storedNames) {
-    const directory = path.join(orphanDirectory, name);
-    let record: InkOrphanRecord;
-    try { record = JSON.parse(await readFile(path.join(directory, "record.json"), "utf8")) as InkOrphanRecord; } catch { continue; }
-    if (typeof record.originalPath !== "string") continue;
-    const age = now - Date.parse(record.orphanedAt);
-    const kept = path.join(directory, "ink");
-    // A record without its folder is a set-aside interrupted before the move (the folder is still where it was) or whose folder is gone: it holds no ink.
-    if (!(await pathExists(kept))) {
-      if (age > ORPHAN_GRACE_MS) await rm(directory, { recursive: true, force: true });
-      continue;
-    }
-    // A folder whose pages name different versions of the file goes to none of them.
-    if (await folderSource(kept) === "conflict") continue;
-    let target: string | null = null;
-    if (record.source) target = await match(record.source);
-    // Without the bytes, only the file coming back under its old path is its own.
-    else if (await fileExists(record.originalPath, existence) && !(await slotTaken(record.originalPath))) target = record.originalPath;
-    if (target) {
-      const { notebook: owner, pathParts } = splitFilePath(target);
-      if (await moveToFreeSlot(kept, inkFolderPath(owner, pathParts))) {
-        await rm(directory, { recursive: true, force: true });
-        reattached += 1;
+    try {
+      const directory = path.join(orphanDirectory, name);
+      let record: InkOrphanRecord;
+      try { record = JSON.parse(await readFile(path.join(directory, "record.json"), "utf8")) as InkOrphanRecord; } catch { continue; }
+      if (typeof record.originalPath !== "string") continue;
+      const age = now - Date.parse(record.orphanedAt);
+      const kept = path.join(directory, "ink");
+      // A record without its folder is a set-aside interrupted before the move (the folder is still where it was) or whose folder is gone: it holds no ink.
+      if (!(await pathExists(kept))) {
+        if (age > ORPHAN_GRACE_MS) await rm(directory, { recursive: true, force: true });
         continue;
       }
-    }
-    const source = record.source ? { size: record.source.size, contentHash: record.source.sha256 } : null;
-    if (age > ORPHAN_RETENTION_MS && !(await mayBeBack({ originalPath: record.originalPath, source }, files, hashes, fileExists))) await rm(directory, { recursive: true, force: true });
+      // A folder whose pages name different versions of the file goes to none of them.
+      if (await folderSource(kept) === "conflict") continue;
+      let target: string | null = null;
+      if (record.source) target = await match(record.source);
+      else {
+        // Without the bytes, only the file coming back under its old path (or another spelling of its name) is its own.
+        const back = await presentAs(record.originalPath);
+        if (back && !(await slotTaken(back))) target = back;
+      }
+      if (target) {
+        const { notebook: owner, pathParts } = splitFilePath(target);
+        if (await moveFolderToFreeSlot(kept, inkFolderPath(owner, pathParts))) {
+          await rm(directory, { recursive: true, force: true });
+          reattached += 1;
+          continue;
+        }
+      }
+      const source = record.source ? { size: record.source.size, contentHash: record.source.sha256 } : null;
+      // The file may be back under another spelling of its name: that keeps the ink, as the exact path would.
+      const exists = async (libraryPath: string) => { const there = await fileExists(libraryPath, existence); return there !== false ? there : (await foldedAliasOf(libraryPath, listings)) !== null; };
+      if (age > ORPHAN_RETENTION_MS && !(await mayBeBack({ originalPath: record.originalPath, source }, files, hashes, exists))) await rm(directory, { recursive: true, force: true });
+    } catch (error) { failed(error); }
   }
 
+  if (failure) throw (failure as { error: unknown }).error;
   return { reattached, setAside };
 }
 
