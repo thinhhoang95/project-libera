@@ -187,6 +187,11 @@ function hasExternalFiles(dataTransfer: DataTransfer) {
   return Array.from(dataTransfer.types).includes("Files");
 }
 
+/** Leaving for a child of the same element is not leaving: only clear the highlight when the pointer is really out. */
+export function dragLeftElement(event: { currentTarget: { contains(node: Node | null): boolean }; relatedTarget: unknown }) {
+  return !event.currentTarget.contains(event.relatedTarget as Node | null);
+}
+
 function handleFileDragOverDirectory(
   event: DragEvent<HTMLElement>,
   draggingFile: LiberaFileNode | null,
@@ -460,7 +465,8 @@ const ShowFileDetailsContext = createContext(true);
  */
 const FileSelectionContext = createContext<{
   selection: FileSelection;
-  onFileClick: (file: LiberaFileNode, event: MouseEvent) => void;
+  /** `range`: the files a Shift+Click picks among, when that is not the file's notebook tree (the Starred list). */
+  onFileClick: (file: LiberaFileNode, event: MouseEvent, range?: LiberaFileNode[]) => void;
 }>({ selection: NO_SELECTION, onFileClick: () => undefined });
 
 function FileTooltipDetails({ file, tags }: { file: LiberaFileNode; tags: string[] }) {
@@ -744,15 +750,17 @@ function NotebookPanelContent({
       await onMoveFile(dropped[0], destinationPath);
       return;
     }
-    setSelection(NO_SELECTION);
+    // The selection stays until the files have left the tree: a cancelled, refused or failed move
+    // keeps it, and pruneSelection drops what a successful move took away.
     await onMoveFiles?.(dropped, destinationPath);
   }
 
   /** Plain click opens the file and clears the selection; Ctrl/Cmd toggles it; Shift picks a range of the notebook's visible files. */
-  function clickFile(file: LiberaFileNode, event: MouseEvent) {
+  function clickFile(file: LiberaFileNode, event: MouseEvent, range?: LiberaFileNode[]) {
     if (event.shiftKey) {
       const notebook = sortedTree.notebooks.find((item) => item.name === file.notebook);
-      const visible = notebook ? visibleFiles(notebook.children, (path) => expanded.has(path), visibleNodeLimitForPath, notebook.path) : [];
+      // A selection is one notebook's files, so the Starred range keeps to the clicked file's notebook.
+      const visible = range?.filter((item) => item.notebook === file.notebook) ?? (notebook ? visibleFiles(notebook.children, (path) => expanded.has(path), visibleNodeLimitForPath, notebook.path) : []);
       setSelection(selectRange(selection, file, visible));
       return;
     }
@@ -1318,6 +1326,8 @@ function StarredFilesSection({
             node={file}
             parentPath={parentPathForSidebarFile(file)}
             showNotebookName
+            dropDisabled
+            rangeScope={visibleFiles}
             starredFilePaths={starredFilePaths}
             onContextMenu={onContextMenu}
             onDropFile={onDropFile}
@@ -1443,6 +1453,8 @@ function NotebookSection({
   const collabShell = useCollabShell();
   const collabMenuLabels = useCollabNotebookMenuLabels();
   const recorder = useRecorderLauncher();
+  // A linked folder that is gone takes no drops: nothing can be written into it.
+  const dropFile = linkedFolder?.missing ? null : draggingFile;
   const isDragTarget = draggingFile && dragOverPath === notebook.path;
   const isUploadTarget = !draggingFile && dragOverPath === notebook.path;
   const visibleChildren = notebook.children.slice(
@@ -1552,7 +1564,7 @@ function NotebookSection({
       data-related={isRelated}
       style={{ "--notebook-color": notebook.color } as CSSProperties}
       onDragOver={(event) => {
-        if (draggingFile || !hasExternalFiles(event.dataTransfer)) {
+        if (draggingFile || linkedFolder?.missing || !hasExternalFiles(event.dataTransfer)) {
           return;
         }
 
@@ -1566,7 +1578,7 @@ function NotebookSection({
         }
       }}
       onDrop={(event) => {
-        if (draggingFile || !hasExternalFiles(event.dataTransfer)) {
+        if (draggingFile || linkedFolder?.missing || !hasExternalFiles(event.dataTransfer)) {
           return;
         }
 
@@ -1582,15 +1594,15 @@ function NotebookSection({
         }`}
         onContextMenu={openNotebookContextMenu}
         onDragOver={(event) => {
-          if (!draggingFile) {
+          if (!dropFile) {
             return;
           }
 
           event.preventDefault();
           onSetDragOverPath(notebook.path);
         }}
-        onDragLeave={() => onSetDragOverPath("")}
-        onDrop={(event) => handleFileDropOnDirectory(event, draggingFile, notebook.path, onDropFile)}
+        onDragLeave={(event) => { if (dragLeftElement(event)) onSetDragOverPath(""); }}
+        onDrop={(event) => handleFileDropOnDirectory(event, dropFile, notebook.path, onDropFile)}
       >
         <button
           className="libera-sidebar-icon-button h-5 w-5 shrink-0 rounded text-sm"
@@ -1654,18 +1666,18 @@ function NotebookSection({
           onDragOver={(event) =>
             handleFileDragOverDirectory(
               event,
-              draggingFile,
+              dropFile,
               notebook.path,
               onSetDragOverPath,
             )
           }
           onDragLeave={(event) => {
-            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+            if (dragLeftElement(event)) {
               onSetDragOverPath("");
             }
           }}
           onDrop={(event) =>
-            handleFileDropOnDirectory(event, draggingFile, notebook.path, onDropFile)
+            handleFileDropOnDirectory(event, dropFile, notebook.path, onDropFile)
           }
         >
           <div className="space-y-1">
@@ -1895,9 +1907,15 @@ function TreeNodeRow({
   onUploadFiles,
   parentPath,
   showNotebookName = false,
+  dropDisabled = false,
+  rangeScope,
   starredFilePaths,
   visibleNodeLimitForPath,
 }: {
+  /** A Starred row: the drop would land in that file's own folder, which the list does not show, so it takes none. */
+  dropDisabled?: boolean;
+  /** The files Shift+Click ranges over (the Starred list). */
+  rangeScope?: LiberaFileNode[];
   activeTabId: string;
   depth: number;
   dragOverPath: string;
@@ -1956,7 +1974,7 @@ function TreeNodeRow({
             event.dataTransfer.dropEffect = draggingFile ? "move" : "copy";
             onSetDragOverPath(node.path);
           }}
-          onDragLeave={() => onSetDragOverPath("")}
+          onDragLeave={(event) => { if (dragLeftElement(event)) onSetDragOverPath(""); }}
           onDrop={(event) => {
             event.preventDefault();
             event.stopPropagation();
@@ -2069,19 +2087,19 @@ function TreeNodeRow({
       aria-selected={isSelected(selection, node.path)}
       style={{ paddingLeft: `${8 + depth * 16}px` }}
       type="button"
-      onClick={(event) => onFileClick(node, event)}
+      onClick={(event) => onFileClick(node, event, rangeScope)}
       onContextMenu={(event) => onContextMenu(event, { kind: "file", file: node })}
       onDragOver={(event) =>
         handleFileDragOverDirectory(
           event,
-          draggingFile,
+          dropDisabled ? null : draggingFile,
           parentPath,
           onSetDragOverPath,
         )
       }
-      onDragLeave={() => onSetDragOverPath("")}
+      onDragLeave={(event) => { if (dragLeftElement(event)) onSetDragOverPath(""); }}
       onDrop={(event) =>
-        handleFileDropOnDirectory(event, draggingFile, parentPath, onDropFile)
+        handleFileDropOnDirectory(event, dropDisabled ? null : draggingFile, parentPath, onDropFile)
       }
       onDragStart={(event) => {
         event.dataTransfer.effectAllowed = "move";
