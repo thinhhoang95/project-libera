@@ -906,9 +906,12 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     // embed's image, left behind when the note moved: it is kept for the
     // embed to be pointed at again, never offered to Acknowledge.
     const embedded = new Set<string>();
+    // An image address that can't be read may be any image: with one, no image is offered for removal.
+    let addressUnread = false;
     if (unused.some((asset) => !asset.toLowerCase().endsWith(".py"))) {
       for (const note of readable) {
         for (const target of markdownImageTargets(note.documentPath, note.content)) {
+          if (!target.absolutePath && !target.libraryPath) addressUnread = true;
           if (target.absolutePath && await probeFileOnce(target.absolutePath) !== "present") embedded.add(foldedFileName(path.basename(target.absolutePath)));
         }
       }
@@ -942,7 +945,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
           : { severity: "warning", path: asset, message: "Python code of a note that is not in the notebook.", fix: "Move the note back and it is found again; remove the code only once you no longer need it.", ...(ownersCut ? {} : { clear: [{ type: "asset", path: asset, ...(pythonSidecarDocumentPath(asset) ? { gone: pythonSidecarDocumentPath(asset)! } : {}) }] }), ...say("pythonCodeOrphan", undefined, "pythonCodeOrphanFix") }
         : wanted
           ? { severity: "info", path: asset, message: "An image no note shows, but a note shows a missing image of this name: probably this one, left behind when the note moved.", fix: "Point the note's image at this file, or insert it again.", ...say("imageLeftBehind", undefined, "imageLeftBehindFix") }
-          : { severity: "info", path: asset, message: "An image no note shows (an open, unsaved note may still use it).", fix: "It can be removed once no note needs it.", clear: [{ type: "asset", path: asset }], ...say("imageUnused", undefined, "imageUnusedFix") });
+          : { severity: "info", path: asset, message: "An image no note shows (an open, unsaved note may still use it).", fix: "It can be removed once no note needs it.", ...(addressUnread ? {} : { clear: [{ type: "asset", path: asset }] }), ...say("imageUnused", undefined, "imageUnusedFix") });
     }
     // A shared notebook's notes (or images) not yet on this computer may be the ones that use this code or these images.
     const waiting = shared && (manifestBefore?.state !== "ok" || (await undelivered()).length) ? [manifestUnavailable ?? said("sharedFilesNotHere", "Some of the shared notebook's files are not on this computer yet, so images and code that only they use can't be told apart.")] : [];
