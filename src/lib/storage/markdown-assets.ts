@@ -8,7 +8,7 @@ import {
   normalizeAssetFileName,
   getContentType,
 } from "@/lib/storage/file-types";
-import { copyFileIfExists, findAvailableFilePath, moveFileIfExists, moveWithoutReplacing, pathExists } from "@/lib/storage/fs-utils";
+import { copyFileIfExists, findAvailableFilePath, isCaseOnlyRename, moveFileIfExists, moveWithoutReplacing, pathExists, renameCaseAlias } from "@/lib/storage/fs-utils";
 import {
   ensureAdminRoot,
   filePathFromParts,
@@ -367,11 +367,18 @@ export async function movePythonSidecar(from: string, to: string, { replace = tr
   const source = pythonSidecarFile(from);
   if (!(await pathExists(source.absolutePath))) return true;
   const destination = pythonSidecarFile(to);
-  if (!replace && await pathExists(destination.absolutePath)) return false;
+  if (source.absolutePath === destination.absolutePath) return true;
   const code = await readFile(source.absolutePath, "utf8");
   const figures = (await readdir(path.dirname(source.absolutePath))).filter((name) => parsePythonFigureSource(name)).map((name) => `${pythonFigureSourcePrefix(from)}/${name}`);
   const previous = source.notebook === destination.notebook ? [...previousPythonFigureSources(code), ...figures] : [];
-  await writeFile(source.absolutePath, withPreviousPythonFigureSources(code, previous));
+  // The destination is the source under another spelling (a case-only rename on a case-insensitive disk): it is not "taken", it is respelled in place.
+  if (await isCaseOnlyRename(source.absolutePath, destination.absolutePath)) {
+    await respellPythonSidecar(source.notebook, destination.absolutePath);
+    await writeFile(destination.absolutePath, withPreviousPythonFigureSources(code, previous));
+    return true;
+  }
+  if (!replace && await pathExists(destination.absolutePath)) return false;
+  // The source is never written before the move has succeeded: a refused move leaves the code exactly as it was.
   if (exclusive) await moveWithoutReplacing(source.absolutePath, destination.absolutePath);
   else if (replace) await moveFileIfExists(source.absolutePath, destination.absolutePath);
   else {
@@ -380,8 +387,48 @@ export async function movePythonSidecar(from: string, to: string, { replace = tr
     catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") return false; throw error; }
     await rm(source.absolutePath, { force: true });
   }
+  // The moved code now carries which figures it owns; if that can't be written the code goes back unchanged, not half-moved.
+  try { await writeFile(destination.absolutePath, withPreviousPythonFigureSources(code, previous)); }
+  catch (error) {
+    await moveWithoutReplacing(destination.absolutePath, source.absolutePath).catch(() => undefined);
+    throw error;
+  }
   await removeEmptyAssetParents(source.notebook, path.dirname(source.absolutePath));
   return true;
+}
+
+/** Whether a folder holds nothing but Python code (an image or any other file of a note keeps its folder's spelling). */
+async function holdsOnlyPythonCode(directory: string): Promise<boolean> {
+  let entries;
+  try { entries = await readdir(directory, { withFileTypes: true }); } catch { return false; }
+  for (const entry of entries) {
+    if (entry.isDirectory() ? !(await holdsOnlyPythonCode(path.join(directory, entry.name))) : !entry.name.toLowerCase().endsWith(".py")) return false;
+  }
+  return true;
+}
+
+/**
+ * The code file of a case-only rename spelled as its destination, folder by folder from `_assets` down:
+ * a folder is respelled only when it holds nothing but Python code (the images of a note stay where
+ * their paths say, so their folder keeps its spelling); the file itself always is. Never replaces.
+ */
+async function respellPythonSidecar(notebook: string, destinationFile: string) {
+  const root = path.join(notebookPath(notebook), MARKDOWN_ASSETS_DIR);
+  const wanted = path.relative(root, destinationFile).split(path.sep);
+  let directory = root;
+  for (let index = 0; index < wanted.length; index += 1) {
+    const names = await readdir(directory);
+    const want = wanted[index];
+    const actual = names.includes(want) ? want : names.find((name) => name.toLowerCase() === want.toLowerCase());
+    if (actual === undefined) throw new StorageError("The Python code was not found where it was expected.", 409);
+    const last = index === wanted.length - 1;
+    let name = actual;
+    if (actual !== want && (last || await holdsOnlyPythonCode(path.join(directory, actual)))) {
+      await renameCaseAlias(path.join(directory, actual), path.join(directory, want));
+      name = want;
+    }
+    directory = path.join(directory, name);
+  }
 }
 
 export async function copyPythonSidecar(from: string, to: string) {
