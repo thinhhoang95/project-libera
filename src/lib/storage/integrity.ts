@@ -31,7 +31,7 @@ import { assertSafeSegment, audioPeaksPath, getLinkedFolder, withReadOnlyStorage
 import { inspectReferenceLibrary } from "@/lib/storage/references";
 import { inspectLegacyReviewKeys, inspectReviewDocumentProblems, inspectReviewKeys } from "@/lib/storage/review-files";
 import { listSidecars, findOrphanedSidecars, SIDECAR_KINDS, type SidecarInspection } from "@/lib/storage/sidecars";
-import { matchByIdentity, mayBeBack, readOrphans, slotTakenBy, upkeepReattachesByContent } from "@/lib/storage/pdf-sidecars";
+import { matchByIdentity, mayBeBack, pdfSpellingOf, readOrphans, slotTakenBy, upkeepReattachesByContent } from "@/lib/storage/pdf-sidecars";
 import { hostOwnsSideFile, livePdfMarkIds, manifestFile, manifestHasFile, mayBeArriving, parseHostRecords, readManifestView, readSharedSync, type ManifestView } from "@/lib/storage/shared-manifest-view";
 import { isGeneratedPath, isShareablePath, STATE_DIRECTORY } from "../../../electron/collab/notebooks/fs-ops";
 import { getFileType } from "@/lib/storage/file-types";
@@ -845,6 +845,8 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
       let moved = upkeepReattachesByContent(notebook) ? await owner(orphan.kind, getFileType(orphan.filePath), identities.get(orphan.path)) : null;
       // Ink follows its file renamed only in case or Unicode normalization (ink.ts reconcileInkFolders, by the name rule), with or without recorded bytes.
       if (moved === null && orphan.kind === "ink" && upkeepReattachesByContent(notebook)) moved = await foldedAliasOf(orphan.filePath);
+      // A PDF's notes follow it renamed only in case or normalization too (pdf-sidecars.ts reconcilePdfSidecars, pdfSpellingOf): the same rule the upkeep applies.
+      if (moved === null && orphan.kind !== "ink" && upkeepReattachesByContent(notebook) && follows(orphan.kind, getFileType(orphan.filePath))) moved = pdfSpellingOf(orphan.filePath, await filesOfType("pdf"));
       // Offered for removal only when every input is known: a side file that could not be read, a listing that was cut, a candidate that could not be hashed may each hide the file it follows.
       const decided = moved === null && !unread.has(orphan.path) && (shared || (!inventoryCut && !candidatesCut));
       add(moved !== null && moved !== "unknown"
