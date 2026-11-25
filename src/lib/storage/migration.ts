@@ -47,6 +47,7 @@ import { fileExistence, libraryNotebookNames, linkCandidates, readNotebookLinkIn
 import { extractNotebookLinkDestinations } from "@/lib/storage/notebook-links";
 import { isVisibleTreeEntry, listVisibleNotebookFiles } from "@/lib/storage/tree";
 import { renameFileMetadataPathPrefix, renameFileMetadataPaths, renameNotebookPanelExpandedPathPrefix } from "@/lib/storage/workspace-metadata";
+import { followPathKeyedStores } from "@/lib/storage/path-keyed-stores";
 import type { LiberaLinkRewrites, LiberaNotebookMetadata } from "@/lib/types";
 import { applyMovedLinks, followLinkRewrites, planMovedLinks, type AppliedLinkRewrite, type PathMove, type PlannedLinkRewrite } from "@/lib/storage/move-links";
 import { rewriteMovedPaths } from "@/lib/move-rewrites";
@@ -1474,6 +1475,7 @@ async function finalize(journal: Journal, states: ItemState[]) {
       await renameNotebookPanelExpandedPathPrefix(folder.from, folder.to);
       await renameFileMetadataPathPrefix(folder.from, folder.to);
     }
+    await followPathKeyedStores([...[...moves].map(([from, to]) => ({ from, to })), ...(journal.finishedFolders ?? []).map(({ from, to }) => ({ from, to, folder: true }))]);
   });
 
   await run("assets", async () => {

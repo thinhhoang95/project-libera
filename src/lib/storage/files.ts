@@ -10,6 +10,7 @@ import { readWorkspaceMetadata } from "./workspace-metadata";
 import { detachReferenceAttachments, inspectReferenceLibrary, moveReferenceAttachments } from "./references";
 import { libraryNotebookNames } from "./library-links";
 import { followMovedLinks } from "./move-links";
+import { dropPathKeyedStores, followPathKeyedStores } from "./path-keyed-stores";
 import { rewriteMovedPaths } from "@/lib/move-rewrites";
 import { copyReferencesOnMove, type ReferenceMoveResult } from "@/lib/references/moves";
 import { copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -421,6 +422,7 @@ async function moveDerivedRecords(from: string, to: string) {
   });
   await attempt("attachments", () => moveReferenceAttachments(from, to));
   await attempt("metadata", () => renameFileMetadataPath(from, to));
+  await followPathKeyedStores([{ from, to }]);
   return { unfinished, errors };
 }
 
@@ -823,6 +825,7 @@ export async function deleteFolder(relativePath: string) {
   await discardReviewsUnder(relativeFilePath(current.notebook, current.pathParts));
   await detachReferenceAttachments(relativeFilePath(current.notebook, current.pathParts));
   await removeFileMetadataPathPrefix(relativeFilePath(current.notebook, current.pathParts));
+  await dropPathKeyedStores([relativeFilePath(current.notebook, current.pathParts)]);
   await removeNotebookPanelExpandedPathPrefix(
     relativeFilePath(current.notebook, current.pathParts),
   );
@@ -1052,6 +1055,7 @@ export async function deleteFile(relativePath: string) {
   await discardReviewsAt(relativeFilePath(notebook, pathParts));
   await detachReferenceAttachments(relativeFilePath(notebook, pathParts));
   await removeFileMetadataPath(relativeFilePath(notebook, pathParts));
+  await dropPathKeyedStores([relativeFilePath(notebook, pathParts)]);
   notifySearchChanges([relativeFilePath(notebook, pathParts)]);
 
   return getTree();
@@ -1185,6 +1189,7 @@ async function moveFolderWithRecords(notebook: string, fromParts: string[], toPa
     { run: () => moveReferenceAttachments(from, to), undo: () => moveReferenceAttachments(to, from) },
     { run: () => renameFileMetadataPathPrefix(from, to), undo: () => renameFileMetadataPathPrefix(to, from) },
     { run: () => renameNotebookPanelExpandedPathPrefix(from, to), undo: () => renameNotebookPanelExpandedPathPrefix(to, from) },
+    { run: () => followPathKeyedStores([{ from, to, folder: true }]), undo: () => followPathKeyedStores([{ from: to, to: from, folder: true }]) },
   ];
   const done: (() => Promise<unknown>)[] = [];
   for (const step of steps) {

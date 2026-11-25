@@ -1,5 +1,6 @@
 import { completeRootTransition, pendingRootTransitions } from "@/lib/collab/root-transitions";
 import { sharedNotebookMarker } from "@/lib/collab/shared-notebook";
+import { withMovedReviewsUnder } from "@/lib/agent/review-store";
 import { followNotebookRootRename } from "@/lib/storage/notebooks";
 import { readWorkspaces, writeWorkspaces } from "@/lib/storage/workspaces";
 import { trackWorkspaceFileChange } from "@/lib/workspaces";
@@ -15,14 +16,34 @@ let running: Promise<void> | null = null;
 // A record that stays unproven this long is dropped: the folder it names is not coming back.
 const ABANDONED_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
 
+/**
+ * The pending transitions in an order that never merges two notebooks' records: a transition waits while
+ * another one (of a different project) still moves records away from the name it moves them to. A cycle
+ * (two folders that swapped names) has no safe order with one-step moves, so it is held whole: its records
+ * stay where they are, and the next look finds it again. Same-project chains were already folded into one move.
+ */
+function applicable(transitions: ReturnType<typeof pendingRootTransitions>) {
+  const order: typeof transitions = [];
+  let remaining = transitions.filter((transition) => transition.from !== transition.to);
+  while (remaining.length) {
+    const free = remaining.filter((transition) => !remaining.some((other) => other !== transition && other.from === transition.to));
+    if (!free.length) break; // Only cycles are left: held.
+    order.push(...free);
+    remaining = remaining.filter((transition) => !free.includes(transition));
+  }
+  return order;
+}
+
 async function apply(directory: string) {
-  // Oldest first; a chain A to B to C arrives as one move A to C (pendingRootTransitions).
-  for (const transition of pendingRootTransitions(directory)) {
-    if (transition.from === transition.to) { completeRootTransition(directory, transition); continue; }
+  const all = pendingRootTransitions(directory);
+  for (const transition of all) if (transition.from === transition.to) completeRootTransition(directory, transition);
+  for (const transition of applicable(all)) {
     // Only for the folder the host says it bound the project to: the marker there must name the same project.
     const marker = sharedNotebookMarker(transition.to);
     if (marker?.projectId === transition.projectId) {
       await followNotebookRootRename(transition.from, transition.to);
+      // The pending agent reviews of its files: the folder moved on its own, so their entries follow now. A review the destination already has stays, and is Check Notebook's to report.
+      await withMovedReviewsUnder(transition.from, transition.to, async () => undefined).catch((error) => console.error(`[root-transitions] Pending reviews of ${transition.from} did not follow:`, error));
       const library = await readWorkspaces();
       const next = trackWorkspaceFileChange(library, null, { moved: { from: transition.from, to: transition.to } });
       if (JSON.stringify({ ...next, updatedAt: 0 }) !== JSON.stringify({ ...library, updatedAt: 0 })) await writeWorkspaces(next);
