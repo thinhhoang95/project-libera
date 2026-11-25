@@ -23,16 +23,17 @@ import { StorageError } from "@/lib/storage/errors";
 import { getFileType } from "@/lib/storage/file-types";
 import { writeJsonAtomically } from "@/lib/storage/fs-utils";
 import { cleanupMarkdownImageAssets, copyMarkdownImageAssets, markdownImageTargets, readMarkdownAssetDocuments, type MarkdownAssetBatch } from "@/lib/storage/markdown-assets";
-import { moveReviewPaths } from "@/lib/storage/markdown-reviews";
+import { moveReviewPaths, rewriteReviewSnapshots } from "@/lib/storage/markdown-reviews";
 import { destinationRecords } from "@/lib/storage/destination-records";
 import { checkNothingLeftAt } from "@/lib/storage/integrity";
-import { assertLifecycleReservation, claimNotebooksForMigration, migrationJournalDirectory, migrationJournalsChanged, withLifecycleReservation } from "@/lib/storage/migration-fence";
+import { assertLifecycleReservation, claimNotebooksForMigration, migrationJournalDirectory, migrationJournalsChanged, waitForInFlightWriters, withLifecycleReservation } from "@/lib/storage/migration-fence";
 import { createNotebook, deleteNotebook } from "@/lib/storage/notebooks";
 import {
   assertSafeSegment,
   assertSafeUserSegment,
   ensureAdminRoot,
   filePathFromParts,
+  getStateRoot,
   getLinkedFolder,
   itemPath,
   markdownAssetsDirectoryPathFromParts,
@@ -40,7 +41,8 @@ import {
   splitFilePath,
   withReadOnlyStorage,
 } from "@/lib/storage/paths";
-import { inspectReferenceLibrary, moveReferenceAttachmentsBatch, readReferenceLibrary } from "@/lib/storage/references";
+import { inspectReferenceLibrary, moveReferenceAttachmentsBatch, readReferenceLibrary, ReferenceRevisionConflict, updateReferenceLibrary } from "@/lib/storage/references";
+import type { ReferenceAttachment, ReferenceLibraryOp } from "@/lib/references/types";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { existingSidecars, moveFileSidecars, SIDECAR_KINDS } from "@/lib/storage/sidecars";
 import { fileExistence, libraryNotebookNames, linkCandidates, readNotebookLinkIndex, resolveLinkWith } from "@/lib/storage/library-links";
@@ -48,8 +50,12 @@ import { extractNotebookLinkDestinations } from "@/lib/storage/notebook-links";
 import { isVisibleTreeEntry, listVisibleNotebookFiles } from "@/lib/storage/tree";
 import { renameFileMetadataPathPrefix, renameFileMetadataPaths, renameNotebookPanelExpandedPathPrefix } from "@/lib/storage/workspace-metadata";
 import type { LiberaLinkRewrites, LiberaNotebookMetadata } from "@/lib/types";
-import { applyMovedLinks, followLinkRewrites, planMovedLinks, type AppliedLinkRewrite, type PathMove, type PlannedLinkRewrite } from "@/lib/storage/move-links";
-import { rewriteMovedPaths } from "@/lib/move-rewrites";
+import { applyMovedLinks, followLinkRewrites, planMovedLinks, replanMovedNote, type AppliedLinkRewrite, type PathMove, type PlannedLinkRewrite } from "@/lib/storage/move-links";
+import { movedPathEdits, rewriteMovedPaths } from "@/lib/move-rewrites";
+import { foldedFileName } from "@/lib/storage/file-names";
+import { entryForKey, libraryEntriesByKey } from "@/lib/references/format";
+import type { ReviewDocument } from "@/lib/markdown-review";
+import { inspectReviewDocuments } from "@/lib/storage/review-files";
 
 // Notebook migration: move a selection of files and folders from one local
 // notebook to another (or to a new one), with everything Libera keeps for
@@ -220,6 +226,8 @@ type Journal = {
   stepFailures?: Partial<Record<FinalizeStep, { count: number; note: string }>>;
   /** The reference entries of moved PDFs were copied (the step's counts are in `referenceEntries`); a repeat does not copy again. */
   entriesCopied?: boolean;
+  /** The history step rewrote the pending reviews' baselines (once; a repeat would apply the key maps twice). */
+  historyBaselines?: boolean;
   finishedFolders?: { from: string; to: string }[];
   references?: ReferenceMoveResult | null;
   /**
@@ -408,6 +416,9 @@ function processAlive(pid: number) {
   catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
 }
 
+/** How long a freshly created lock file without a readable owner is trusted to be mid-write. */
+const LOCK_GRACE_MS = 10_000;
+
 /** A lock file in the journal folder (one write to take it, one to release it), with the in-process flag in front. */
 async function exclusively<T>(task: () => Promise<T>): Promise<T> {
   const holder = globalThis as { [LOCK]?: boolean };
@@ -425,9 +436,15 @@ async function exclusively<T>(task: () => Promise<T>): Promise<T> {
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST" || attempt > 0) throw new StorageError("Another migration is running. Wait for it to finish.", 409);
         // A lock whose process is gone (a crash) is taken over.
-        const owner = await readFile(lockPath, "utf8").then((text) => JSON.parse(text) as { pid?: number }, () => ({ pid: undefined }));
+        const owner = await readFile(lockPath, "utf8").then((text) => { try { return JSON.parse(text) as { pid?: number }; } catch { return { pid: undefined }; } }, () => ({ pid: undefined }));
         if (typeof owner.pid === "number" && owner.pid !== process.pid && processAlive(owner.pid)) {
           throw new StorageError("Another migration is running. Wait for it to finish.", 409);
+        }
+        // A lock file that is empty or unparsable may be one its owner is still writing (created,
+        // pid not written yet): only an old one is stale. A lock that can't be dated is not taken.
+        if (typeof owner.pid !== "number") {
+          const age = await stat(lockPath).then((stats) => Date.now() - stats.mtimeMs, (statError: NodeJS.ErrnoException) => statError.code === "ENOENT" ? Infinity : 0);
+          if (age < LOCK_GRACE_MS) throw new StorageError("Another migration is running. Wait for it to finish.", 409);
         }
         await rm(lockPath, { force: true });
       }
@@ -453,6 +470,24 @@ function isLocalNotebook(name: string) {
 }
 
 const SPACED_NAME = (part: string) => part !== part.trim();
+
+/** A library path as the one name rule compares it (NFC plus case folding, per segment: file-names.ts). */
+const foldedPath = (libraryPath: string) => libraryPath.split("/").map(foldedFileName).join("/");
+
+/** The suffix of a recording's companion transcript (storage/transcripts.ts), left beside it by a shared notebook's takedown. */
+const COMPANION_SUFFIX = ".transcript";
+
+const CACHE_SIDECARS: ReadonlySet<string> = new Set(SIDECAR_KINDS.filter((kind) => kind.cache).map((kind) => kind.id));
+
+/** Whether any of these sidecars holds something of a file's (as destinationRecords.at counts it): not a cache, not an ink folder with no strokes. */
+async function holdsRecords(sidecars: { kind: string; path: string }[]) {
+  for (const sidecar of sidecars) {
+    if (CACHE_SIDECARS.has(sidecar.kind)) continue;
+    if (sidecar.kind === "ink" && !(await readdir(sidecar.path).catch(() => ["?"])).length) continue;
+    return true;
+  }
+  return false;
+}
 
 function relativeParts(source: string, libraryPath: string) {
   if (typeof libraryPath !== "string") throw new StorageError("Paths must be library paths.", 400);
@@ -545,7 +580,16 @@ async function expandSelection(source: string, paths: string[]) {
   const add = (fromParts: string[], candidate: Omit<Candidate, "fromParts" | "base">) => {
     if (!candidates.has(fromParts.join("/"))) candidates.set(fromParts.join("/"), { fromParts, base, ...candidate });
   };
+  /** Folders already walked: a selected folder inside one of them is part of that walk, not a second one. */
+  const walked = new Set<string>();
+  /** A recording's companion transcript (`<name>.transcript`, left beside it by a shared notebook's takedown) travels with it. */
+  const addCompanion = async (recordingParts: string[]) => {
+    const parts = [...recordingParts.slice(0, -1), `${recordingParts.at(-1)}.transcript`];
+    const stats = await lstatOrNull(rawItemPath(source, parts));
+    if (stats?.isFile()) add(parts, { kind: "other", fileType: null, identity: identityOf(stats), bytes: stats.size });
+  };
   const walk = async (folderParts: string[]) => {
+    walked.add(folderParts.join("/"));
     folders.push({ parts: folderParts, base });
     let entries: Dirent[];
     try { entries = await readdir(rawItemPath(source, folderParts), { withFileTypes: true }); }
@@ -558,8 +602,10 @@ async function expandSelection(source: string, paths: string[]) {
       if (visible && SPACED_NAME(entry.name) && (entry.isDirectory() || getFileType(entry.name))) {
         problems.push(`"${[source, ...parts].join("/")}" starts or ends with a space. Rename it before migrating.`);
       } else if (entry.isDirectory() && visible) await walk(parts);
-      else if (entry.isFile() && visible && getFileType(entry.name)) add(parts, { kind: "file", fileType: getFileType(entry.name), identity: identityOf(stats), bytes: stats.size });
-      else if (entry.isDirectory()) {
+      else if (entry.isFile() && visible && getFileType(entry.name)) {
+        add(parts, { kind: "file", fileType: getFileType(entry.name), identity: identityOf(stats), bytes: stats.size });
+        if (getFileType(entry.name) === "audio") await addCompanion(parts);
+      } else if (entry.isDirectory()) {
         const inner = await summarize(rawItemPath(source, parts));
         add(parts, { kind: "other", fileType: null, identity: identityOf(stats), bytes: inner.bytes, count: inner.count });
       } else add(parts, { kind: "other", fileType: null, identity: identityOf(stats), bytes: stats.size });
@@ -572,10 +618,14 @@ async function expandSelection(source: string, paths: string[]) {
     const stats = await lstatOrNull(itemPath(source, parts));
     if (!stats) throw new StorageError(`${selected} no longer exists. Review the selection again.`, 409);
     if (stats.isSymbolicLink()) throw new StorageError(`${selected} is a link, which can't be migrated.`, 400);
+    // Inside a folder this selection already walked (parent and child both selected): its content is in, once.
+    if (walked.has(parts.join("/")) || candidates.has(parts.join("/"))) continue;
     base = parts.length - 1;
     if (stats.isDirectory()) await walk(parts);
-    else if (stats.isFile() && getFileType(parts.at(-1) ?? "")) add(parts, { kind: "file", fileType: getFileType(parts.at(-1) ?? ""), identity: identityOf(stats), bytes: stats.size });
-    else throw new StorageError(`${selected} can't be migrated.`, 400);
+    else if (stats.isFile() && getFileType(parts.at(-1) ?? "")) {
+      add(parts, { kind: "file", fileType: getFileType(parts.at(-1) ?? ""), identity: identityOf(stats), bytes: stats.size });
+      if (getFileType(parts.at(-1) ?? "") === "audio") await addCompanion(parts);
+    } else throw new StorageError(`${selected} can't be migrated.`, 400);
   }
   return { candidates: [...candidates.values()], folders, problems };
 }
@@ -689,7 +739,7 @@ async function buildPlan(request: MigrationRequest, { readOnly = false }: { read
     let names = listings.get(directory);
     if (!names) {
       names = new Map();
-      for (const name of create ? [] : await readdir(directory).catch(() => [] as string[])) names.set(name.toLowerCase(), [...(names.get(name.toLowerCase()) ?? []), name]);
+      for (const name of create ? [] : await readdir(directory).catch(() => [] as string[])) names.set(foldedFileName(name), [...(names.get(foldedFileName(name)) ?? []), name]);
       listings.set(directory, names);
     }
     return names;
@@ -700,7 +750,7 @@ async function buildPlan(request: MigrationRequest, { readOnly = false }: { read
     let current = notebookPath(destinationName);
     const spelled: string[] = [];
     for (const part of parts) {
-      const names = (await listing(current)).get(part.toLowerCase());
+      const names = (await listing(current)).get(foldedFileName(part));
       if (!names) return null;
       const name = names.includes(part) ? part : names[0];
       spelled.push(name);
@@ -727,7 +777,7 @@ async function buildPlan(request: MigrationRequest, { readOnly = false }: { read
     for (let index = 1; index <= parts.length; index += 1) {
       const prefix = parts.slice(0, index);
       const libraryPath = [destinationName, ...prefix].join("/");
-      const key = libraryPath.toLowerCase();
+      const key = foldedPath(libraryPath);
       if (takenFiles.has(key)) blockers.push(`${libraryPath} would be both a file and a folder.`);
       const planned = plannedSpellings.get(key);
       if (planned === libraryPath) continue;
@@ -760,6 +810,10 @@ async function buildPlan(request: MigrationRequest, { readOnly = false }: { read
   if (records?.blocker) blockers.push(records.blocker);
   /** Items renamed only because records of an earlier file are at their name, by target path. */
   const keptFree = new Set<string>();
+  /** The name each planned item got, by its source path under the selection (a companion transcript follows its recording's). */
+  const chosenNames = new Map<string, string>();
+  /** The `_assets` folders planned notes will own (folded, relative to the destination notebook). */
+  const takenAssets = new Set<string>();
   const ordered = [...candidates].sort((a, b) => a.fromParts.join("/").localeCompare(b.fromParts.join("/")));
   for (const candidate of ordered) {
     const parent = placed(candidate.fromParts, candidate.base).slice(0, -1);
@@ -767,28 +821,45 @@ async function buildPlan(request: MigrationRequest, { readOnly = false }: { read
     await reserveFolder(parent);
     let next = name;
     let firstClash: "file" | "records" | null = null;
-    for (let index = 1; ; index += 1) {
+    // A recording's companion transcript is named after the recording, whichever name the recording got (the recording's pick checked it free).
+    const recordingName = candidate.kind === "other" && name.endsWith(COMPANION_SUFFIX) ? chosenNames.get(candidate.fromParts.slice(0, -1).concat(name.slice(0, -COMPANION_SUFFIX.length)).join("/")) : undefined;
+    if (recordingName !== undefined) {
+      next = `${recordingName}${COMPANION_SUFFIX}`;
+      takenFiles.add(foldedPath([destinationName, ...parent, next].join("/")));
+    } else for (let index = 1; ; index += 1) {
       const target = [destinationName, ...parent, next].join("/");
-      const key = target.toLowerCase();
+      const key = foldedPath(target);
       let clash = takenFiles.has(key) || takenFolders.has(key);
       let byRecords = false;
+      // Notes whose sanitized names meet (`a b.md`, `a-b.md`; `x.md`, `x.markdown`) would own one `_assets` folder: planned apart.
+      const owned = candidate.fileType === "markdown" ? ownedAssetDirectories(target).map((directory) => foldedPath(path.relative(notebookPath(destinationName), directory).split(path.sep).join("/"))) : [];
+      if (!clash && owned.some((directory) => takenAssets.has(directory))) clash = true;
+      // A companion transcript already at the arriving recording's name would be taken for its own.
+      const companion = candidate.fileType === "audio" ? [...parent, `${next}${COMPANION_SUFFIX}`] : null;
+      if (!clash && companion) clash = takenFiles.has(foldedPath([destinationName, ...companion].join("/"))) || (!create && !!(await entryAt(companion)));
       if (!clash && !create) clash = !!(await entryAt([...parent, next]));
       if (!clash && records && !records.blocker && candidate.kind === "file") {
         byRecords = (await records.at(destinationName, [...parent, next], candidate.fileType)).length > 0;
         clash = byRecords;
       }
       if (!clash && !create) {
-        if (candidate.kind === "file") clash = (await existingSidecars(destinationName, [...parent, next], candidate.fileType)).length > 0;
+        // Caches (made again) and an ink folder with no strokes are not a file's records: they don't take the name.
+        if (candidate.kind === "file") clash = await holdsRecords(await existingSidecars(destinationName, [...parent, next], candidate.fileType));
         if (!clash && candidate.fileType === "markdown") {
           for (const directory of ownedAssetDirectories(target)) {
             if (await entryAt(path.relative(notebookPath(destinationName), directory).split(path.sep))) clash = true;
           }
         }
       }
-      if (!clash) { takenFiles.add(key); break; }
+      if (!clash) {
+        takenFiles.add(key);
+        for (const directory of owned) takenAssets.add(directory);
+        break;
+      }
       if (index === 1) firstClash = byRecords ? "records" : "file";
       next = withSuffix(name, index);
     }
+    chosenNames.set(candidate.fromParts.join("/"), next);
     // macOS junk (.DS_Store, ._*) is not worth keeping twice.
     if (next !== name && candidate.kind === "other" && JUNK(name)) continue;
     const to = [destinationName, ...parent, next].join("/");
@@ -1468,7 +1539,10 @@ async function finalize(journal: Journal, states: ItemState[]) {
   });
 
   await run("records", async () => {
-    await moveReviewPaths(moves);
+    // An empty review at a destination (opening the note made it) gives way to the moved one; a review with comments there stays and is reported.
+    for (const stayed of await moveReviewPaths(moves, { replaceEmpty: true })) {
+      note(journal, `${stayed}: its review comments stayed, because ${moves.get(stayed) ?? "its new path"} already has review comments of its own. Check Notebook lists them.`);
+    }
     await renameFileMetadataPaths(moves);
     for (const folder of journal.finishedFolders ?? []) {
       await renameNotebookPanelExpandedPathPrefix(folder.from, folder.to);
@@ -1479,7 +1553,10 @@ async function finalize(journal: Journal, states: ItemState[]) {
   await run("assets", async () => {
     // The moved notes' images and uploads, written as embeds for the cleanup scan; images other notes use stay.
     const notes = files.filter((item) => item.images).map((item) => ({ documentPath: item.from, content: Object.keys(item.images!.imageSources).map((source) => `![](<${source}>)`).join("\n") }));
-    if (notes.length) await cleanupMarkdownImageAssets(journal.source, notes);
+    // False: a notebook could not be read in full, so nothing was pruned (a moved note's images may still be in the source's `_assets`).
+    if (notes.length && await cleanupMarkdownImageAssets(journal.source, notes) === false) {
+      note(journal, `Images the moved notes embedded may still be in ${journal.source}/${MARKDOWN_ASSETS_DIR}: a notebook could not be read in full to tell which are unused. Check Notebook lists them.`);
+    }
   });
 
   await run("attachments", async () => {
@@ -1503,11 +1580,14 @@ async function finalize(journal: Journal, states: ItemState[]) {
   await run("links", async () => {
     // Paths in notes follow what moved, with the committed mapping: only items now at their new path (a partial migration rewrites for what moved).
     // After images (staged with the notes), before citation keys (whose plan reads the text this leaves): the order the app applies too.
+    // Set when this run planned the rewrites: a note saved between the plan and its rewrite is planned afresh, as a move in the app does.
+    let replan: ReturnType<typeof replanMovedNote> | undefined;
     if (journal.linkRewrites === undefined) {
       const moved: PathMove[] = journal.items.flatMap((item, index) => states[index] === "finished" ? [{ from: item.from, to: item.to, ...(item.identity.directory ? { folder: true } : {}) }] : []);
       // An item at both places (its source edited after it was published) is the person's to sort out: neither copy is rewritten.
       const unsettled = new Set(journal.items.flatMap((item, index) => states[index] === "published" ? [item.from, item.to] : []));
-      const plan = moved.length ? await planMovedLinks(moved, { ownMigration: true, leave: unsettled }) : { notes: [], skipped: [], unchecked: [] };
+      const plan = moved.length ? await planMovedLinks(moved, { ownMigration: true, leave: unsettled }) : { notes: [], skipped: [], unchecked: [], layout: undefined };
+      if (plan.layout) replan = replanMovedNote(plan.layout);
       // Saved before the first file is rewritten: a resume applies these, never a plan made from texts already rewritten.
       journal.linkRewrites = plan.notes;
       journal.linkSkipped = plan.skipped;
@@ -1517,7 +1597,7 @@ async function finalize(journal: Journal, states: ItemState[]) {
     }
     let applied: AppliedLinkRewrite[] | null = null;
     if (!journal.linksApplied) {
-      const outcome = await applyMovedLinks(journal.linkRewrites ?? []);
+      const outcome = await applyMovedLinks(journal.linkRewrites ?? [], replan);
       applied = outcome.applied;
       journal.linksApplied = applied.map((rewritten) => rewritten.path);
       if (outcome.failed.length) {
@@ -1529,7 +1609,17 @@ async function finalize(journal: Journal, states: ItemState[]) {
     if (!journal.linkRecordsFollowed) {
       // What keeps the rewritten texts follows once: after an interruption, from the journal's hashes.
       const done = new Set(journal.linksApplied);
-      const notes = applied ?? (journal.linkRewrites ?? []).filter((planned) => done.has(planned.path));
+      const recovered = applied ?? (journal.linkRewrites ?? []).filter((planned) => done.has(planned.path));
+      // A note an interrupted run had already rewritten (or a rewrite found in place) carries no text from before: its review comments
+      // still hold that text, so the edits are made from their snapshot, when it is the text the plan saw (by hash).
+      const notes: AppliedLinkRewrite[] = [];
+      for (const entry of recovered) {
+        if (entry.textBefore !== undefined) { notes.push(entry); continue; }
+        const reviews = await inspectReviewDocuments<ReviewDocument>(getStateRoot(), entry.path).catch(() => null);
+        const snapshot = reviews?.find((review) => hashText(review.snapshot) === entry.before)?.snapshot;
+        const edits = snapshot === undefined ? [] : movedPathEdits(snapshot, entry.path, entry.rewrite);
+        notes.push(snapshot !== undefined && edits.length ? { ...entry, textBefore: snapshot, edits } : entry);
+      }
       // A moved note's undo history follows in the history step, with its other rewrites; the others' here.
       const movedTo = new Set(files.map((item) => item.to));
       for (const failure of await followLinkRewrites(notes, { history: (filePath) => !movedTo.has(filePath) })) note(journal, `Links: ${failure}`);
@@ -1569,7 +1659,8 @@ async function finalize(journal: Journal, states: ItemState[]) {
 
   await run("history", async () => {
     // Pending agent reviews and undo history see the files as the migration left them.
-    const keyMaps = new Map((journal.references?.drafts ?? []).map((draft) => [draft.path, new Map(Object.entries(draft.map))]));
+    // Citation keys are rewritten in history only for notes whose citation rewrites were written: a plan that never applied changed no text.
+    const keyMaps = new Map((journal.citationRewritesApplied ? journal.references?.drafts ?? [] : []).map((draft) => [draft.path, new Map(Object.entries(draft.map))]));
     // Written link rewrites of moved notes: their undo history gets them here, between images and citation keys (the order the file got them).
     const written = new Set(journal.linksApplied ?? []);
     const linkMaps = new Map((journal.linkRewrites ?? []).filter((planned) => written.has(planned.path)).map((planned) => [planned.path, planned.rewrite]));
@@ -1590,7 +1681,12 @@ async function finalize(journal: Journal, states: ItemState[]) {
       }
       undo.set(item.from, { to: item.to, ...(item.images || keys || paths ? { transform } : {}), ...(hashes ? { hashes } : {}) });
     }
-    await transformReviewBaselines(baselines);
+    // Once: a baseline rewritten by key map is not rewritten again by a resume (the map may chain).
+    if (!journal.historyBaselines) {
+      await transformReviewBaselines(baselines);
+      journal.historyBaselines = true;
+      await saveJournal(journal);
+    }
     await recordMovedRunFiles(undo);
   });
 
@@ -1615,6 +1711,26 @@ async function finalize(journal: Journal, states: ItemState[]) {
         const copy = await copyReferenceEntries(journal.source, journal.destination.notebook, keys);
         entries.copied = copy.copied.length;
         entries.reused = copy.reused.length;
+        // A reused destination entry (the same work was there already) takes the migrated PDF as an attachment too (attach is a no-op when it has it).
+        if (copy.reused.length) {
+          const wanted = new Map<string, ReferenceAttachment[]>();
+          for (const entry of Object.values(library.entries)) {
+            const moved = entry.attachments.filter((attachment) => attachment.kind !== "url" && pdfs.has(attachment.path));
+            if (moved.length) for (const key of [entry.key, ...entry.aliases]) wanted.set(key, moved);
+          }
+          for (let attempt = 1; ; attempt += 1) {
+            const destination = await readReferenceLibrary(journal.destination.notebook);
+            const byKey = libraryEntriesByKey(destination);
+            const ops: ReferenceLibraryOp[] = [];
+            for (const reused of copy.reused) {
+              const target = entryForKey(byKey, reused.destinationKey);
+              if (target) for (const attachment of wanted.get(reused.key) ?? []) ops.push({ op: "attach", id: target.id, attachment });
+            }
+            if (!ops.length) break;
+            try { await updateReferenceLibrary(journal.destination.notebook, destination.revision, ops); break; }
+            catch (error) { if (!(error instanceof ReferenceRevisionConflict) || attempt >= 3) throw error; }
+          }
+        }
         journal.entriesCopied = true;
         await saveJournal(journal);
       }
@@ -1853,6 +1969,8 @@ export async function runMigration(request: MigrationRequest, expectedToken: str
     // are held off until it is on disk; from there the journal keeps them away (migration-fence.ts).
     const release = claimNotebooksForMigration([plan.source, plan.destination.notebook]);
     try { await saveJournal(journal); } finally { release(); }
+    // From here the journal refuses new writers; the ones that passed the check just before finish first.
+    await waitForInFlightWriters(items.flatMap((item) => [located(item, item.from), located(item, item.to)]));
 
     const batch: MarkdownAssetBatch = { moved: new Map(items.filter((item) => item.kind === "file").map((item) => [item.from, item.to])), copied: new Map() };
     try {
@@ -1933,7 +2051,10 @@ export async function resumeMigration(id: string, mode: "continue" | "stop"): Pr
     if (journal.phase === "finalizing") {
       const states: ItemState[] = [];
       for (const [index, item] of journal.items.entries()) {
-        const state = await reconcile(journal, index, item);
+        // An item the disk can't account for (kept by "Stop here") is left alone and reported, as runMoving does: it never wedges the resume.
+        let state: ItemState;
+        try { state = await reconcile(journal, index, item); }
+        catch (error) { states[index] = "pending"; note(journal, errorText(error)); continue; }
         // Published and its source gone is not yet finished: its review and sidecars must have followed too, which the disk
         // can't tell from the file alone, so what is left of that is done now. A source still there (kept by Stop) is not a clean move.
         if (state !== "published") states[index] = "pending";

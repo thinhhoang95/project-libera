@@ -4,6 +4,8 @@ import path from "node:path";
 import { isReservedBy, reserveLifecycle, ReservationConflictError, ReservationLostError, type Reservation } from "@/lib/collab/lifecycle-reservation";
 import { LIBERA_SYSTEM_DIR } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
+import { foldedFileName } from "@/lib/storage/file-names";
+import { withPathLocks } from "@/lib/storage/fs-utils";
 import { getAdminRoot, getStateRoot } from "@/lib/storage/paths";
 
 // What a notebook migration (storage/migration.ts) is moving, for the code
@@ -21,6 +23,13 @@ type ActiveMigration = { notebooks: Set<string>; paths: Set<string>; folders: st
 
 const CACHE = Symbol.for("libera.migrationFence");
 type Cache = { key: string; active: ActiveMigration[]; unreadable: number };
+
+/**
+ * A library path or notebook name under the round's one name rule (NFC plus case
+ * folding, per segment), so a save under another spelling of a name a migration
+ * moves (alternate casing, a decomposed accent) is held off as well.
+ */
+const folded = (libraryPath: string) => libraryPath.split("/").map(foldedFileName).join("/");
 
 export function migrationJournalDirectory() {
   return path.join(getStateRoot(), LIBERA_SYSTEM_DIR, "migrations");
@@ -55,11 +64,11 @@ async function readFence(): Promise<{ active: ActiveMigration[]; unreadable: num
     }
     if (journal.state === "done") continue;
     const paths = new Set<string>();
-    for (const item of journal.items ?? []) { paths.add(item.from); paths.add(item.to); }
+    for (const item of journal.items ?? []) { paths.add(folded(item.from)); paths.add(folded(item.to)); }
     active.push({
-      notebooks: new Set([journal.source ?? "", journal.destination?.notebook ?? ""].filter(Boolean)),
+      notebooks: new Set([journal.source ?? "", journal.destination?.notebook ?? ""].filter(Boolean).map(folded)),
       paths,
-      folders: (journal.folders ?? []).flatMap((folder) => [folder.from, folder.to]),
+      folders: (journal.folders ?? []).flatMap((folder) => [folded(folder.from), folded(folder.to)]),
     });
   }
   holder[CACHE] = { key, active, unreadable };
@@ -77,13 +86,14 @@ const within = (candidate: string, folder: string) => candidate === folder || ca
 
 /** A migration that has not finished involves this notebook (as source or destination). */
 export async function isNotebookMigrating(notebook: string) {
-  return (await activeMigrations()).some((migration) => migration.notebooks.has(notebook));
+  return (await activeMigrations()).some((migration) => migration.notebooks.has(folded(notebook)));
 }
 
 /** A migration that has not finished moves this library path (or a folder holding it). */
 export async function isPathMigrating(libraryPath: string) {
-  return (await activeMigrations()).some((migration) => migration.paths.has(libraryPath) ||
-    migration.folders.some((folder) => within(libraryPath, folder)));
+  const key = folded(libraryPath);
+  return (await activeMigrations()).some((migration) => migration.paths.has(key) ||
+    migration.folders.some((folder) => within(key, folder)));
 }
 
 /**
@@ -92,9 +102,10 @@ export async function isPathMigrating(libraryPath: string) {
  * moves. Renaming, archiving or deleting such a folder would strand the journal.
  */
 export async function isAnythingMigratingWithin(libraryFolder: string) {
+  const key = folded(libraryFolder);
   return (await activeMigrations()).some((migration) =>
-    [...migration.paths].some((candidate) => within(candidate, libraryFolder)) ||
-    migration.folders.some((folder) => within(folder, libraryFolder) || within(libraryFolder, folder)));
+    [...migration.paths].some((candidate) => within(candidate, key)) ||
+    migration.folders.some((folder) => within(folder, key) || within(key, folder)));
 }
 
 /** Folder operations that rename, move, archive or delete a folder wait while a migration works inside it. */
@@ -149,9 +160,10 @@ const bump = (counts: Map<string, number>, notebook: string, by: number) => {
 
 /** Why a notebook operation may not start now, or null. */
 async function operationBlocker(notebook: string): Promise<string | null> {
-  if (operations().claimed.has(notebook)) return `${notebook} is about to be migrated. Try again when the migration has finished.`;
+  const name = folded(notebook);
+  if (operations().claimed.has(name)) return `${notebook} is about to be migrated. Try again when the migration has finished.`;
   const { active, unreadable } = await readFence();
-  if (active.some((migration) => migration.notebooks.has(notebook))) return "A migration involving this notebook did not finish. Finish or stop it in Migration first.";
+  if (active.some((migration) => migration.notebooks.has(name))) return "A migration involving this notebook did not finish. Finish or stop it in Migration first.";
   if (unreadable) return "An earlier migration's journal can't be read, so it can't be told whether it involves this notebook. Set it aside in the Migration dialog first.";
   return null;
 }
@@ -294,8 +306,21 @@ export async function whenNotebookIdle(notebook: string, work: () => Promise<voi
  */
 export function claimNotebooksForMigration(notebooks: string[]): () => void {
   const state = operations();
-  const names = [...new Set(notebooks)];
-  if (names.some((name) => state.running.has(name))) throw new StorageError("Another operation is working on this notebook. Try again in a moment.", 409);
+  const names = [...new Set(notebooks.map(folded))];
+  // Running operations are keyed by the notebook name as they were given: compared under the same rule.
+  const running = new Set([...state.running.keys()].map(folded));
+  if (names.some((name) => running.has(name))) throw new StorageError("Another operation is working on this notebook. Try again in a moment.", 409);
   for (const name of names) bump(state.claimed, name, 1);
   return () => { for (const name of names) bump(state.claimed, name, -1); };
+}
+
+/**
+ * After a migration's journal is on disk (from where `assertNotMigrating`
+ * refuses new writers): waits for the writers that passed that check just
+ * before and are still inside their path lock (a save, a sidecar write, a
+ * move). They finish first, so staging never reads a file half way through
+ * a write. Queues once behind them; nothing is polled.
+ */
+export async function waitForInFlightWriters(absolutePaths: string[]) {
+  if (absolutePaths.length) await withPathLocks(absolutePaths, async () => undefined);
 }
