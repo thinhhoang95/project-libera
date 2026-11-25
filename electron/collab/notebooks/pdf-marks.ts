@@ -13,7 +13,7 @@ import path from "node:path";
 import type * as Y from "yjs";
 
 import { importBatches, readAllMarks, visibleMarks, annotationViolation } from "../../../src/lib/collab/pdf/model";
-import { ManifestKeys, type ManifestEntry } from "../../../src/lib/collab/protocol/schema";
+import { ManifestKeys, manifestPathKey, type ManifestEntry } from "../../../src/lib/collab/protocol/schema";
 import { isPdfPath, PDF_LIVE_SETTING, pdfDocIdFromDigest, pdfDocIdSeed, PDF_MARK_TYPES, PdfKeys, type PdfImportRequest } from "../../../src/lib/collab/protocol/pdf";
 import { roleAtLeast, type Role } from "../../../src/lib/collab/protocol/roles";
 import type { PdfAnnotation } from "../../../src/lib/types";
@@ -344,12 +344,22 @@ export class PdfMarksRuntime {
   /** The PDF at a path, ready to attach to; null when it is not a shared PDF here. */
   resolve(relative: string): { docId: string; fileId: string; path: string; blobHash?: string } | null {
     if (!this.enabled || this.stopped) return null;
+    // The manifest's name rule (S-H2): the path a request or the disk spells in another Unicode form or case is the same PDF. An exact spelling wins; two PDFs that only differ in case (a case-sensitive volume) are told apart by it, and a folded match is taken only when it is unambiguous.
+    let found: string | null = null;
+    let folded: string | null = null;
+    let ambiguous = false;
+    const key = manifestPathKey(relative);
     for (const [fileId, entry] of this.entries) {
-      if (entry.path !== relative) continue;
-      const doc = this.open(fileId);
-      return { docId: doc.docId, fileId, path: entry.path, ...(entry.blobHash ? { blobHash: entry.blobHash } : {}) };
+      if (entry.path === relative) { found = fileId; break; }
+      if (manifestPathKey(entry.path) !== key) continue;
+      if (folded !== null) ambiguous = true;
+      folded = fileId;
     }
-    return null;
+    const fileId = found ?? (ambiguous ? null : folded);
+    const entry = fileId === null ? undefined : this.entries.get(fileId);
+    if (fileId === null || !entry) return null;
+    const doc = this.open(fileId);
+    return { docId: doc.docId, fileId, path: entry.path, ...(entry.blobHash ? { blobHash: entry.blobHash } : {}) };
   }
 
   private open(fileId: string): PdfDoc {

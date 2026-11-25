@@ -8,8 +8,9 @@
 // that older clients cannot read, so the host remembers what it changed
 // ({ fileId, field, from, to }) and, when a merge brings the field back to
 // `from` while another field differs from what it wrote, writes `to` again on
-// top of the merged entry. Intents live in memory only: after a restart a
-// merge that happens later is left as the merge decided.
+// top of the merged entry. Intents are kept in state.json too (export/restore,
+// bounded like the memory copy): a rename made offline whose merge happens
+// after a restart is still protected, so its companions are not left behind (S-M2).
 
 import type * as Y from "yjs";
 
@@ -81,11 +82,40 @@ export function trackEntryWrites(files: Y.Map<unknown>, intents: ManifestIntents
 
 export class ManifestIntents {
   private readonly intents = new Map<string, ManifestIntent>();
+  /** Counts every change to the set, so a caller persists it only when it changed. */
+  private changes = 0;
 
   constructor(private readonly now: () => number = Date.now) {}
 
   get size(): number {
     return this.intents.size;
+  }
+
+  /** Changes so far; equal numbers mean an unchanged set. */
+  get revision(): number {
+    return this.changes;
+  }
+
+  /** The intents as plain JSON, for state.json (bounded by MAX_INTENTS and MAX_INTENT_AGE_MS). */
+  export(): ManifestIntent[] {
+    const now = this.now();
+    return [...this.intents.values()].filter((intent) => now - intent.recordedAt <= MAX_INTENT_AGE_MS).slice(-MAX_INTENTS).map((intent) => ({ ...intent, unit: { ...intent.unit } }));
+  }
+
+  /** Takes back intents saved by an earlier run; anything malformed or too old is left out. */
+  restore(saved: unknown): void {
+    if (!Array.isArray(saved)) return;
+    const now = this.now();
+    for (const item of saved.slice(-MAX_INTENTS)) {
+      if (!isRecord(item) || typeof item.fileId !== "string" || (item.field !== "path" && item.field !== "blobHash")) continue;
+      if (typeof item.from !== "string" || typeof item.to !== "string" || typeof item.other !== "string" || !isRecord(item.unit)) continue;
+      if (typeof item.recordedAt !== "number" || !Number.isFinite(item.recordedAt) || now - item.recordedAt > MAX_INTENT_AGE_MS) continue;
+      const key = `${item.fileId}\u0000${item.field}`;
+      if (this.intents.has(key)) continue;
+      // Not acknowledged: the server's answer is awaited again in this run.
+      this.intents.set(key, { fileId: item.fileId, field: item.field, from: item.from, to: item.to, other: item.other, unit: { ...item.unit }, recordedAt: item.recordedAt, acknowledged: false });
+    }
+    this.changes += 1;
   }
 
   /** What is outstanding (tests and diagnostics). */
@@ -106,6 +136,7 @@ export class ManifestIntents {
 
   private remember(fileId: string, after: EntryRecord, field: IntentField, from: string, to: string): void {
     const key = `${fileId}\u0000${field}`;
+    this.changes += 1;
     const earlier = this.intents.get(key);
     // A second change before the first is settled still starts from the first's `from`.
     const start = earlier && earlier.to === from ? earlier.from : from;
@@ -136,12 +167,13 @@ export class ManifestIntents {
       const entry = entries.get(intent.fileId);
       if (!isRecord(entry) || now - intent.recordedAt > MAX_INTENT_AGE_MS) {
         this.intents.delete(key);
+        this.changes += 1;
         continue;
       }
       const current = entry[intent.field];
       if (current === intent.to) {
         if (!acknowledged) intent.acknowledged = false;
-        else if (intent.acknowledged) this.intents.delete(key);
+        else if (intent.acknowledged) { this.intents.delete(key); this.changes += 1; }
         else intent.acknowledged = true;
         continue;
       }
@@ -149,6 +181,7 @@ export class ManifestIntents {
       // the old value with nothing else different (a plain revert).
       if (current !== intent.from || otherPart(entry, intent.field) === intent.other) {
         this.intents.delete(key);
+        this.changes += 1;
         continue;
       }
       const base = rewrites.get(intent.fileId) ?? { ...entry };
