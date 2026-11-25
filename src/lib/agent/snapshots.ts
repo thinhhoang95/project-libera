@@ -112,9 +112,9 @@ export class RunSnapshots {
   }
 
   /** Apply a change to the live manifest and save it, in order with the run's own saves. */
-  async update(change: (manifest: Manifest) => boolean) {
+  async update(change: (manifest: Manifest) => boolean | Promise<boolean>) {
     if (!Object.keys(this.manifest.files).length) return;
-    if (change(this.manifest)) await this.flush();
+    if (await change(this.manifest)) await this.flush();
   }
 
   has(filePath: string) {
@@ -278,12 +278,12 @@ async function undoFiles(runId: string, manifest: Manifest, targets: string[]): 
 export type MovedRunFile = {
   to: string;
   /** Rewrites applied to the file (image paths, citation keys): applied to the original and draft, so Undo restores text that works where the file is now. */
-  transform?: (text: string) => string;
+  transform?: (text: string) => string | Promise<string>;
   /** The file's hash before and after those rewrites: a run that wrote `before` counts as having written `after`. */
   hashes?: { before: string; after: string };
 };
 
-function applyMoves(manifest: Manifest, moves: ReadonlyMap<string, MovedRunFile>) {
+async function applyMoves(manifest: Manifest, moves: ReadonlyMap<string, MovedRunFile>) {
   let changed = false;
   for (const [key, file] of Object.entries(manifest.files)) {
     if (file.shared) continue;
@@ -292,8 +292,8 @@ function applyMoves(manifest: Manifest, moves: ReadonlyMap<string, MovedRunFile>
     if (move.to === key) delete file.movedTo;
     else file.movedTo = move.to;
     if (move.transform) {
-      if (file.original !== null) file.original = move.transform(file.original);
-      if (file.draft !== undefined) file.draft = move.transform(file.draft);
+      if (file.original !== null) file.original = await move.transform(file.original);
+      if (file.draft !== undefined) file.draft = await move.transform(file.draft);
     }
     if (move.hashes && file.written === move.hashes.before) file.written = move.hashes.after;
     changed = true;
@@ -310,7 +310,7 @@ function applyMoves(manifest: Manifest, moves: ReadonlyMap<string, MovedRunFile>
 export async function recordMovedRunFiles(moves: ReadonlyMap<string, MovedRunFile>) {
   if (!moves.size) return;
   const live = activeRuns();
-  for (const run of live.values()) await run.update((manifest: Manifest) => applyMoves(manifest, moves));
+  for (const run of live.values()) await run.update(async (manifest: Manifest) => applyMoves(manifest, moves));
   let names: string[];
   try { names = (await readdir(runsDirectory())).filter((name) => name.endsWith(".json")); }
   catch { return; }
@@ -318,7 +318,7 @@ export async function recordMovedRunFiles(moves: ReadonlyMap<string, MovedRunFil
     const runId = name.slice(0, -".json".length);
     if (!isRunId(runId) || live.has(runId)) continue;
     const manifest = await readManifest(runId);
-    if (manifest && applyMoves(manifest, moves)) await writeManifest(manifest);
+    if (manifest && await applyMoves(manifest, moves)) await writeManifest(manifest);
   }
 }
 

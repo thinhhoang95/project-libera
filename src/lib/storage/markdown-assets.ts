@@ -97,6 +97,18 @@ function referencedRawFilePaths(markdown: string) {
  * (storage/integrity.ts). `absolutePath` is null when the address can't be
  * read as a library image.
  */
+/**
+ * Where a library path a `/api/files/raw/...` address names is on the disk.
+ * A notebook's own `_assets` folder is not a user path (filePathFromParts
+ * refuses it) but its images are served by that address too.
+ */
+export function rawFileDiskPath(libraryPath: string) {
+  const [notebook, ...pathParts] = libraryPath.split("/");
+  if (pathParts[0] === MARKDOWN_ASSETS_DIR) return markdownAssetPath(notebook, pathParts.join("/")).targetPath;
+  const split = splitFilePath(libraryPath);
+  return filePathFromParts(split.notebook, split.pathParts);
+}
+
 export function markdownImageTargets(documentPath: string, markdown: string) {
   const targets: { source: string; libraryPath: string | null; absolutePath: string | null }[] = [];
   for (const source of markdownImageSources(markdown)) {
@@ -104,8 +116,7 @@ export function markdownImageTargets(documentPath: string, markdown: string) {
     try {
       raw = rawFileSourcePath(source);
       if (raw) {
-        const { notebook, pathParts } = splitFilePath(raw);
-        targets.push({ source, libraryPath: raw, absolutePath: filePathFromParts(notebook, pathParts) });
+        targets.push({ source, libraryPath: raw, absolutePath: rawFileDiskPath(raw) });
         continue;
       }
       const target = markdownAssetSourceTarget(documentPath, source);
@@ -653,18 +664,24 @@ export async function copyMarkdownImageAssets(from: string, to: string, markdown
     for (const source of sources) {
       if (/^(?:[a-z][a-z0-9+.-]*:|#)/i.test(source)) continue;
       if (source.startsWith("/") && !source.startsWith("/api/markdown-assets/raw") && !source.startsWith("/api/files/raw/")) continue;
+      // An address that can't be decoded names no image to copy: it stays as written.
+      let rawPath: string | null;
+      try { rawPath = rawFileSourcePath(source); } catch { continue; }
+      // What the address asks of its image (`?query`, `#fragment`) is kept; an asset address keeps its own query.
+      const suffix = source.startsWith("/api/markdown-assets/raw") ? /#.*$/.exec(source)?.[0] ?? "" : /[?#].*$/.exec(source)?.[0] ?? "";
       // A notebook image moving in the same batch: follow it rather than copy it.
-      const movedImage = batch ? batch.moved.get(rawFileSourcePath(source) ?? "") : undefined;
-      if (movedImage) { imageSources[source] = rawFileUrl(movedImage); continue; }
+      const movedImage = batch ? batch.moved.get(rawPath ?? "") : undefined;
+      if (movedImage) { imageSources[source] = rawFileUrl(movedImage) + suffix; continue; }
       let asset;
       try { asset = await getMarkdownImageAssetBySource(from, source, { authoritative: true }); }
       catch (error) {
+        if (error instanceof URIError) continue;
         // An already missing image must not prevent moving the note itself.
         if ((error as NodeJS.ErrnoException).code === "ENOENT") {
           const target = markdownAssetSourceTarget(from, source);
           // Keep its original namespace so an unrelated destination image at
           // the same relative path cannot silently replace the missing image.
-          if (target) imageSources[source] = `/api/markdown-assets/raw?document=${encodeURIComponent(target.documentPath)}&asset=${encodeURIComponent(target.assetPath)}`;
+          if (target) imageSources[source] = `/api/markdown-assets/raw?document=${encodeURIComponent(target.documentPath)}&asset=${encodeURIComponent(target.assetPath)}${suffix}`;
           continue;
         }
         // A host that cannot answer (409 and up) is not a missing image: the copy waits rather than leave a stale or absent one.
@@ -677,15 +694,16 @@ export async function copyMarkdownImageAssets(from: string, to: string, markdown
       const ownFigure = ownsPythonFigureSource(from, source, previousSources);
       // A note's own Python figures are pruned with the note, so they are never shared with another note.
       const existing = copied.get(key) ?? (ownFigure ? undefined : batch?.copied.get(key));
-      if (existing) { imageSources[source] = existing; continue; }
+      if (existing) { imageSources[source] = existing + suffix; continue; }
       const directory = ownFigure ? path.dirname(pythonSidecarFile(to).absolutePath) : markdownAssetsDirectoryPathFromParts(destination.notebook, destination.pathParts);
       const sameFigure = ownFigure && await readFile(path.join(directory, asset.fileName)).then((body) => body.equals(asset.body), () => false);
       const available = sameFigure ? { path: path.join(directory, asset.fileName), name: asset.fileName }
         : await writeAvailableAsset(directory, normalizeAssetFileName(asset.fileName), asset.body);
       if (!sameFigure) { created.push(available.path); await batch?.onCreated?.(available.path); }
-      imageSources[source] = `${ownFigure ? pythonFigureSourcePrefix(to) : markdownAssetsPathPrefix(destination.pathParts)}/${available.name}`;
-      copied.set(key, imageSources[source]);
-      if (!ownFigure) batch?.copied.set(key, imageSources[source]);
+      const address = `${ownFigure ? pythonFigureSourcePrefix(to) : markdownAssetsPathPrefix(destination.pathParts)}/${available.name}`;
+      imageSources[source] = address + suffix;
+      copied.set(key, address);
+      if (!ownFigure) batch?.copied.set(key, address);
     }
     return { content: rewriteMarkdownImageSources(markdown, imageSources), imageSources, discard, created: [...created] };
   } catch (error) {

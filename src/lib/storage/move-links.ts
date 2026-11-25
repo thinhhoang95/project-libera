@@ -330,6 +330,18 @@ async function blockedFrom(filePath: string, ownMigration: boolean, throughHost:
 }
 
 /**
+ * Whether a note's text may write a moved name, so it is worth parsing: it
+ * has the name, or a character that can spell it otherwise (`%`, `&`, `\`;
+ * a single-quoted chart value writes `'` as `''`), or a chart block (whose
+ * value may be folded over lines or written with a YAML escape).
+ */
+function mayNameMoved(content: string, names: readonly string[]) {
+  if (/[%&\\]/.test(content)) return true;
+  if (names.some((name) => content.includes(name) || (name.includes("'") && content.includes(name.replace(/'/g, "''"))))) return true;
+  return /^ {0,3}(?:`{3,}|~{3,})\s*chart\b/m.test(content);
+}
+
+/**
  * What the moves change in every note of every local notebook (links between
  * notebooks are library paths) and in the LaTeX sources of the notebooks
  * involved. The link index can lag, so it is not used to narrow the search:
@@ -359,7 +371,7 @@ export async function planMovedLinks(moves: readonly PathMove[], { ownMigration 
     if (!complete) unchecked.push(notebook);
     for (const { documentPath, content } of documents) {
       const was = layout.backward(documentPath) ?? documentPath;
-      if (was === documentPath && !layout.names.some((name) => content.includes(name)) && !/[%&\\]/.test(content)) continue;
+      if (was === documentPath && !mayNameMoved(content, layout.names)) continue;
       const plan = await planMarkdown(content, documentPath, was, layout);
       skipped.push(...plan.skipped.map((skip) => ({ path: documentPath, ...skip })));
       await add(documentPath, was === documentPath ? undefined : was, content, plan.rewrite);
@@ -443,13 +455,18 @@ export async function applyMovedLinks(planned: readonly PlannedLinkRewrite[], re
  * over), the link and citation indexes and Global Search. Each is tried;
  * returns what failed.
  */
-export async function followLinkRewrites(applied: readonly AppliedLinkRewrite[], { history = () => true }: { history?: (filePath: string) => boolean } = {}) {
+export async function followLinkRewrites(applied: readonly AppliedLinkRewrite[], { history = () => true, replan }: { history?: (filePath: string) => boolean; replan?: (text: string, note: PlannedLinkRewrite) => Promise<MovedPathRewrite> } = {}) {
   const failures: string[] = [];
   if (!applied.length) return failures;
   const attempt = async (what: string, run: () => Promise<unknown>) => {
     try { await run(); } catch (error) { failures.push(`${what}: ${error instanceof Error ? error.message : String(error)}`); }
   };
-  const transform = (note: AppliedLinkRewrite) => (text: string) => rewriteMovedPaths(text, note.path, note.rewrite);
+  // A baseline or an undo original is another text than the note's now: with `replan`, what it still writes is planned from itself (a link the agent changed or removed is still there to follow); without it the note's own rewrite applies.
+  const transform = (note: AppliedLinkRewrite) => async (text: string) => {
+    let rewrite = note.rewrite;
+    if (replan) { try { rewrite = await replan(text, { ...note, ...(note.from ? { from: note.from } : {}) }); } catch { /* the note's own rewrite applies */ } }
+    return rewriteMovedPaths(text, note.path, rewrite);
+  };
   await attempt("pending agent reviews", () => transformReviewBaselines(new Map(applied.map((note) => [note.path, transform(note)]))));
   await attempt("review comments", () => rewriteReviewSnapshots(applied.flatMap((note) => note.textBefore !== undefined && note.edits ? [{ path: note.path, before: note.textBefore, edits: note.edits }] : [])));
   const kept = applied.filter((note) => history(note.path));
@@ -479,7 +496,7 @@ export async function followMovedLinks(moves: readonly PathMove[]): Promise<{ li
   try {
     const plan = await planMovedLinks(moves);
     const { applied, failed } = await applyMovedLinks(plan.notes, replanMovedNote(plan.layout));
-    const failures = await followLinkRewrites(applied);
+    const failures = await followLinkRewrites(applied, { replan: replanMovedNote(plan.layout) });
     const links: LiberaLinkRewrites = { rewritten: applied.map((note) => ({ path: note.path, rewrite: note.rewrite })), skipped: [...plan.skipped, ...failed], unchecked: plan.unchecked };
     const problems = [...(failed.length ? [`${new Set(failed.map((skip) => skip.path)).size} notes could not be updated`] : []), ...failures];
     return { links, ...(problems.length ? { unfinished: { step: "links", status: "failed", message: problems.join("; ") } } : {}) };

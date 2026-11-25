@@ -396,12 +396,12 @@ export async function withMovedReviewsUnder<T>(from: string, to: string, move: (
 }
 
 /** Rewrite the baselines of these files' pending reviews (citation keys a migration changed in the files). */
-export async function transformReviewBaselines(transforms: ReadonlyMap<string, (text: string) => string>) {
+export async function transformReviewBaselines(transforms: ReadonlyMap<string, (text: string) => string | Promise<string>>) {
   for (const [filePath, transform] of transforms) {
     await serialized(filePath, async () => {
       const entry = await readEntry(filePath);
       if (!entry) return;
-      const baseline = transform(entry.baseline);
+      const baseline = await transform(entry.baseline);
       if (baseline !== entry.baseline) await writeJsonState(entryPath(filePath), { ...entry, baseline, updatedAt: new Date().toISOString(), revision: randomUUID() });
     });
   }

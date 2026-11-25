@@ -21,12 +21,31 @@ export function decodeAttribute(value: string) {
   });
 }
 
-/** Locate the destination without changing alt text, titles or surrounding Markdown. */
+/** The index of the last backtick of the code span opening at `index`, or -1 when the run never closes (it is then literal backticks). */
+function codeSpanEnd(text: string, index: number) {
+  let run = 0;
+  while (text[index + run] === "`") run++;
+  for (let at = index + run; at < text.length; at++) {
+    if (text[at] !== "`") continue;
+    let length = 0;
+    while (text[at + length] === "`") length++;
+    if (length === run) return at + length - 1;
+    at += length - 1;
+  }
+  return -1;
+}
+
+/** Locate the destination without changing alt text, titles or surrounding Markdown. Brackets inside code spans are not the text's own. */
 export function destinationRange(text: string, definition: boolean) {
   let index = definition ? 1 : 2;
   let brackets = 1;
   for (; index < text.length; index++) {
     if (text[index] === "\\") index++;
+    else if (text[index] === "`") {
+      const end = codeSpanEnd(text, index);
+      if (end >= 0) index = end;
+      else while (text[index + 1] === "`") index++;
+    }
     else if (text[index] === "[") brackets++;
     else if (text[index] === "]" && --brackets === 0) break;
   }

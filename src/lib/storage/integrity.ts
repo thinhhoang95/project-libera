@@ -23,8 +23,10 @@ import { decodeMarkdownHeadingHash, findMarkdownHeadingAnchorIndex, markdownHead
 import { markdownHtmlAnchors } from "@/lib/markdown-link-occurrences";
 import { listLegacyAnnotations, savedAnnotationIds, type SavedAnnotationIds } from "@/lib/storage/annotations";
 import { parseTranscript, transcriptCompanionFilePath } from "@/lib/storage/transcripts";
-import { markdownImageTargets, unreferencedMarkdownAssets } from "@/lib/storage/markdown-assets";
-import { extractNotebookLinkDestinations, forgetNotebookLinkReads, linkIndexPath, readLinkIndex } from "@/lib/storage/notebook-links";
+import { markdownImageTargets, rawFileDiskPath, unreferencedMarkdownAssets } from "@/lib/storage/markdown-assets";
+import { markdownPathOccurrences } from "@/lib/move-rewrites";
+import { rawFileSourcePath } from "@/lib/markdown-image-sources";
+import { forgetNotebookLinkReads, linkIndexPath, readLinkIndex } from "@/lib/storage/notebook-links";
 import { assertSafeSegment, audioPeaksPath, getLinkedFolder, withReadOnlyStorage, getStateRoot, notebookMetadataPath, notebookPath, notebookSystemDirectoryPath, orphanedSidecarsDirectoryPath, relativeFilePath, filePathFromParts, splitFilePath, transcriptPath } from "@/lib/storage/paths";
 import { inspectReferenceLibrary } from "@/lib/storage/references";
 import { inspectLegacyReviewKeys, inspectReviewDocumentProblems, inspectReviewKeys } from "@/lib/storage/review-files";
@@ -1065,7 +1067,21 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
         else if (!disk.exists(target) && listed(target)) uncheckedLinks += 1;
         else if (!disk.exists(target)) add({ severity: "warning", path: note.documentPath, message: `The chart at line ${block.line} reads its data from "${data}", which is missing.`, fix: "Put the file back, or point the chart at its current place.", ...say("chartDataMissing", { line: block.line, data }, "chartDataMissingFix") });
       }
-      for (const href of extractNotebookLinkDestinations(note.content)) {
+      // The links a move rewrites are the links checked (markdownPathOccurrences): Markdown links, and HTML `<a href>`.
+      const hrefs = [...new Set(markdownPathOccurrences(note.content).filter((occurrence) => occurrence.kind === "link" || occurrence.kind === "html-link").map((occurrence) => occurrence.value))];
+      for (const href of hrefs) {
+        // An address of a file the app serves names its file as a link does.
+        if (href.startsWith("/api/files/raw/")) {
+          let target: { libraryPath: string; absolutePath: string } | null = null;
+          try { const libraryPath = rawFileSourcePath(href); if (libraryPath) target = { libraryPath, absolutePath: rawFileDiskPath(libraryPath) }; } catch { /* an address that can't be read names no file */ }
+          if (!target) { add({ severity: "warning", path: note.documentPath, message: `The link "${href}" finds no file.`, fix: "Point the link at the file's current place.", ...say("linkNoFile", { href }, "linkNoFileFix") }); continue; }
+          budget.probe();
+          const state = await probeFileOnce(target.absolutePath);
+          if (state === "unknown") uncheckedLinks += 1;
+          else if (state === "absent" && listed(target.libraryPath)) uncheckedLinks += 1;
+          else if (state === "absent") add({ severity: "warning", path: note.documentPath, message: `The link "${href}" finds no file.`, fix: "Point the link at the file's current place.", ...say("linkNoFile", { href }, "linkNoFileFix") });
+          continue;
+        }
         if (href.startsWith("#")) {
           if (href.length > 1 && !hasHeading(note, href)) add({ severity: "warning", path: note.documentPath, message: `The link "${href}" finds no heading in this note.`, fix: "Point it at a heading's current title.", ...say("linkNoHeading", { href }, "linkNoHeadingFix") });
           continue;
