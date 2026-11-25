@@ -12,7 +12,7 @@ import { libraryNotebookNames } from "./library-links";
 import { followMovedLinks } from "./move-links";
 import { rewriteMovedPaths } from "@/lib/move-rewrites";
 import { copyReferencesOnMove, type ReferenceMoveResult } from "@/lib/references/moves";
-import { copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
@@ -702,37 +702,39 @@ export async function renameFolder(relativePath: string, nextName: string): Prom
   const currentPath = itemPath(current.notebook, current.pathParts);
   const nextParts = [...parentParts, safeNextName];
   const nextPath = itemPath(current.notebook, nextParts);
-  assertNotSharedItem(current.notebook, current.pathParts);
-  await assertNotMigrating(itemLibraryPath(current.notebook, current.pathParts));
-  await assertNothingMigratingWithin(itemLibraryPath(current.notebook, current.pathParts));
-  assertNotSharedItem(current.notebook, nextParts);
-  await assertNotMigrating(itemLibraryPath(current.notebook, nextParts));
+  return withPathLocks([currentPath, nextPath], async () => {
+    assertNotSharedItem(current.notebook, current.pathParts);
+    await assertNotMigrating(itemLibraryPath(current.notebook, current.pathParts));
+    await assertNothingMigratingWithin(itemLibraryPath(current.notebook, current.pathParts));
+    assertNotSharedItem(current.notebook, nextParts);
+    await assertNotMigrating(itemLibraryPath(current.notebook, nextParts));
 
-  await assertDirectoryExists(currentPath, "Folder was not found.");
+    await assertDirectoryExists(currentPath, "Folder was not found.");
 
-  if (currentPath === nextPath) {
-    return getTree();
-  }
+    if (currentPath === nextPath) {
+      return getTree();
+    }
 
-  // The same folder under another spelling (a case-only rename on a case-insensitive disk) is not a clash.
-  const caseOnly = await isCaseOnlyRename(currentPath, nextPath);
-  if (!caseOnly && await pathExists(nextPath)) {
-    throw new StorageError("Destination folder already exists.", 409);
-  }
-  // Scanned before anything moves: a folder that can't be read in full refuses here.
-  const notes = await markdownPathsInFolder(current.notebook, current.pathParts);
-  const from = relativeFilePath(current.notebook, current.pathParts);
-  const to = relativeFilePath(current.notebook, nextParts);
-  await assertNoLeftoverFolderRecords(current.notebook, nextParts, caseOnly, notes.map((note) => `${to}${note.slice(from.length)}`));
+    // The same folder under another spelling (a case-only rename on a case-insensitive disk) is not a clash.
+    const caseOnly = await isCaseOnlyRename(currentPath, nextPath);
+    if (!caseOnly && await pathExists(nextPath)) {
+      throw new StorageError("Destination folder already exists.", 409);
+    }
+    // Scanned before anything moves: a folder that can't be read in full refuses here.
+    const notes = await markdownPathsInFolder(current.notebook, current.pathParts);
+    const from = relativeFilePath(current.notebook, current.pathParts);
+    const to = relativeFilePath(current.notebook, nextParts);
+    await assertNoLeftoverFolderRecords(current.notebook, nextParts, caseOnly, notes.map((note) => `${to}${note.slice(from.length)}`));
 
-  await migratePdfAnnotationDirectory(current.notebook, current.pathParts);
-  await migrateImageAnnotationDirectory(current.notebook, current.pathParts);
-  for (const note of notes) await migratePythonSidecar(note);
-  // Image URLs are relative to the notebook root, so their paths stay stable.
-  await moveFolderWithRecords(current.notebook, current.pathParts, nextParts, currentPath, nextPath, notes);
-  notifySearchChanges();
+    await migratePdfAnnotationDirectory(current.notebook, current.pathParts);
+    await migrateImageAnnotationDirectory(current.notebook, current.pathParts);
+    for (const note of notes) await migratePythonSidecar(note);
+    // Image URLs are relative to the notebook root, so their paths stay stable.
+    await moveFolderWithRecords(current.notebook, current.pathParts, nextParts, currentPath, nextPath, notes, caseOnly);
+    notifySearchChanges();
 
-  return folderMovePayload(from, to);
+    return folderMovePayload(from, to);
+  });
 }
 
 async function findAvailableDirectoryPath(directory: string, directoryName: string) {
@@ -765,37 +767,39 @@ export async function archiveFolder(relativePath: string) {
   }
 
   const currentPath = itemPath(current.notebook, current.pathParts);
-  assertNotSharedItem(current.notebook, current.pathParts);
-  await assertNotMigrating(itemLibraryPath(current.notebook, current.pathParts));
-  await assertNothingMigratingWithin(itemLibraryPath(current.notebook, current.pathParts));
-  await assertDirectoryExists(currentPath, "Folder was not found.");
+  return withPathLocks([currentPath, itemPath(current.notebook, [ARCHIVE_DIR])], async () => {
+    assertNotSharedItem(current.notebook, current.pathParts);
+    await assertNotMigrating(itemLibraryPath(current.notebook, current.pathParts));
+    await assertNothingMigratingWithin(itemLibraryPath(current.notebook, current.pathParts));
+    await assertDirectoryExists(currentPath, "Folder was not found.");
 
-  // Scanned before anything moves: a folder that can't be read in full refuses here.
-  const notes = await markdownPathsInFolder(current.notebook, current.pathParts);
-  const currentRelativePath = relativeFilePath(current.notebook, current.pathParts);
+    // Scanned before anything moves: a folder that can't be read in full refuses here.
+    const notes = await markdownPathsInFolder(current.notebook, current.pathParts);
+    const currentRelativePath = relativeFilePath(current.notebook, current.pathParts);
 
-  const archiveDirectoryPath = itemPath(current.notebook, [ARCHIVE_DIR]);
-  await mkdir(archiveDirectoryPath, { recursive: true });
+    const archiveDirectoryPath = itemPath(current.notebook, [ARCHIVE_DIR]);
+    await mkdir(archiveDirectoryPath, { recursive: true });
 
-  const currentName = current.pathParts.at(-1) ?? "";
-  // The archive picks its own name: one that holds no folder, nor records (Python code of the notes included) of files that were there before.
-  const incoming = (name: string) => notes.map((note) => `${relativeFilePath(current.notebook, [ARCHIVE_DIR, name])}${note.slice(currentRelativePath.length)}`);
-  let available = await findAvailableDirectoryPath(archiveDirectoryPath, currentName);
-  const indexBlocker = await reviewIndexBlocker();
-  if (indexBlocker) throw new StorageError(indexBlocker, 409);
-  for (let index = 1; (await leftoverFolderRecords(current.notebook, [ARCHIVE_DIR, available.name], false, incoming(available.name))).length; index += 1) {
-    available = await findAvailableDirectoryPath(archiveDirectoryPath, `${currentName}-${index}`);
-  }
-  const nextParts = [ARCHIVE_DIR, available.name];
-  const nextRelativePath = relativeFilePath(current.notebook, nextParts);
+    const currentName = current.pathParts.at(-1) ?? "";
+    // The archive picks its own name: one that holds no folder, nor records (Python code of the notes included) of files that were there before.
+    const incoming = (name: string) => notes.map((note) => `${relativeFilePath(current.notebook, [ARCHIVE_DIR, name])}${note.slice(currentRelativePath.length)}`);
+    let available = await findAvailableDirectoryPath(archiveDirectoryPath, currentName);
+    const indexBlocker = await reviewIndexBlocker();
+    if (indexBlocker) throw new StorageError(indexBlocker, 409);
+    for (let index = 1; (await leftoverFolderRecords(current.notebook, [ARCHIVE_DIR, available.name], false, incoming(available.name))).length; index += 1) {
+      available = await findAvailableDirectoryPath(archiveDirectoryPath, `${currentName}-${index}`);
+    }
+    const nextParts = [ARCHIVE_DIR, available.name];
+    const nextRelativePath = relativeFilePath(current.notebook, nextParts);
 
-  await migratePdfAnnotationDirectory(current.notebook, current.pathParts);
-  await migrateImageAnnotationDirectory(current.notebook, current.pathParts);
-  for (const note of notes) await migratePythonSidecar(note);
-  await moveFolderWithRecords(current.notebook, current.pathParts, nextParts, currentPath, available.path, notes);
-  notifySearchChanges();
+    await migratePdfAnnotationDirectory(current.notebook, current.pathParts);
+    await migrateImageAnnotationDirectory(current.notebook, current.pathParts);
+    for (const note of notes) await migratePythonSidecar(note);
+    await moveFolderWithRecords(current.notebook, current.pathParts, nextParts, currentPath, available.path, notes);
+    notifySearchChanges();
 
-  return { ...await folderMovePayload(currentRelativePath, nextRelativePath), moved: { from: currentRelativePath, to: nextRelativePath } };
+    return { ...await folderMovePayload(currentRelativePath, nextRelativePath), moved: { from: currentRelativePath, to: nextRelativePath } };
+  });
 }
 
 export async function deleteFolder(relativePath: string) {
@@ -807,30 +811,32 @@ export async function deleteFolder(relativePath: string) {
   }
 
   const targetPath = itemPath(current.notebook, current.pathParts);
-  assertNotSharedItem(current.notebook, current.pathParts);
-  await assertNotMigrating(itemLibraryPath(current.notebook, current.pathParts));
-  await assertNothingMigratingWithin(itemLibraryPath(current.notebook, current.pathParts));
-  await assertDirectoryExists(targetPath, "Folder was not found.");
-  // The folder's own notes, read in full before anything is deleted: a note the scan missed would keep its code and images.
-  const markdown = await markdownDocumentsInFolder(current.notebook, current.pathParts);
-  await migratePdfAnnotationDirectory(current.notebook, current.pathParts);
-  await migrateImageAnnotationDirectory(current.notebook, current.pathParts);
-  await rm(targetPath, { recursive: true });
-  await removeFolderSidecars(current.notebook, current.pathParts);
-  for (const document of markdown) await deletePythonSidecar(document.documentPath);
-  const imagesCleaned = await cleanupMarkdownImageAssets(current.notebook, markdown);
-  await deleteReviewPath(relativeFilePath(current.notebook, current.pathParts));
-  await discardReviewsUnder(relativeFilePath(current.notebook, current.pathParts));
-  await detachReferenceAttachments(relativeFilePath(current.notebook, current.pathParts));
-  await removeFileMetadataPathPrefix(relativeFilePath(current.notebook, current.pathParts));
-  await removeNotebookPanelExpandedPathPrefix(
-    relativeFilePath(current.notebook, current.pathParts),
-  );
-  notifySearchChanges();
-  // Not silent: the folder and its records are gone, but images in _assets could not be checked against the rest of the notebook.
-  if (!imagesCleaned) throw new StorageError(`${relativePath} was deleted, but the images its notes uploaded were left behind, because the notebook could not be read in full to check that no other note uses them. Check Notebook lists them.`, 409);
+  return withPathLocks([targetPath], async () => {
+    assertNotSharedItem(current.notebook, current.pathParts);
+    await assertNotMigrating(itemLibraryPath(current.notebook, current.pathParts));
+    await assertNothingMigratingWithin(itemLibraryPath(current.notebook, current.pathParts));
+    await assertDirectoryExists(targetPath, "Folder was not found.");
+    // The folder's own notes, read in full before anything is deleted: a note the scan missed would keep its code and images.
+    const markdown = await markdownDocumentsInFolder(current.notebook, current.pathParts);
+    await migratePdfAnnotationDirectory(current.notebook, current.pathParts);
+    await migrateImageAnnotationDirectory(current.notebook, current.pathParts);
+    await rm(targetPath, { recursive: true });
+    await removeFolderSidecars(current.notebook, current.pathParts);
+    for (const document of markdown) await deletePythonSidecar(document.documentPath);
+    const imagesCleaned = await cleanupMarkdownImageAssets(current.notebook, markdown);
+    await deleteReviewPath(relativeFilePath(current.notebook, current.pathParts));
+    await discardReviewsUnder(relativeFilePath(current.notebook, current.pathParts));
+    await detachReferenceAttachments(relativeFilePath(current.notebook, current.pathParts));
+    await removeFileMetadataPathPrefix(relativeFilePath(current.notebook, current.pathParts));
+    await removeNotebookPanelExpandedPathPrefix(
+      relativeFilePath(current.notebook, current.pathParts),
+    );
+    notifySearchChanges();
+    // Not silent: the folder and its records are gone, but images in _assets could not be checked against the rest of the notebook.
+    if (!imagesCleaned) throw new StorageError(`${relativePath} was deleted, but the images its notes uploaded were left behind, because the notebook could not be read in full to check that no other note uses them. Check Notebook lists them.`, 409);
 
-  return getTree();
+    return getTree();
+  });
 }
 
 export async function moveFileToDirectory(
@@ -1173,14 +1179,16 @@ type FolderMoveStep = { run: () => Promise<unknown>; undo?: () => Promise<unknow
  * half-moved. Only transfers that completed are reversed. A take-back that
  * fails is reported with what is stuck, after the original error's message.
  */
-async function moveFolderWithRecords(notebook: string, fromParts: string[], toParts: string[], fromPath: string, toPath: string, notes: string[]) {
+async function moveFolderWithRecords(notebook: string, fromParts: string[], toParts: string[], fromPath: string, toPath: string, notes: string[], caseOnly = false) {
   const from = relativeFilePath(notebook, fromParts);
   const to = relativeFilePath(notebook, toParts);
   const steps: FolderMoveStep[] = [
-    { run: () => withMovedReviewsUnder(from, to, () => rename(fromPath, toPath)), undo: () => withMovedReviewsUnder(to, from, () => rename(toPath, fromPath)) },
+    // Published without replacing anything at the destination (an empty folder made there meanwhile is kept, not overwritten).
+    { run: () => withMovedReviewsUnder(from, to, () => publishFolder(fromPath, toPath, caseOnly)), undo: () => withMovedReviewsUnder(to, from, () => moveFileWithoutReplacing(toPath, fromPath, { caseOnly })) },
     { run: () => moveFolderSidecars(notebook, fromParts, notebook, toParts) },
     { run: () => moveFolderPythonSidecars(notes, from, to) },
-    { run: () => moveReviewPath(from, to), undo: () => moveReviewPath(to, from) },
+    // An empty review already at a destination gives way, so the moved review is the one that is found (as for a single file).
+    { run: () => moveReviewPath(from, to, { replaceEmpty: true }), undo: () => moveReviewPath(to, from) },
     { run: () => recordFolderMove(from, to), undo: () => recordFolderMove(to, from) },
     { run: () => moveReferenceAttachments(from, to), undo: () => moveReferenceAttachments(to, from) },
     { run: () => renameFileMetadataPathPrefix(from, to), undo: () => renameFileMetadataPathPrefix(to, from) },
@@ -1202,6 +1210,15 @@ async function moveFolderWithRecords(notebook: string, fromParts: string[], toPa
   }
 }
 
+/** The folder itself, never replacing anything at its destination (a folder, even an empty one, made there meanwhile is refused: 409). */
+async function publishFolder(fromPath: string, toPath: string, caseOnly: boolean) {
+  try { await moveFileWithoutReplacing(fromPath, toPath, { caseOnly }); }
+  catch (error) {
+    if (error instanceof StorageError && error.status === 409) throw new StorageError("Destination folder already exists.", 409);
+    throw error;
+  }
+}
+
 /** The notes' Python code follows them (its paths follow the notes', markdown-assets.ts). Never replaces code at a destination; a failure puts back exactly the code that moved. */
 async function moveFolderPythonSidecars(notes: string[], from: string, to: string) {
   const moved: string[] = [];
@@ -1209,7 +1226,7 @@ async function moveFolderPythonSidecars(notes: string[], from: string, to: strin
   const undo = async () => {
     const stuck: string[] = [];
     for (const note of [...moved].reverse()) {
-      try { await movePythonSidecar(target(note), note); } catch { stuck.push(`the Python code of ${note} is now at ${target(note)}.`); }
+      try { await movePythonSidecar(target(note), note, { replace: false }); } catch { stuck.push(`the Python code of ${note} is now at ${target(note)}.`); }
     }
     moved.length = 0;
     if (stuck.length) throw new StorageError(`Could not put back: ${stuck.join(" ")}`, 500);

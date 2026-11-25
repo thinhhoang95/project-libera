@@ -119,8 +119,26 @@ export async function updateReview(id: string, revision: number, change: (doc: R
   });
 }
 const under = (key: string, folder: string) => key === folder || key.startsWith(`${folder}/`);
-export async function moveReviewPath(from: string, to: string) {
+/**
+ * A folder's (or file's) reviews follow it. With `replaceEmpty` (a folder
+ * move), an empty review already at a destination key (opening the file made
+ * it) gives way to the review that really is at the source, so the moved
+ * review is the one `findReviewDocument` returns; one with anything in it is kept.
+ */
+export async function moveReviewPath(from: string, to: string, options: { replaceEmpty?: boolean } = {}) {
   return transaction(async (tx) => {
+    if (options.replaceEmpty && from !== to) {
+      const entries = tx.keys();
+      const reviewed = new Set(entries.map(([, key]) => key));
+      for (const [id, key] of entries) {
+        if (!under(key, to) || under(key, from)) continue;
+        const source = from + key.slice(to.length);
+        if (!reviewed.has(source)) continue;
+        // A review whose file has not synced yet can't be shown to be empty.
+        const doc = await tx.getIfPresent(id);
+        if (doc && isEmptyReview(doc)) tx.remove(id);
+      }
+    }
     // A review whose file has not synced yet still follows its file.
     for (const [id, key] of tx.keys()) if (under(key, from)) {
       const doc = await tx.getIfPresent(id);
