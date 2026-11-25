@@ -1059,16 +1059,17 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
       if (!budget.allows()) break;
       for (const reference of written) {
         await disk.check(reference.candidates);
-        if (reference.candidates.some(disk.exists)) continue;
+        // A spelling the build cannot open (`../x` under openin_any=p, `_folder/x` for \include: latexOpenable) is not found whatever is on disk.
+        if (!reference.uncompilable && reference.candidates.some(disk.exists)) continue;
         // A file the tree does not list (.sty, .cls, an image type it does not show) may still be on disk; TeX needs a readable file, so a folder or a dangling link is not one.
         let state: "present" | "absent" | "unknown" = "absent";
-        for (const candidate of reference.candidates) {
+        for (const candidate of reference.uncompilable ? [] : reference.candidates) {
           const [owner, ...parts] = candidate.split("/");
           const found = await probeFileOnce(path.join(notebookPath(owner), ...parts));
           if (found === "present") { state = "present"; break; }
           if (found === "unknown") state = "unknown";
         }
-        if (state === "absent" && reference.candidates.some(listed)) state = "unknown";
+        if (state === "absent" && !reference.uncompilable && reference.candidates.some(listed)) state = "unknown";
         if (state === "unknown") unchecked += 1;
         if (state === "absent" && reference.main === file) add({ severity: "error", path: file, message: `${what[reference.kind]} "${reference.written}", which is not found.`, fix: "Add the file, or correct the path (paths are read from the main file's folder).", ...say("latexMissing", { kind: reference.kind, written: reference.written }, "latexMissingFix") });
         // A chapter is built from its main file: the one that loses the file is named.
