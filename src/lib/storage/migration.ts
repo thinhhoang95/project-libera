@@ -23,7 +23,7 @@ import { StorageError } from "@/lib/storage/errors";
 import { getFileType } from "@/lib/storage/file-types";
 import { writeJsonAtomically } from "@/lib/storage/fs-utils";
 import { cleanupMarkdownImageAssets, copyMarkdownImageAssets, markdownImageTargets, readMarkdownAssetDocuments, type MarkdownAssetBatch } from "@/lib/storage/markdown-assets";
-import { moveReviewPaths, rewriteReviewSnapshots } from "@/lib/storage/markdown-reviews";
+import { moveReviewPaths } from "@/lib/storage/markdown-reviews";
 import { destinationRecords } from "@/lib/storage/destination-records";
 import { checkNothingLeftAt } from "@/lib/storage/integrity";
 import { assertLifecycleReservation, claimNotebooksForMigration, migrationJournalDirectory, migrationJournalsChanged, waitForInFlightWriters, withLifecycleReservation } from "@/lib/storage/migration-fence";
