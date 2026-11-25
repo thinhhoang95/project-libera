@@ -26,6 +26,8 @@ export function useTiptapDraft(
   const current = useRef({ editor, onChange });
   const pending = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** A replacement waiting for an IME composition to end. */
+  const deferred = useRef<string | null>(null);
   useLayoutEffect(() => { current.current = { editor, onChange }; }, [editor, onChange]);
 
   const cancel = useCallback(() => {
@@ -60,10 +62,32 @@ export function useTiptapDraft(
     // Never a whole-document setContent on a shared tab: the workspace
     // applied the new text to the Y.Text and the bridge brings it in.
     if (sharedRef.current) return;
+    // A replacement during IME composition would destroy the composition: it waits for the composition to end.
+    const live = current.current.editor;
+    if (live && !live.isDestroyed && live.view.composing) { deferred.current = markdown; return; }
+    deferred.current = null;
     cancel();
     lastValueRef.current = markdown;
-    current.current.editor?.commands.setContent(markdown, { contentType: "markdown", emitUpdate: false });
+    live?.commands.setContent(markdown, { contentType: "markdown", emitUpdate: false });
   }, [cancel, lastValueRef]);
+
+  // The replacement held back by a composition goes in when it ends (a one-shot, no polling).
+  useLayoutEffect(() => {
+    if (!editor || isShared) return;
+    const dom = editor.view.dom;
+    let settle: ReturnType<typeof setTimeout> | null = null;
+    const ended = () => {
+      if (deferred.current === null) return;
+      // ProseMirror clears its composing flag around this event: look once it has.
+      settle = setTimeout(() => {
+        settle = null;
+        const held = deferred.current;
+        if (held !== null && !editor.isDestroyed && !editor.view.composing) replace(held);
+      }, 0);
+    };
+    dom.addEventListener("compositionend", ended);
+    return () => { dom.removeEventListener("compositionend", ended); if (settle !== null) clearTimeout(settle); };
+  }, [editor, isShared, replace]);
 
   useLayoutEffect(() => {
     if (!editor || isShared) return;
@@ -94,6 +118,7 @@ export function useTiptapDraft(
   useLayoutEffect(() => {
     // Parent echoes must not reset selection/history or cancel newer typing.
     if (editor && !isShared && value !== lastValueRef.current) replace(value);
+    else deferred.current = null; // the text the editor holds is the value again: nothing is waiting
   }, [editor, value, lastValueRef, replace, isShared]);
 
   return { read, replace, pending };

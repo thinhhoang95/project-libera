@@ -2,6 +2,7 @@
 
 import { useTranslations } from "next-intl";
 import { createContext, createRef, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { reviewsMovedAffect, trackLeavingWrite } from "./reviews-moved";
 import { syncReview, commentRange, paragraphRange, plainParagraphRange, ReviewDraftTracker, REVIEWS_MOVED_EVENT, type ReviewDocument, type ReviewRange } from "@/lib/markdown-review";
 import type { ChatContext } from "@/lib/document-chat";
 import type { OpenTab } from "./types";
@@ -361,7 +362,7 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
   }, [key, publish, snapshot, localStore, tabState]);
   // Try to fix moved an older review to this path (in place of the empty one opening it made): show it.
   useEffect(() => {
-    const onMoved = (event: Event) => { if (key && (event as CustomEvent<{ paths?: string[] }>).detail?.paths?.includes(key)) void reload(); };
+    const onMoved = (event: Event) => { if (key && reviewsMovedAffect((event as CustomEvent<{ paths?: string[] }>).detail?.paths, key)) void reload(); };
     window.addEventListener(REVIEWS_MOVED_EVENT, onMoved);
     return () => window.removeEventListener(REVIEWS_MOVED_EVENT, onMoved);
   }, [key, reload]);
@@ -453,8 +454,7 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
   useEffect(() => () => {
     const write = flushTab();
     if (!write) return;
-    leaving.current.add(write);
-    void write.finally(() => leaving.current.delete(write)).catch(() => undefined);
+    trackLeavingWrite(leaving.current, write);
   }, [flushTab]);
   // Sync/reload only persist/read metadata. Toggling contenteditable for them
   // drops browser focus and can leave an IME composition stranded.

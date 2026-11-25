@@ -97,6 +97,9 @@ import { movesFromRepairMessage, REPAIR_CHANNEL_NAME } from "./repair-channel";
 import type { ReferenceMoveResult } from "@/lib/references/moves";
 import { remapDocumentHeadingNumbering } from "./heading-numbering-state";
 import { agentReviewStore } from "@/lib/agent-review/store";
+import { announceTextReplaced } from "./link-rewrite-echo";
+import { moveItemLinks } from "./batch-move-links";
+import { announceReviewsMoved, reviewPathsTouchedBy } from "./reviews-moved";
 import { replaceTextareaSelectionWithUndo } from "@/lib/textarea-editing";
 import { findMarkdownBlockInsertionOffset, insertMarkdownBlock } from "@/lib/ai-write";
 import { beginAiActivity } from "@/lib/ai-activity";
@@ -601,7 +604,27 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   }
 
   function workspaceFileRequest<T>(url: string, init: RequestInit, describe: (result: T) => WorkspaceFileChange, onPersistFailed?: (error: Error) => void) {
-    return workspaceManager.runFileChange(() => apiRequest<T>(url, init), describe, onPersistFailed);
+    // Review baselines still waiting for their delay are keyed by paths this request may change: they go first
+    // (nothing waits, nothing happens). A request that moved files or rewrote links then has this window's
+    // review state and open reviews read again (afterMoveReviewState).
+    let touched: string[] = [];
+    return workspaceManager.runFileChange(async () => {
+      await agentReviewStore.flushUnsent().catch(() => undefined);
+      return apiRequest<T>(url, init);
+    }, (result) => {
+      const change = describe(result);
+      touched = reviewPathsTouchedBy(change, (result as { links?: LiberaLinkRewrites } | null)?.links);
+      return change;
+    }, onPersistFailed).then((result) => {
+      if (touched.length) afterMoveReviewState(touched);
+      return result;
+    });
+  }
+
+  /** The review state of this window after files moved or notes were rewritten: open reviews and the agent-review list read their stored state again. */
+  function afterMoveReviewState(paths: readonly string[]) {
+    void agentReviewStore.refreshIfLoaded();
+    announceReviewsMoved(paths);
   }
 
   async function applyCompleteTree(nextTree: LiberaTree) {
@@ -1701,10 +1724,11 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
    * save baseline, and the notices say what changed with it. The caller refreshes the
    * tree (once for a batch). A batch reports once per file, as before.
    */
-  function followFileMove(fromPath: string, payload: LiberaFileMovePayload) {
+  function followFileMove(fromPath: string, payload: LiberaFileMovePayload, options: { report?: boolean } = {}) {
     retargetOpenTab(fromPath, payload);
     applyLinkRewritesToTabs(payload.links, [payload.file.path]);
-    reportMoveOutcome({ references: payload.references, notebook: payload.file.notebook, links: payload.links, unfinished: payload.unfinished });
+    // A batch reports once for all its files (moveFilesToFolder): a notice per file would replace the last one.
+    if (options.report !== false) reportMoveOutcome({ references: payload.references, notebook: payload.file.notebook, links: payload.links, unfinished: payload.unfinished });
   }
 
   /**
@@ -1736,6 +1760,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     const payload = await apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(to)}`).catch(() => null)
       ?? { file: { ...file, path: to, name: to.split("/").at(-1)!, notebook: to.split("/")[0] } };
     followFileMove(from, { ...payload, moved: committed.moved, unfinished: committed.unfinished, ...(committed.links ? { links: committed.links } : {}) });
+    afterMoveReviewState(reviewPathsTouchedBy({ moved: committed.moved }, committed.links));
     await refreshTree().catch(() => undefined);
   }
 
@@ -1751,15 +1776,25 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     if (!rewrite) return;
     for (const { path } of links!.rewritten) {
       if (skip.includes(path)) continue;
-      const tab = tabsRef.current.find((item) => item.id === path && !item.untitled);
-      if (!tab || !isTextFileType(tab.file.fileType) || !mayTakeContentFromDisk(path, isSharedTab)) continue;
-      const next = rewriteOpenText({ saved: tab.saved, draft: getTabDraft(tab), conflict: tab.diskConflict?.text }, (text) => rewrite(path, text));
-      rememberTabDraft(path, next.draft);
-      updateTab(path, (current) => ({
-        ...current, saved: next.saved, draft: next.draft,
-        ...(current.diskConflict ? { diskConflict: { text: next.conflict ?? null } } : { status: next.draft === next.saved ? "clean" as const : "dirty" as const, error: undefined }),
-      }));
+      // A save in flight writes the text it started with and then records it as saved: the rewrite waits for it
+      // (the queue runs it after the save, which leaves the tab as it was).
+      if (saveQueueRef.current.busy(path)) { void saveQueueRef.current.run(path, async () => applyLinkRewriteToTab(path, rewrite)); continue; }
+      applyLinkRewriteToTab(path, rewrite);
     }
+  }
+
+  function applyLinkRewriteToTab(path: string, rewrite: (path: string, text: string) => string) {
+    const tab = tabsRef.current.find((item) => item.id === path && !item.untitled);
+    if (!tab || !isTextFileType(tab.file.fileType) || !mayTakeContentFromDisk(path, isSharedTab)) return;
+    const next = rewriteOpenText({ saved: tab.saved, draft: getTabDraft(tab), conflict: tab.diskConflict?.text }, (text) => rewrite(path, text));
+    rememberTabDraft(path, next.draft);
+    // Synchronous, so tabsRef is current at once for a checkpoint or save right after.
+    changeTabsNow((all) => all.map((current) => current.id !== path ? current : {
+      ...current, saved: next.saved, draft: next.draft,
+      ...(current.diskConflict ? { diskConflict: { text: next.conflict ?? null } } : { status: next.draft === next.saved ? "clean" as const : "dirty" as const, error: undefined }),
+    }));
+    // An editor that published this very text before must not take it for its own echo (link-rewrite-echo.ts).
+    announceTextReplaced(next.draft);
   }
 
   /**
@@ -1767,18 +1802,22 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
    * "Updated links in N notes", and as a warning what could not follow (links
    * left as written, notebooks not read in full, steps that did not finish).
    */
-  function reportMoveOutcome({ references, notebook, links, unfinished }: { references?: ReferenceMoveResult | null; notebook: string; links?: LiberaLinkRewrites; unfinished?: LiberaMoveStep[] }) {
+  function reportMoveOutcome({ references, notebook, links, unfinished }: { references?: ReferenceMoveResult | ReferenceMoveResult[] | null; notebook: string; links?: LiberaLinkRewrites; unfinished?: LiberaMoveStep[] }) {
     const t = tRef.current;
     const parts: string[] = [];
     let warning = false;
-    if (references) {
-      if (references.destinationRevision !== null) announceReferenceLibraryChange(notebook, references.destinationRevision);
-      const summary = referenceMoveSummary(references, notebook);
-      const values = summary?.values;
-      // Alone, the notice translates itself; beside the links it is translated here.
-      if (summary && !links?.rewritten.length && !links?.skipped.length && !links?.unchecked.length && !unfinished?.length) { setReferenceMoveNotice({ id: Date.now(), ...summary }); return; }
-      if (summary) parts.push(!values ? summary.text : values.error !== undefined ? tReferencesRef.current("movedCopyFailed", { destination: values.destination, error: values.error }) : tReferencesRef.current("summary", values));
-      warning ||= summary?.tone === "warning";
+    const summaries: NonNullable<ReturnType<typeof referenceMoveSummary>>[] = [];
+    for (const reference of Array.isArray(references) ? references : references ? [references] : []) {
+      if (reference.destinationRevision !== null) announceReferenceLibraryChange(notebook, reference.destinationRevision);
+      const summary = referenceMoveSummary(reference, notebook);
+      if (summary) summaries.push(summary);
+    }
+    // Alone, the notice translates itself; beside the links (or other files' notices) it is translated here.
+    if (summaries.length === 1 && !links?.rewritten.length && !links?.skipped.length && !links?.unchecked.length && !unfinished?.length) { setReferenceMoveNotice({ id: Date.now(), ...summaries[0] }); return; }
+    for (const summary of summaries) {
+      const values = summary.values;
+      parts.push(!values ? summary.text : values.error !== undefined ? tReferencesRef.current("movedCopyFailed", { destination: values.destination, error: values.error }) : tReferencesRef.current("summary", values));
+      warning ||= summary.tone === "warning";
     }
     const updated = new Set(links?.rewritten.map((item) => item.path)).size;
     if (updated) parts.push(t("movedLinksUpdated", { count: updated }));
@@ -4174,6 +4213,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
 
     try {
+      await flushReviewsUnder([file.path]).catch(() => undefined);
       const payload = await workspaceFileRequest<LiberaFileMovePayload>("/api/files", {
         method: "PATCH",
         body: JSON.stringify({
@@ -4241,6 +4281,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
 
     try {
+      await flushReviewsUnder(moving.map((file) => file.path)).catch(() => undefined);
       const result = await workspaceFileRequest<BatchMoveResult>("/api/files/batch", {
         method: "POST",
         body: JSON.stringify({
@@ -4259,17 +4300,26 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       });
       // Each moved file's payload carries its own rewrite, for its tab; the batch's one links step rewrote the rest,
       // which open notes get once here (the moved files' tabs already have theirs).
+      // The files' own notices are combined into one (a notice per file would replace the one before).
+      const references: ReferenceMoveResult[] = [];
       for (const item of result.moved) {
-        if (item.payload) { followFileMove(item.from, item.payload); continue; }
+        // Its own link rewrite reaches its tab with the move, from its payload, or, when the server has no payload for
+        // it, from the item's links or the batch's (batch-move-links.ts).
+        const ownLinks = moveItemLinks(item, result.links);
+        if (item.payload) {
+          followFileMove(item.from, ownLinks && !item.payload.links ? { ...item.payload, links: ownLinks } : item.payload, { report: false });
+          if (item.payload.references) references.push(item.payload.references);
+          continue;
+        }
         // Moved, but the server has no result for it (a step after the move stayed behind, or its result could not be read):
         // its tab follows it anyway, as for a single move the host committed.
         const file = moving.find((candidate) => candidate.path === item.from);
         const payload = await apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(item.to)}`).catch(() => null)
           ?? (file ? { file: { ...file, path: item.to, name: item.to.split("/").at(-1)!, notebook: item.to.split("/")[0] } } : null);
-        if (payload) followFileMove(item.from, { ...payload, moved: { from: item.from, to: item.to } });
+        if (payload) followFileMove(item.from, { ...payload, moved: { from: item.from, to: item.to }, ...(ownLinks ? { links: ownLinks } : {}) }, { report: false });
       }
       applyLinkRewritesToTabs(result.links, result.moved.map((item) => item.to));
-      if (result.links || result.unfinished) reportMoveOutcome({ notebook: files[0].notebook, links: result.links, unfinished: result.unfinished });
+      if (result.links || result.unfinished || references.length) reportMoveOutcome({ references, notebook: files[0].notebook, links: result.links, unfinished: result.unfinished });
       const stayedBehind = batchUnfinishedMessage(result.moved.flatMap((item) => item.unfinished?.length ? [{ path: item.to, steps: item.unfinished }] : []));
       if (result.failed || stayedBehind) {
         setWorkspaceError([

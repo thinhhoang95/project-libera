@@ -21,14 +21,15 @@ export async function apiRequest<T>(url: string, init?: RequestInit): Promise<T>
     // The status lets a caller tell "not found" from other failures; a move that happened anyway says what it did (committedMove).
     const committed = payload as unknown as Partial<CommittedMove>;
     // A shared notebook's operation the host committed although a step after it did not finish (SharedOperationUnfinishedError): what the host did, and what stayed behind.
-    const shared = payload as unknown as Partial<SharedCommitted>;
-    const sharedDone = Array.isArray(shared.committed) && Array.isArray(shared.unfinished) ? { committed: shared.committed, unfinished: shared.unfinished.map(String) } : null;
+    const shared = payload as unknown as Partial<SharedCommitted> & { links?: LiberaLinkRewrites };
+    const sharedLinks = shared.links && Array.isArray(shared.links.rewritten) ? shared.links : undefined;
+    const sharedDone = Array.isArray(shared.committed) && Array.isArray(shared.unfinished) ? { committed: shared.committed, unfinished: shared.unfinished.map(String), ...(sharedLinks ? { links: sharedLinks } : {}) } : null;
     const single = sharedDone && sharedDone.committed.length === 1 && sharedDone.committed[0].to !== null ? sharedDone.committed[0] : null;
     throw Object.assign(new Error(payload.error ?? "Request failed."), {
       status: response.status,
       ...(committed.moved && Array.isArray(committed.unfinished) ? { committed: { moved: committed.moved, unfinished: committed.unfinished, ...(committed.links ? { links: committed.links } : {}) } } : {}),
       // A single shared file's move is a committed move like a local one: the tab follows it and the notice lists what stayed.
-      ...(single && sharedDone ? { committed: { moved: { from: single.from, to: single.to as string }, unfinished: sharedDone.unfinished.map((message): LiberaMoveStep => ({ step: "records", status: "failed", message })) } } : {}),
+      ...(single && sharedDone ? { committed: { moved: { from: single.from, to: single.to as string }, unfinished: sharedDone.unfinished.map((message): LiberaMoveStep => ({ step: "records", status: "failed", message })), ...(sharedLinks ? { links: sharedLinks } : {}) } } : {}),
       ...(sharedDone ? { sharedCommitted: sharedDone } : {}),
     });
   }
@@ -40,7 +41,7 @@ export async function apiRequest<T>(url: string, init?: RequestInit): Promise<T>
 export type CommittedMove = { moved: { from: string; to: string }; unfinished: LiberaMoveStep[]; links?: LiberaLinkRewrites };
 
 /** What a shared operation did before a step after it failed: every file the host moved (`to` null: deleted) and the steps that stayed behind. */
-export type SharedCommitted = { committed: Array<{ from: string; to: string | null; fileId?: string }>; unfinished: string[] };
+export type SharedCommitted = { committed: Array<{ from: string; to: string | null; fileId?: string }>; unfinished: string[]; links?: LiberaLinkRewrites };
 
 /** The shared operation an apiRequest error says the host committed, or null (the operation did not happen, or was not a shared one). */
 export function sharedCommitted(error: unknown): SharedCommitted | null {

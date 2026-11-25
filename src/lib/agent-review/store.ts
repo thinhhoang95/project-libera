@@ -161,6 +161,20 @@ export const agentReviewStore = {
     if (error !== null) { error = null; notify(); }
   },
 
+  /** After a move: reads the review state again, but only when it was ever read (otherwise there is nothing stale to replace). */
+  refreshIfLoaded() {
+    return loaded ? agentReviewStore.refresh() : Promise.resolve();
+  },
+
+  /**
+   * Sends the baselines still waiting for their delay (or on their way) now, before a move or rename changes
+   * the paths they are keyed by. Nothing happens when none is waiting; a failed send stays pending, as in `flush`.
+   */
+  async flushUnsent() {
+    const paths = [...new Set([...unsent.keys(), ...sending.keys()])];
+    if (paths.length) await agentReviewStore.flush(paths);
+  },
+
   /** Accept every change in these files. */
   async keep(paths: string[]) {
     await agentReviewStore.flush(paths);
