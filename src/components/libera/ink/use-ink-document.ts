@@ -85,6 +85,8 @@ export class InkWriter {
     });
     this.target = moved(this.target);
     if (this.retry) this.retry = { ...this.retry, target: moved(this.retry.target) };
+    // A request already sent cannot be taken back, but if it fails the batch must come back aimed at the new path.
+    if (this.inFlight) this.inFlight = { ...this.inFlight, target: moved(this.inFlight.target) };
     this.remember();
   }
 
@@ -189,7 +191,8 @@ export class InkWriter {
       } catch (cause) {
         // Kept for the next Save; the journal still has it.
         if (generation === this.generation) {
-          this.retry = batch;
+          // Not `batch`: a move while the request ran retargeted the in-flight copy (retarget).
+          this.retry = this.inFlight ?? batch;
           // An empty message is worded by the hook (it has the translator).
           this.onError(cause instanceof Error ? cause.message : "");
         }

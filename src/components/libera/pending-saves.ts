@@ -27,7 +27,10 @@ type Entry = {
   retarget?: (path: string, sources?: Record<string, string>) => void;
 };
 
-const entries = new Map<string, Map<string, Entry & { mounted: boolean }>>();
+/** A registered view; `path` is where it is registered now (a move changes it), which its unmount cleanup follows. */
+type Registered = Entry & { mounted: boolean; path: string };
+
+const entries = new Map<string, Map<string, Registered>>();
 const listeners = new Set<() => void>();
 let version = 0;
 
@@ -52,7 +55,10 @@ const waiting = new Map<string, { timer: ReturnType<typeof setTimeout>; record: 
 // Keep the latest value after its timer fires too: IndexedDB can be unavailable.
 // Null also prevents the initial database scan from resurrecting a removed key.
 const records = new Map<string, JournalRecord | null>();
+// Paths whose records the startup scan must drop. Only the scan reads this: once it has run the set is cleared
+// and no longer grows, so a later put() for such a path is never mistaken for a discarded record.
 const discardedPaths = new Set<string>();
+let scanned = false;
 const writes = new Set<Promise<void>>();
 
 function track(write: Promise<void>) {
@@ -83,6 +89,8 @@ function open(): Promise<IDBDatabase | null> {
             addJournaled(record.path, record.key);
           }
         }
+        scanned = true;
+        discardedPaths.clear();
         changed();
         resolve(db);
       };
@@ -196,7 +204,7 @@ export const unsavedJournal = {
 
   /** Drops every unsaved change kept for a file: Close without saving. */
   removePath(path: string) {
-    discardedPaths.add(path);
+    if (!scanned) discardedPaths.add(path);
     const keys = [...(journaled.get(path) ?? [])];
     for (const key of keys) this.remove(path, key);
   },
@@ -239,20 +247,21 @@ function keyTaken(path: string, key: string) {
 export const pendingSaves = {
   /** A view's unsaved state for a file; returns the function that unregisters it. */
   register(path: string, key: string, entry: Entry) {
-    const registered = { ...entry, mounted: true };
-    const forPath = entries.get(path) ?? new Map<string, Entry & { mounted: boolean }>();
+    const registered: Registered = { ...entry, mounted: true, path };
+    const forPath = entries.get(path) ?? new Map<string, Registered>();
     forPath.set(key, registered);
     entries.set(path, forPath);
     changed();
     return () => {
-      const current = entries.get(path);
+      // The view's file may have moved since it registered: follow the registration, not the first path.
+      const current = entries.get(registered.path);
       if (current?.get(key) !== registered) return;
       registered.mounted = false;
       // Source mode and tab switches can unmount a dirty view. Save must still
       // be able to write it, and a remount must reuse any request in flight.
       if (registered.dirty) return;
       current.delete(key);
-      if (!current.size) entries.delete(path);
+      if (!current.size) entries.delete(registered.path);
       changed();
     };
   },
@@ -308,8 +317,8 @@ export const pendingSaves = {
    * retargeted, and journal their state under the new path; recovery records
    * of views that are not open move as they are.
    */
-  moveUnsaved(from: string, to: string, options: { prefix?: boolean; sources?: Record<string, string> } = {}) {
-    if (from === to) return;
+  moveUnsaved(from: string, to: string, options: { prefix?: boolean; sources?: Record<string, string>; after?: Promise<unknown> } = {}): Promise<void> {
+    if (from === to) return Promise.resolve();
     const moved = (path: string) => (path === from ? to : options.prefix && path.startsWith(`${from}/`) ? `${to}${path.slice(from.length)}` : null);
     // A key the destination already has is not overwritten (two tabs open on one file): it stays at the old path.
     const blocked = new Set<string>();
@@ -333,10 +342,11 @@ export const pendingSaves = {
     for (const [path, forPath] of [...entries]) {
       const next = moved(path);
       if (!next) continue;
-      const target = entries.get(next) ?? new Map<string, Entry & { mounted: boolean }>();
+      const target = entries.get(next) ?? new Map<string, Registered>();
       for (const [key, entry] of [...forPath]) {
         if (blocked.has(recordId(path, key))) continue;
         forPath.delete(key);
+        entry.path = next;
         target.set(key, entry);
         entry.retarget?.(next, options.sources);
       }
@@ -344,11 +354,14 @@ export const pendingSaves = {
       if (target.size) entries.set(next, target);
     }
     changed();
-    void open().then(() => {
+    // Records not read from IndexedDB yet move once it has been read; the promise settles when they all have.
+    return (options.after ? options.after.catch(() => undefined) : Promise.resolve()).then(() => open()).then(() => {
+      const tails: Promise<void>[] = [];
       for (const path of [...journaled.keys()]) {
         const next = moved(path);
-        if (next) void unsavedJournal.movePath(path, next);
+        if (next) tails.push(unsavedJournal.movePath(path, next));
       }
+      return Promise.all(tails).then(() => undefined);
     });
   },
 
@@ -358,15 +371,17 @@ export const pendingSaves = {
    * move's source (a swap), one at a time would merge two files' changes under
    * one path, so every file first goes to a name of its own, then to its destination.
    */
-  moveUnsavedMany(moves: readonly { from: string; to: string; sources?: Record<string, string> }[]) {
+  moveUnsavedMany(moves: readonly { from: string; to: string; sources?: Record<string, string> }[]): Promise<void> {
     const list = moves.filter((move) => move.from !== move.to);
     if (!movesOverlap(list)) {
-      for (const move of list) this.moveUnsaved(move.from, move.to, { sources: move.sources });
-      return;
+      return Promise.all(list.map((move) => this.moveUnsaved(move.from, move.to, { sources: move.sources }))).then(() => undefined);
     }
     const staging = (index: number) => `${list[index].to}\0moving-${index}`;
-    list.forEach((move, index) => this.moveUnsaved(move.from, staging(index)));
-    list.forEach((move, index) => this.moveUnsaved(staging(index), move.to, { sources: move.sources }));
+    // Live views and the records already read move at once, in order. The records still in IndexedDB move in the
+    // same two steps: the second step starts only after every first step has written its staging record.
+    const first = Promise.all(list.map((move, index) => this.moveUnsaved(move.from, staging(index))));
+    const second = Promise.all(list.map((move, index) => this.moveUnsaved(staging(index), move.to, { sources: move.sources, after: first })));
+    return second.then(() => undefined);
   },
 
   /** Close without saving: the unsaved changes are dropped, here and in the journal. */
@@ -388,6 +403,8 @@ export function resetPendingSavesForTests() {
   records.clear();
   discardedPaths.clear();
   database = null;
+  scanned = false;
+  discardedPaths.clear();
   journaled.clear();
   entries.clear();
   changed();

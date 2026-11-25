@@ -13,6 +13,7 @@ import {
   type SegmentEdits,
 } from "@/lib/transcription/edits";
 import type { TranscriptSegment } from "@/lib/transcription/types";
+import { pendingSaves, unsavedJournal } from "@/components/libera/pending-saves";
 
 /**
  * Transcripts and recaps read like a document the reader can type into: each
@@ -230,13 +231,26 @@ export function useFlushWhenEditingEnds(flush: (closing: boolean) => void) {
 
 type Typing<Key> = { key: Key; text: string };
 
-/** A transcript being corrected: the shown passages, the line operations and the save at the end. */
-export function useSegmentDraft({ base, saved, save }: {
+/** Where a transcript's unsaved corrections are registered (pending-saves.ts), under the recording's path. */
+export const SEGMENT_DRAFT_KEY = "transcript:segments";
+
+const isSegmentEdits = (value: unknown): value is SegmentEdits =>
+  !!value && typeof value === "object" && typeof (value as SegmentEdits).basedOn === "number" && Array.isArray((value as SegmentEdits).segments);
+
+/**
+ * A transcript being corrected: the shown passages, the line operations and the save at the end.
+ *
+ * With `pendingPath` (a saved recording's library path) the corrections count as unsaved: the tab's dot, the move
+ * prompt, Save and the quit prompt see them, the recovery journal keeps them, and when the file moves they follow it
+ * (the view is remounted at the new path and takes them back from the journal) instead of being saved to the old path.
+ */
+export function useSegmentDraft({ base, saved, save, pendingPath }: {
   /** The passages as transcribed (live: as they come). */
   base: TranscriptSegment[];
   /** Edits already saved (live); null for a saved transcript, whose base holds them. */
   saved: SegmentEdits | null;
   save: (change: { edits: SegmentEdits; segments: TranscriptSegment[] }, closing: boolean) => Promise<unknown>;
+  pendingPath?: string;
 }) {
   const [draft, setDraft] = useState<SegmentEdits | null>(null);
   const edits = draft ?? saved;
@@ -244,9 +258,12 @@ export function useSegmentDraft({ base, saved, save }: {
   const [focus, setFocus] = useState<{ index: number; offset: number; nonce: number } | null>(null);
   const typing = useRef<Typing<number> | null>(null);
   const sent = useRef<SegmentEdits | null>(null);
-  const latest = useRef({ base, saved, draft, edits, segments, save });
+  const inflight = useRef<Promise<void> | null>(null);
+  /** Where the unsaved state is registered now: the prop, until a move changes it before the props catch up. */
+  const registeredPath = useRef(pendingPath);
+  const latest = useRef({ base, saved, draft, edits, segments, save, pendingPath });
   useLayoutEffect(() => {
-    latest.current = { base, saved, draft, edits, segments, save };
+    latest.current = { base, saved, draft, edits, segments, save, pendingPath };
   });
 
   // Stable, so passages that did not change need not render again while the recording plays.
@@ -254,38 +271,70 @@ export function useSegmentDraft({ base, saved, save }: {
     const change = (next: SegmentEdits | null) => {
       if (next && next !== latest.current.edits) setDraft(next);
     };
-    return {
-      flush(closing: boolean) {
-        const { base: current, saved: savedEdits, draft: currentDraft, save: saveEdits } = latest.current;
-        let next = currentDraft;
-        const pending = typing.current;
-        typing.current = null;
-        if (pending) {
-          const applied = setSegmentText(current, next ?? savedEdits, pending.key, cleanLineText(pending.text));
-          if (applied && applied !== (next ?? savedEdits)) {
-            next = applied;
-            setDraft(applied);
-          }
+    const markDirty = (dirty: boolean) => {
+      const path = registeredPath.current;
+      if (path) pendingSaves.setDirty(path, SEGMENT_DRAFT_KEY, dirty);
+    };
+    const settled = (done: SegmentEdits) => {
+      const path = registeredPath.current;
+      // A newer edit (or a move that re-journaled this one) is not what was saved.
+      if (!path || latest.current.draft !== done) return;
+      pendingSaves.setDirty(path, SEGMENT_DRAFT_KEY, false);
+      unsavedJournal.remove(path, SEGMENT_DRAFT_KEY);
+    };
+    /** Sends the corrections now; the promise settles with the save. */
+    const run = (closing: boolean): Promise<void> => {
+      const { base: current, saved: savedEdits, draft: currentDraft, save: saveEdits, pendingPath: wanted } = latest.current;
+      // The file moved and this view still belongs to the old path (it is unmounting): its save would go there.
+      // The corrections were journaled under the new path, where the view that replaces this one takes them up.
+      if (wanted !== registeredPath.current) return Promise.resolve();
+      let next = currentDraft;
+      const pending = typing.current;
+      typing.current = null;
+      if (pending) {
+        const applied = setSegmentText(current, next ?? savedEdits, pending.key, cleanLineText(pending.text));
+        if (applied && applied !== (next ?? savedEdits)) {
+          next = applied;
+          setDraft(applied);
         }
-        if (!next || next === sent.current) return;
-        sent.current = next;
-        const clean = withoutEmptySegments(next);
-        const sending = next;
-        saveEdits({ edits: clean, segments: applySegmentEdits(current, clean) }, closing).then(
-          () => setDraft((value) => (value === sending ? null : value)),
-          () => {
-            // Kept, and saved again when the editing next ends.
-            sent.current = null;
-          },
-        );
+      }
+      if (!next) {
+        markDirty(false);
+        return Promise.resolve();
+      }
+      if (next === sent.current) return inflight.current ?? Promise.resolve();
+      sent.current = next;
+      const clean = withoutEmptySegments(next);
+      const sending = next;
+      const request = saveEdits({ edits: clean, segments: applySegmentEdits(current, clean) }, closing).then(
+        () => {
+          setDraft((value) => (value === sending ? null : value));
+          settled(sending);
+        },
+        (failure: unknown) => {
+          // Kept, and saved again when the editing next ends.
+          sent.current = null;
+          throw failure;
+        },
+      );
+      inflight.current = request.then(() => undefined, () => undefined);
+      return request;
+    };
+    return {
+      run,
+      flush(closing: boolean) {
+        run(closing).catch(() => undefined);
       },
       type(index: number, text: string) {
         typing.current = { key: index, text };
+        markDirty(true);
       },
       commit(index: number, text: string) {
         typing.current = null;
         const { base: current, edits: currentEdits } = latest.current;
-        change(setSegmentText(current, currentEdits, index, text));
+        const next = setSegmentText(current, currentEdits, index, text);
+        change(next);
+        if ((!next || next === currentEdits) && !latest.current.draft) markDirty(false);
       },
       split(index: number, text: string, offset: number) {
         typing.current = null;
@@ -318,6 +367,53 @@ export function useSegmentDraft({ base, saved, save }: {
       },
     };
   }, []);
+
+  // The unsaved corrections follow the draft: counted as unsaved, and kept in the recovery journal.
+  useEffect(() => {
+    const path = registeredPath.current;
+    if (!path || !draft) return;
+    pendingSaves.setDirty(path, SEGMENT_DRAFT_KEY, true);
+    unsavedJournal.put(path, SEGMENT_DRAFT_KEY, draft);
+  }, [draft]);
+
+  // Registered under the recording's path; takes back what a crash, a restart or a move left in the journal.
+  useEffect(() => {
+    if (!pendingPath) return;
+    registeredPath.current = pendingPath;
+    let cancelled = false;
+    const unregister = pendingSaves.register(pendingPath, SEGMENT_DRAFT_KEY, {
+      dirty: latest.current.draft !== null,
+      save: () => actions.run(false),
+      discard: () => {
+        typing.current = null;
+        sent.current = null;
+        setDraft(null);
+      },
+      retarget: (next) => {
+        // Fold in a line being typed, then keep everything under the new path: this view is about to be replaced.
+        const { base: current, saved: savedEdits, draft: currentDraft } = latest.current;
+        let kept = currentDraft;
+        const pending = typing.current;
+        if (pending) {
+          const applied = setSegmentText(current, kept ?? savedEdits, pending.key, cleanLineText(pending.text));
+          if (applied && applied !== (kept ?? savedEdits)) kept = applied;
+        }
+        registeredPath.current = next;
+        if (kept) {
+          pendingSaves.setDirty(next, SEGMENT_DRAFT_KEY, true);
+          unsavedJournal.put(next, SEGMENT_DRAFT_KEY, kept);
+        }
+      },
+    });
+    void unsavedJournal.get<unknown>(pendingPath, SEGMENT_DRAFT_KEY).then((kept) => {
+      if (cancelled || !isSegmentEdits(kept) || latest.current.draft) return;
+      setDraft(kept);
+    });
+    return () => {
+      cancelled = true;
+      unregister();
+    };
+  }, [pendingPath, actions]);
 
   return { segments, focus, edited: draft !== null, ...actions };
 }
