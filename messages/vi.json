@@ -5451,7 +5451,6 @@
     "tryToFix": "Thử sửa…",
     "understandDeletedForGood": "Tôi hiểu rằng các mục này sẽ bị xóa vĩnh viễn",
     "unmatchedNone": "Không có tệp nào tên này trong sổ tay.",
-    "unmatchedElsewhere": "Không có tệp nào tên này trong sổ tay này, nhưng có một tệp ở sổ tay khác: {candidates}. Dữ liệu của nó được giữ lại; không được chuyển và không được đề nghị xóa.",
     "unmatchedHost": "Máy chủ giữ những mục này trong sổ tay dùng chung, hoặc chỉ di chuyển cùng với tệp, nên chúng không được di chuyển ở đây.",
     "unmatchedOwn": "{candidates} đã {count, plural, one {có} other {có}} bản ghi của {count, plural, one {riêng nó} other {riêng chúng}}, nên {count, plural, one {có lẽ đó là} other {có lẽ đó là}} một tệp khác.",
     "unmatchedSeveral": "Có nhiều tệp mang tên này: {candidates}.",

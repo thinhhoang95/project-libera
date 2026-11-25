@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import fsp, { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import fsp, { mkdir, readdir, readFile, rename, stat } from "node:fs/promises";
 import path from "node:path";
 import test, { mock } from "node:test";
 import { pythonSidecarDocumentPath, pythonSidecarPath } from "../../src/lib/python/sidecar";
@@ -12,7 +12,7 @@ import { legacyPythonSidecarPath } from "../../src/lib/python/sidecar";
 import { setStarredFilePath } from "../../src/lib/storage/workspace-metadata";
 import { assertNotebookSound, seeded, withTemporaryLibrary, writeAt, writeLibraryFile } from "./notebook-test-helpers";
 
-// Review 2026-11-25, package P1 (Try to fix): E-H2, E-M6, E-M7.
+// Review 2026-11-25, package P1 (Try to fix): E-H2, E-M6, and E-M7 as the user decided it.
 
 const exists = (target: string) => stat(target).then(() => true, () => false);
 const annotations = JSON.stringify({ version: 2, marks: [{ id: "m1" }] });
@@ -223,23 +223,15 @@ test("E-M6: Python code of the legacy layout that the file found already has is 
   assert.deepEqual(plan.unmatched.map((item) => [item.from, item.reason]), [["Nb/a/x.md", "own"]]);
 }));
 
-test("E-M7: a file moved to another notebook is reported, and Acknowledge does not offer to delete its records", () => withTemporaryLibrary(["Nb", "Other"], async () => {
+// E-M7, decided by the user (2026-11-25): Try to fix stays name-based within the notebook. A file moved to another
+// notebook is not looked for there; its records are reported like any other whose file is gone, and Acknowledge offers them.
+test("E-M7 (decided): records of a file moved to another notebook are not held, nor paired there, and Acknowledge offers them", () => withTemporaryLibrary(["Nb", "Other"], async () => {
   await writeLibraryFile("Nb/a/p.pdf", "%PDF");
   await writeAt(pdfAnnotationsPath("Nb", ["a", "p.pdf"]), annotations);
   await rename(filePathFromParts("Nb", ["a", "p.pdf"]), filePathFromParts("Other", ["p.pdf"]));
   const plan = await planNotebookRepair("Nb");
   assert.deepEqual(plan.moves, []);
-  assert.deepEqual(plan.unmatched.map((item) => [item.from, item.reason, item.candidates]), [["Nb/a/p.pdf", "elsewhere", ["Other/p.pdf"]]]);
+  assert.deepEqual(plan.unmatched.map((item) => [item.from, item.reason, item.candidates]), [["Nb/a/p.pdf", "none", []]]);
   const cleanup = await planNotebookCleanup("Nb");
-  assert.ok(!cleanup.items.some((item) => item.path.includes("p.pdf")), `the records are not offered: ${JSON.stringify(cleanup.items.map((item) => item.path))}`);
-  assert.ok(await exists(pdfAnnotationsPath("Nb", ["a", "p.pdf"])));
-}));
-
-test("E-M7: without a same-name file anywhere the records stay 'none'", () => withTemporaryLibrary(["Nb", "Other"], async () => {
-  await writeLibraryFile("Nb/a/p.pdf", "%PDF");
-  await writeAt(pdfAnnotationsPath("Nb", ["a", "p.pdf"]), annotations);
-  await writeFile(filePathFromParts("Other", ["q.pdf"]), "%PDF");
-  await rm(filePathFromParts("Nb", ["a", "p.pdf"]));
-  const plan = await planNotebookRepair("Nb");
-  assert.deepEqual(plan.unmatched.map((item) => [item.from, item.reason]), [["Nb/a/p.pdf", "none"]]);
+  assert.ok(cleanup.items.some((item) => item.path === "Nb/a/p.pdf"), `the records are offered: ${JSON.stringify(cleanup.items.map((item) => item.path))}`);
 }));

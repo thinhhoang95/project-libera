@@ -91,7 +91,7 @@ export type RepairUnmatched = {
   from: string;
   records: string[];
   /** `none`: no file of that name. `several`: more than one could be it. `elsewhere`: no file of that name is in this notebook, but one is in another notebook (the records are kept: they may belong to it, and Acknowledge leaves them). `shared-name`: other missing files have the same name. `own`: the only one has records of its own. `unread`: a store of records could not be read, so uniqueness or ownership can't be known. `conflict`: more than one copy of a side file was set aside for the path. `host`: a shared notebook's record that the host owns (ink, transcripts, Python code, live marks) or that moves only together with the file (agent changes, undo history, the tether): not moved here. */
-  reason: "none" | "elsewhere" | "several" | "shared-name" | "own" | "unread" | "conflict" | "host";
+  reason: "none" | "several" | "shared-name" | "own" | "unread" | "conflict" | "host";
   candidates: string[];
 };
 export type RepairPlan = { notebook: string; moves: RepairMove[]; unmatched: RepairUnmatched[]; token: string };
@@ -561,28 +561,6 @@ async function plan(name: string): Promise<{ plan: RepairPlan; asides: Map<strin
     else {
       moves.push({ from, to: target, records: kept });
       if (refused.length) unmatched.push({ from, records: refused, reason: "host", candidates: [] });
-    }
-  }
-
-  // A path with no file of its name here may have gone to another notebook (moved outside the app): its records are kept, not offered for deletion.
-  // The name rule is all there is, so this only names the same-name files there; it pairs nothing across notebooks.
-  const lost = unmatched.filter((item) => item.reason === "none");
-  if (lost.length) {
-    const wanted = new Set(lost.map((item) => nameKey(item.from)));
-    const found = new Map<string, string[]>();
-    const unreadable: string[] = [];
-    for (const other of new Set(await libraryNotebookNames())) {
-      if (other === notebook) continue;
-      try {
-        const listing = await listNotebookInventory(other);
-        for (const file of listing.files) if (wanted.has(nameKey(file))) found.set(nameKey(file), [...found.get(nameKey(file)) ?? [], file]);
-        // A notebook that could not be listed in full may hold the file: it is named, so the records are kept.
-        if (!inventoryComplete(listing)) unreadable.push(`${other}/`);
-      } catch { unreadable.push(`${other}/`); }
-    }
-    for (const item of lost) {
-      const where = [...(found.get(nameKey(item.from)) ?? []).sort(), ...unreadable];
-      if (where.length) { item.reason = "elsewhere"; item.candidates = where; }
     }
   }
 

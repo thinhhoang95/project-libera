@@ -110,8 +110,9 @@ Second wave as slots free: W3, W4, K2, X1, R1, H1, O1.
 
 ## Results
 
-All 27 packages merged into `fix/file-moving-review`. Of the 89 critical, high and medium findings, 79 are fixed and
-10 partly fixed (U-H1, L-C4, L-H1, L-H6, S-M3, S-M4, R-M4, E-H1, E-M7, O-M2); none was rejected as not a bug. Two sub-items were judged not bugs from the code: L-M4's symlinked
+All 27 packages merged into `fix/file-moving-review`. Of the 89 critical, high and medium findings, 79 are fixed,
+9 partly fixed (U-H1, L-C4, L-H1, L-H6, S-M3, S-M4, R-M4, E-H1, O-M2) and 1 left by the user's decision (E-M7);
+none was rejected as not a bug. Two sub-items were judged not bugs from the code: L-M4's symlinked
 folders (the tree and the check never treat a symlink as a folder) and O-M2's symlink skip (the tree skips them too).
 Most packages showed their new tests failing before the fix; the table notes where they could not.
 
@@ -137,7 +138,7 @@ Most packages showed their new tests failing before the fix; the table notes whe
 | D1 linked folders | E-C2, E-M8 | A folder linked by hand without a marker can't be told from a replacement. |
 | U1 ink upkeep | E-C3, E-H1 (ink), E-H6, E-M1 | The "folder changed while copying" guard has no test. |
 | U2 PDF upkeep | E-H4, E-H8 | E-H1 (PDF): a set-aside record blocked by a newer annotation in its slot stays kept. The backfill-inside-the-fence path has no test. |
-| P1 Try to fix | E-H2, E-M6 | E-M7: Try to fix reports `elsewhere` and Acknowledge holds the records; the 90-day expiry of set-aside records still deletes those of a file moved to another notebook. |
+| P1 Try to fix | E-H2, E-M6 | E-M7 left by decision: the user chose to keep the 2026-11-20 rule (Try to fix stays name-based within the notebook; records of a file moved to another notebook are reported `none` and Acknowledge offers them). P1's cross-notebook `elsewhere` hold was removed. |
 | C1 Acknowledge | E-H3, E-M2, E-M3, E-C3 (check) | none |
 | S1 shared authority | O-C1, O-H1, E-H5, E-M4, O-M1 | On pdfLive notebooks, old orphan live-marks sidecars are now clearable by Acknowledge (not Try to fix). O-M2's "starred or tagged shared folders" is not a bug: only files are starred or tagged (`notebook-panel.tsx`, `file-tags-dialog.tsx`), so S1's acceptance of folders was taken back after the core test run. |
 | S2 shared PDF records | S-C1 (1–4) | none |
@@ -190,13 +191,13 @@ stat per linked folder per `getLinkedFolders` call (D1), one host read per share
     it as an item, so migration moved it twice. Migration now leaves it to the side-file move.
   - `review-1125-s2` path reuse on pdfLive: F2's set-aside check held the name for a live-marks record S2 had
     set aside. Set-aside records of host-owned kinds no longer hold a name, as S2's rule already said for sidecars.
-  - `notebook-repair-identity` "records of a note moved to another notebook are not held": P1's E-M7 now holds
-    them while a file of that name is in another notebook, which reverses this 2026-11-20 assertion. The test
-    follows P1. **For the user to confirm** (see below).
+  - `notebook-repair-identity` "records of a note moved to another notebook are not held": P1's E-M7 held
+    them while a file of that name was in another notebook, reversing this 2026-11-20 assertion. The user chose
+    the 2026-11-20 rule; P1's hold was removed and the test is as it was. The four repair and cleanup files
+    then passed 78 of 78.
 - Collab: the three `review-1125` collab files, once: 12 of 12 pass.
 - Not run: the full editor and collab suites, the server suite, e2e and the app itself.
 
-**Open for the user:** E-M7 reverses one assertion of the 2026-11-20 name-only round. A note moved to another
-notebook keeps its stars, sidecars and other records in its old notebook, held (reason `elsewhere`), while a file
-of that name exists in the other notebook. Before, Try to fix reported `none` and Acknowledge could delete them.
-Nothing is paired across notebooks.
+**Decided by the user (2026-11-25):** E-M7 stays as the 2026-11-20 round left it. Try to fix does not look in
+other notebooks; a note moved to another notebook leaves records that Try to fix reports as `none` and Acknowledge
+can remove.

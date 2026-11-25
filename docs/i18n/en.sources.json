@@ -3836,7 +3836,6 @@
   "notebookIntegrityDialog.tryToFix": "src/components/libera/notebook-integrity-dialog.tsx:189",
   "notebookIntegrityDialog.understandDeletedForGood": "src/components/libera/notebook-integrity-dialog.tsx:275",
   "notebookIntegrityDialog.unmatchedNone": "src/components/libera/notebook-integrity-dialog.tsx:296",
-  "notebookIntegrityDialog.unmatchedElsewhere": "src/components/libera/notebook-integrity-dialog.tsx:369",
   "notebookIntegrityDialog.unmatchedHost": "src/components/libera/notebook-integrity-dialog.tsx:1",
   "notebookIntegrityDialog.unmatchedOwn": "src/components/libera/notebook-integrity-dialog.tsx:298",
   "notebookIntegrityDialog.unmatchedSeveral": "src/components/libera/notebook-integrity-dialog.tsx:299",

@@ -367,7 +367,6 @@ function RepairPlanView({ plan }: { plan: RepairPlan }) {
   const t = useTranslations("notebookIntegrityDialog");
   function unmatchedReason(item: RepairUnmatched) {
     if (item.reason === "none") return t("unmatchedNone");
-    if (item.reason === "elsewhere") return t("unmatchedElsewhere", { candidates: item.candidates.join(", ") });
     if (item.reason === "shared-name") return t("unmatchedSharedName");
     if (item.reason === "host") return t("unmatchedHost");
     if (item.reason === "unread") return t("unmatchedUnread", { candidates: item.candidates.join(", ") });
