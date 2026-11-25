@@ -4041,8 +4041,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
           } : {}),
         }];
       });
-    const idsKey = (all: OpenTab[]) => all.map((item) => item.id).join("
-");
+    const idsKey = (all: OpenTab[]) => all.map((item) => item.id).join("\n");
     const beforeKey = idsKey(snapshot);
     changeTabsNow(apply);
     const renames = new Map(decisions.flatMap((decision) => decision.kind !== "keep" && decision.from !== decision.to ? [[decision.from, decision.to] as const] : []));

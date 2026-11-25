@@ -13,7 +13,7 @@ import { followMovedLinks } from "./move-links";
 import { dropPathKeyedStores, followPathKeyedStores } from "./path-keyed-stores";
 import { rewriteMovedPaths } from "@/lib/move-rewrites";
 import { copyReferencesOnMove, type ReferenceMoveResult } from "@/lib/references/moves";
-import { copyFile, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";

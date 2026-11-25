@@ -304,7 +304,7 @@ test("review 1125 H1: host", { timeout: 300_000 }, async (t) => {
       const writes: boolean[] = [];
       const realEnqueue = runtime.enqueue;
       const realWrite = runtime.writeManifest;
-      runtime.enqueue = function (task) { return realEnqueue.call(this, async () => { queued += 1; try { return await task(); } finally { queued -= 1; } }); };
+      runtime.enqueue = function (this: unknown, task: () => Promise<unknown>) { return realEnqueue.call(this, async () => { queued += 1; try { return await task(); } finally { queued -= 1; } }); } as typeof realEnqueue;
       runtime.writeManifest = function (...args) { writes.push(queued > 0); return realWrite.apply(this, args); };
       try {
         // An intent from before a restart: the rename to "kept.bin" was undone by a merge that also differs elsewhere.

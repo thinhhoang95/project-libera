@@ -654,7 +654,7 @@ async function recordHolders() {
 type Job = { record: string; what: string; cache: boolean; /** False when it may turn out there was nothing to move. */ counted: boolean; state: Slot; move: () => Promise<boolean> };
 
 /** Whether a file holds exactly this text. */
-const holds = async (target: string, text: string) => (await readFile(target, "utf8").catch(() => null)) === text;
+const holdsText = async (target: string, text: string) => (await readFile(target, "utf8").catch(() => null)) === text;
 
 /** Records kept in stores, which are written once for all pairs (after the pairs' side files). */
 const STORE_RECORDS = [REVIEWS, STARRED, TAGS, ATTACHMENTS, TETHER, UNDO];
@@ -730,7 +730,7 @@ async function applyRepair(name: string, token: string): Promise<RepairResult> {
           jobs.push({
             record: entry.record, what: `${entry.record} set aside`, cache: false, counted: true,
             // What an earlier try already restored (same content) is no obstacle; anything else there is.
-            state: (await pathExists(destination)) && !(await holds(destination, restored)) ? "taken" : "free",
+            state: (await pathExists(destination)) && !(await holdsText(destination, restored)) ? "taken" : "free",
             move: async () => {
               await mkdir(path.dirname(destination), { recursive: true });
               // Written whole under a name of its own and then published exclusively: a reader never sees half of it, and a file saved there meanwhile is never replaced.
@@ -738,11 +738,11 @@ async function applyRepair(name: string, token: string): Promise<RepairResult> {
               try {
                 await writeFile(temporary, restored, { encoding: "utf8", flag: "wx" });
                 try { await link(temporary, destination); } catch (error) {
-                  if (errorCode(error) === "EEXIST") { if (!(await holds(destination, restored))) return false; }
+                  if (errorCode(error) === "EEXIST") { if (!(await holdsText(destination, restored))) return false; }
                   else if (!LINK_UNAVAILABLE.has(errorCode(error))) throw error;
                   else {
                     try { await copyFile(temporary, destination, constants.COPYFILE_EXCL); }
-                    catch (copyError) { if (errorCode(copyError) !== "EEXIST") throw copyError; if (!(await holds(destination, restored))) return false; }
+                    catch (copyError) { if (errorCode(copyError) !== "EEXIST") throw copyError; if (!(await holdsText(destination, restored))) return false; }
                   }
                 }
               } finally { await rm(temporary, { force: true }).catch(() => undefined); }

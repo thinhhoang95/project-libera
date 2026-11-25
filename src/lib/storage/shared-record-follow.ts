@@ -133,6 +133,8 @@ const followState = ((globalThis as { [STATE_KEY]?: FollowState })[STATE_KEY] ??
 followState.drains ??= new Map();
 followState.expected ??= new Map();
 
+type ExpectedChange = { change: SharedCommittedChange; at: number };
+const expectedFor = (notebook: string): ExpectedChange[] => followState.expected.get(notebook) ?? [];
 const EXPECTED_MAX = 1_000;
 const EXPECTED_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -141,13 +143,13 @@ const sameChange = (change: SharedCommittedChange, transition: { from: string; t
 
 function expectChanges(notebook: string, changes: SharedCommittedChange[]) {
   const now = Date.now();
-  const kept = (followState.expected.get(notebook) ?? []).filter((item) => now - item.at < EXPECTED_TTL_MS && !changes.some((change) => sameChange(change, { ...item.change, fileId: item.change.fileId })));
+  const kept = expectedFor(notebook).filter((item) => now - item.at < EXPECTED_TTL_MS && !changes.some((change) => sameChange(change, { ...item.change, fileId: item.change.fileId })));
   kept.push(...changes.map((change) => ({ change, at: now })));
   followState.expected.set(notebook, kept.slice(-EXPECTED_MAX));
 }
 
 function forgetExpected(notebook: string, done: (change: SharedCommittedChange) => boolean) {
-  const kept = (followState.expected.get(notebook) ?? []).filter((item) => !done(item.change));
+  const kept = expectedFor(notebook).filter((item) => !done(item.change));
   if (kept.length) followState.expected.set(notebook, kept); else followState.expected.delete(notebook);
 }
 
@@ -573,7 +575,7 @@ async function drain(notebook: string, options: FollowOptions): Promise<DrainRes
   if (!manifest) return blank(notebook, { error: "The notebook's file list could not be read, so the owner of its records cannot be established. The changes stay in the host's log." });
   // This user's own wrapper's changes are explicit moves; the rest of the log (a collaborator's, or one replayed after a crash) is not.
   // Changes whose wrapper had to leave them for the server's acknowledgement are this user's too (S-C2).
-  const own = [...(options.own ?? []), ...(followState.expected.get(notebook)?.map((item) => item.change) ?? [])];
+  const own = [...(options.own ?? []), ...expectedFor(notebook).map((item) => item.change)];
   const marked: FollowTransition[] = transitions.map((t) => own.some((change) => sameChange(change, t)) ? { ...t, explicit: true } : t);
   const outcomes = await applyTransitions(notebook, marker.projectId, marked, manifest);
   await followLocalLinksOfRemoteMoves(marked, outcomes);

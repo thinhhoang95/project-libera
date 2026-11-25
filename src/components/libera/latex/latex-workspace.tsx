@@ -28,6 +28,7 @@ import { getSharedDocRegistry } from "@/lib/collab/client/registry";
 import { useHorizontalWheelScroll } from "../use-horizontal-wheel-scroll";
 import { inkPower } from "../ink/ink-power";
 import { autoCompileDelayMs } from "./latex-auto-compile-delay";
+import { onPathsMoved } from "../path-follow";
 import { latexPdfUrl, latexRequestErrorText, requestLatexCompile, useLatexBuild } from "./latex-build-store";
 import { LatexCacheDialog } from "./latex-cache-dialog";
 import { latexCompileMenuItems, type LatexCompileTarget } from "./latex-compile-menu";

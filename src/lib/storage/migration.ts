@@ -1611,7 +1611,7 @@ async function finalize(journal: Journal, states: ItemState[]) {
     if (!journal.linkRecordsFollowed) {
       // What keeps the rewritten texts follows once: after an interruption, from the journal's hashes.
       const done = new Set(journal.linksApplied);
-      const recovered = applied ?? (journal.linkRewrites ?? []).filter((planned) => done.has(planned.path));
+      const recovered: AppliedLinkRewrite[] = applied ?? (journal.linkRewrites ?? []).filter((planned) => done.has(planned.path));
       // A note an interrupted run had already rewritten (or a rewrite found in place) carries no text from before: its review comments
       // still hold that text, so the edits are made from their snapshot, when it is the text the plan saw (by hash).
       const notes: AppliedLinkRewrite[] = [];
