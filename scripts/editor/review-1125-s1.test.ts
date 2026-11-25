@@ -196,3 +196,17 @@ test("O-M2: a starred or tagged folder in a shared notebook is checked against t
   await setStarredFilePath("Shared/nowhere", true);
   assert.deepEqual(codes(await verifyNotebook("Shared"), "records"), ["warning:starredFileMissing:Shared/nowhere"]);
 }));
+
+test("E-M4: an orphan live-marks sidecar at a path the manifest no longer lists is reported and clearable", () => withShared({ pdfLive: true }, async ({ host, root }) => {
+  host.entries = [entry("keep.md")];
+  put(path.join(root, "keep.md"), "k\n");
+  put(pdfAnnotationsPath("Shared", ["old.pdf"]), JSON.stringify({ annotations: [] }));
+  const report = await verifyNotebook("Shared");
+  const orphan = of(report, "sidecars").find((finding) => finding.path === "Shared/old.pdf");
+  assert.ok(orphan?.clear?.length, "what the check reports is clearable");
+  const plan = await planNotebookCleanup("Shared");
+  assert.ok(plan.items.some((item) => item.path === "Shared/old.pdf"));
+  const result = await applyNotebookCleanup("Shared", plan.token);
+  assert.ok(result.outcomes.removed >= 1);
+  assert.ok(!fs.existsSync(pdfAnnotationsPath("Shared", ["old.pdf"])));
+}));

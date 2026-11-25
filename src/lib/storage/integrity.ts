@@ -436,7 +436,8 @@ export function sharedMayClear(action: CleanupAction, notebook: string): boolean
     case "star": case "tags": case "review": case "attachment": case "citations": case "tether": return true;
     // What Try to fix refuses as the host's (live PDF marks, ink) is not offered for removal either: one rule.
     case "set-aside": return !hostOwnsSideFile(action.file.startsWith("ink/") ? "ink" : action.file.startsWith("annotations/") ? "pdf-annotations" : "", notebook);
-    case "side-file": return !hostOwnsSideFile(action.kind, notebook) && (Boolean(action.gone) || action.kind === "pdf-text" || action.kind === "audio-peaks");
+    // A live PDF's marks sidecar left at a path the manifest no longer lists (an earlier build's) is reported, so it is clearable once the manifest confirms the path is gone (`staleness` holds it when listed or arriving); Try to fix still refuses it as the host's.
+    case "side-file": return (!hostOwnsSideFile(action.kind, notebook) && (Boolean(action.gone) || action.kind === "pdf-text" || action.kind === "audio-peaks")) || (action.kind === "pdf-annotations" && Boolean(action.gone));
     default: return false;
   }
 }
