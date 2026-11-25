@@ -18,6 +18,9 @@ import {
   relativeFilePath,
   splitFilePath,
 } from "@/lib/storage/paths";
+import { manifestPathKey } from "@/lib/collab/protocol/schema";
+import { sharedNotebookMarker } from "@/lib/collab/shared-notebook";
+import { readManifestView } from "@/lib/storage/shared-manifest-view";
 import type { PdfTextCachePayload, PdfTextPage } from "@/lib/types";
 import type { SidecarInspection } from "@/lib/storage/sidecars";
 
@@ -259,18 +262,34 @@ export async function readPdfTextCache(
   try { return await work; } finally { if (pendingReads.get(key) === work) pendingReads.delete(key); }
 }
 
-/** Remove caches for externally deleted PDFs; unreadable/offline files are retained. */
-export async function prunePdfTextCaches(notebook: string, pathParts: string[] = []) {
+type ManifestViewHolder = { current?: Awaited<ReturnType<typeof readManifestView>> };
+
+/**
+ * A shared notebook's PDF the disk does not have yet may still be on its way (the host delivers it from the manifest), and its
+ * text cache is worth keeping. True when the manifest lists it, or cannot be read (fail closed: nothing is deleted on a guess).
+ */
+async function sharedPdfMayArrive(notebook: string, parts: string[], view: ManifestViewHolder): Promise<boolean> {
+  if (!sharedNotebookMarker(notebook)) return false;
+  view.current ??= await readManifestView(notebook).catch((): Awaited<ReturnType<typeof readManifestView>> => ({ state: "unavailable", reason: "unreadable" }));
+  if (view.current.state !== "ok") return true;
+  const wanted = manifestPathKey(`${notebook}/${parts.join("/")}`);
+  for (const libraryPath of view.current.files.keys()) if (manifestPathKey(libraryPath) === wanted) return true;
+  return false;
+}
+
+/** Remove caches for externally deleted PDFs; unreadable/offline files are retained, and so are those of shared PDFs not yet delivered. */
+export async function prunePdfTextCaches(notebook: string, pathParts: string[] = [], view: ManifestViewHolder = {}) {
   const directory = pdfTextCacheDirectoryPath(notebook, pathParts);
   const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
   for (const entry of entries) {
     if (entry.name.startsWith(".")) continue;
     if (entry.isDirectory()) {
-      await prunePdfTextCaches(notebook, [...pathParts, entry.name]);
+      await prunePdfTextCaches(notebook, [...pathParts, entry.name], view);
     } else if (entry.isFile() && /\.pdf\.json$/i.test(entry.name)) {
       const parts = [...pathParts, entry.name.slice(0, -5)];
       try { await stat(filePathFromParts(notebook, parts)); } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          if (await sharedPdfMayArrive(notebook, parts, view)) continue;
           await rm(path.join(directory, entry.name), { force: true }).catch(() => undefined);
         }
       }

@@ -133,6 +133,8 @@ export interface StagedMoveResults {
   placed: PlacedMove[];
   /** Files whose staged bytes are still waiting for a free destination. */
   waiting: Set<string>;
+  /** The journals could not be listed or read (which is not "there are none"): any file may have staged bytes, so nothing is placed from authority meanwhile. */
+  unreadable?: boolean;
 }
 
 /** How long a taken destination is waited out before the staged bytes are archived instead. */
@@ -154,16 +156,22 @@ export async function placeStagedMoves(root: string, destinations: Map<string, s
   let names: string[];
   try {
     names = await fs.readdir(directory);
-  } catch {
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT" && code !== "ENOTDIR") results.unreadable = true;
     return results;
   }
   const grace = options.conflictGraceMs ?? MOVE_CONFLICT_GRACE_MS;
   const now = options.now ?? Date.now();
   for (const name of names.filter((item) => item.endsWith(JOURNAL_SUFFIX)).sort()) {
     const journal = path.join(directory, name);
+    // Whatever throws below, the staged bytes and the journal stay and the file waits: an exception must not leave it looking placed or absent.
+    let journalled: string | null = null;
+    try {
     const raw = await readIfExists(journal);
     const entry = raw ? parseEntry(raw) : null;
     if (!entry) continue;
+    journalled = entry.fileId;
     const staged = path.join(directory, entry.staged);
     const bytes = await readIfExists(staged).catch(() => null);
     if (!bytes) {
@@ -184,7 +192,7 @@ export async function placeStagedMoves(root: string, destinations: Map<string, s
       const stem = extension ? base.slice(0, -extension.length) : base;
       const archiveRoot = path.join(root, ARCHIVE_DIRECTORY);
       const archivedAs = await availableName(archiveRoot, `${stem} (interrupted move)${extension}`);
-      await movePath(staged, path.join(archiveRoot, archivedAs), guard);
+      await movePathExclusive(staged, path.join(archiveRoot, archivedAs), guard);
       await fs.rm(journal, { force: true });
       results.placed.push({ fileId: entry.fileId, destination, outcome: "archived", archivedAs });
     };
@@ -217,6 +225,10 @@ export async function placeStagedMoves(root: string, destinations: Map<string, s
       } else {
         results.waiting.add(entry.fileId);
       }
+    }
+    } catch {
+      if (journalled !== null) results.waiting.add(journalled);
+      else results.unreadable = true;
     }
   }
   return results;

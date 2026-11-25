@@ -129,6 +129,11 @@ export interface ProjectState {
    * them back when its own disk keeps the other form (S39); bounded.
    */
   remoteRespells?: Record<string, { path: string; at: number }>;
+  /**
+   * Field changes this host made to manifest entries that a concurrent whole-entry write could still undo
+   * (manifest-intents.ts), kept across a restart; bounded, and read back leniently (S-M2).
+   */
+  intents?: unknown[];
 }
 
 export interface StateIdentity {
@@ -229,6 +234,8 @@ function validState(value: unknown): value is ProjectState {
         typeof item.to === "string" && finite(item.at)))) return false;
   if (value.remoteRespells !== undefined && !(plain(value.remoteRespells) &&
       Object.values(value.remoteRespells).every((item: unknown) => plain(item) && typeof item.path === "string" && finite(item.at)))) return false;
+  // Items are judged one by one when restored: a bad one must not fence the whole notebook.
+  if (value.intents !== undefined && (!Array.isArray(value.intents) || value.intents.length > 10_000)) return false;
   return value.reconciliations.every((item: unknown) => plain(item) && safeId(item.id) && safeId(item.docId) &&
     typeof item.path === "string" && manifestPathError(item.path) === null && finite(item.detectedAt) &&
     [item.shared, item.disk, item.base].every((part) => typeof part === "string"));
