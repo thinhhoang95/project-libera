@@ -196,7 +196,37 @@ stat per linked folder per `getLinkedFolders` call (D1), one host read per share
     the 2026-11-20 rule; P1's hold was removed and the test is as it was. The four repair and cleanup files
     then passed 78 of 78.
 - Collab: the three `review-1125` collab files, once: 12 of 12 pass.
-- Not run: the full editor and collab suites, the server suite, e2e and the app itself.
+
+### Full suites (after the E-M7 revert)
+
+First run at `46d9731`: editor 3,627 tests (25 failed, 2 cancelled), electron-release 131 (15 failed), collab
+982 + 42 (11 failed). The failing files were run on `main` (`8a6de26`) in a separate worktree to tell old failures
+from new ones.
+
+Failing on `main` too, left alone: all 15 electron-release failures (`profiles.test.cjs`, `session-shutdown.test.cjs`);
+in the editor suite global-search (4, plus 2 cancelled), `references-interop` (2), `references-moves` "the files
+route returns the references result", `pdf-chat-route` "PDF text extraction resolves its worker" and
+`audit-1119-local-writes` "a folder rename that fails part-way is rolled back" (relies on `chmod 0o555`, which
+Windows ignores); in collab `albums-host` and both "finding 29" tests of `audit-1119-writer-pass`.
+
+21 failures were the round's. Six follow-up agents (A–F) fixed them, each in its own worktree from the round's tip:
+
+| Follow-up | Tests | What it was |
+|---|---|---|
+| A shared record follow | `audit-1119-rename-records` 13 ×3, `notebook-shared-move-integrity` 96, 97 ×2, collab R43 | Test stubs: their host file list never showed a committed rename or delete, and since S-C2 records follow what that list shows. The stubs now list what the real host lists; no code change. |
+| B sidecar move or copy | `audit-1119-authoritative-reads` finding 14, `audit-1119-sidecars` finding 15, `pdf-outline` host moves | A real T1 bug: a copied recording's transcript was retired although the recording was still there; the source now retires only when its recording is gone. The two others pinned copies that S-C1 replaced; they now check the records moved or were set aside, recoverably. |
+| C reference library blocker | `references-moves` "a failure while copying references never fails the move", `references-storage` "every library" | F2 made any damaged reference library or tether file block every move. Such a store now holds back only the paths its bytes still name (a loose text match, so it can hold slightly too much, never too little). |
+| D renderer and editors | `review-editor-lifecycle` leave sync, `workspaces` ×2, `latex-editor` includes | A `CustomEvent` from another realm (W2) broke `workspaces`. A leave sync refused by another window's review is reported again, after the next load; one caused by a move stays silent (U-H3). The LaTeX test now expects X1's additive `command` field. |
+| E check and upkeep | `notebook-oracle-agreement` case variant | The check now predicts a PDF record following a case-only rename with upkeep's own `pdfSpellingOf`. |
+| F collab host | `collab-integrity-materialize` S54 ×2, `collab-integrity-scanner` S39–S44 | A real H1 regression: the wider respell suppression swallowed a later local case rename; it now remembers the spelling it held. The S54 fixtures gained the state intents persistence reads. |
+
+Second run at `4795292`: editor 9 failed + 2 cancelled, all failing on `main` too, except the two citation-hover
+tests (`references-editors-source`, `references-narrative-source`), which fail only under full-suite load and pass
+alone (22 of 22). Collab 16 failed: four scanner files (finding 38, C9, M19, M8) failed because follow-up F's new map
+was missing on bare test projects; it is now made on first use (`3b03b25`) and those files pass (42 of 42). The
+rest pass alone (M9, pdf marks, external rename) or fail on `main` too (`albums-host`, finding 29).
+
+Not run: the server suite (no `server/` files changed), the collab two-user e2e, and the app itself.
 
 **Decided by the user (2026-11-25):** E-M7 stays as the 2026-11-20 round left it. Try to fix does not look in
 other notebooks; a note moved to another notebook leaves records that Try to fix reports as `none` and Acknowledge
