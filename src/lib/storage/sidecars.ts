@@ -375,9 +375,11 @@ async function listCompanions(notebook: string, kind: SidecarKind, listed: Liste
  * file path it belongs to. Read only; the orphan report and the notebook
  * check (storage/integrity.ts) build on it.
  */
-export async function listSidecars(notebook: string, options: { companions?: boolean } = {}): Promise<{ sidecars: ListedSidecar[]; unreadable: string[] }> {
+export async function listSidecars(notebook: string, options: { companions?: boolean; /** The notebook check counts each folder against its budget and stops the walk when this says no. */ onEntry?: () => boolean } = {}): Promise<{ sidecars: ListedSidecar[]; unreadable: string[]; /** `onEntry` said stop: the list is not complete. */ truncated?: boolean }> {
+  const onEntry = options.onEntry;
   const listed: ListedSidecar[] = [];
   const unreadable: string[] = [];
+  let truncated = false;
   for (const kind of SIDECAR_KINDS) {
     if (kind.companion) {
       if (options.companions) await listCompanions(notebook, kind, listed, unreadable);
@@ -385,6 +387,8 @@ export async function listSidecars(notebook: string, options: { companions?: boo
     }
     const root = kind.directoryPath(notebook, []);
     const walk = async (directory: string, parts: string[]) => {
+      // The notebook check counts each folder against its budget (`onEntry`) and stops the walk when it is used up.
+      if (truncated || (onEntry && !onEntry())) { truncated = true; return; }
       const children = await entries(directory, unreadable);
       // A file's ink folder holds ink files the reader accepts (as listInkFolders
       // does). Stray files (a sync conflict copy, system files) don't make a
@@ -405,7 +409,7 @@ export async function listSidecars(notebook: string, options: { companions?: boo
     };
     await walk(root, []);
   }
-  return { sidecars: listed, unreadable };
+  return { sidecars: listed, unreadable, ...(truncated ? { truncated } : {}) };
 }
 
 /**

@@ -80,6 +80,9 @@ function isArchived(relativePath: string) {
   return relativePath.split("/").slice(1, -1).includes(ARCHIVE_DIR);
 }
 
+/** Whether a library path is inside an `_archive` folder at any depth: the citation index's own scope, which the notebook check uses too. */
+export const isArchivedCitingPath = isArchived;
+
 /** Library-relative paths of the notebook's Markdown files and LaTeX sources, with the tree's visibility rules. */
 async function citingFiles(notebook: string, includeArchive: boolean) {
   const root = notebookPath(notebook);
