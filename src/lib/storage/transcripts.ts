@@ -502,7 +502,8 @@ async function followOneAudioMove(from: string, to: string): Promise<{ changed: 
       })) {
         changed += 1;
         // The transcript is at its new path now: the old copy would be an orphan no check or fix can clear (S-C1).
-        if (index === 0) await retireAudioTranscript(sidecar, notebookPath(source.notebook), next[index]);
+        // Only when the old name has no recording any more: a copy of the recording keeps its transcript.
+        if (index === 0 && await recordingAbsent(filePathFromParts(source.notebook, source.pathParts))) await retireAudioTranscript(sidecar, notebookPath(source.notebook), next[index]);
       } else if (mismatch) waiting = true;
     }
   } catch { /* Retain ambiguous sidecars, including occupied destinations and swaps. */ }
