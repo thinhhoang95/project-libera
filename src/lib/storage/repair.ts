@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants, type Dirent } from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
 import { copyFile, link, lstat, mkdir, readdir, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { hostOwnsSideFile, readManifestView, type ManifestView } from "@/lib/storage/shared-manifest-view";
-import { pythonSidecarDocumentPath, pythonSidecarPath } from "@/lib/python/sidecar";
+import { legacyPythonSidecarPath, pythonSidecarDocumentPath, pythonSidecarPath } from "@/lib/python/sidecar";
 import { hasReviewEntry, withMovedReview } from "@/lib/agent/review-store";
 import { moveTetheredFilesBatch, readTetherTarget } from "@/lib/references/bib-tether";
 import { publishReferenceEvent } from "@/lib/references/library-events";
@@ -89,8 +90,8 @@ export type RepairMove = { from: string; to: string; records: string[] };
 export type RepairUnmatched = {
   from: string;
   records: string[];
-  /** `none`: no file of that name. `several`: more than one could be it. `shared-name`: other missing files have the same name. `own`: the only one has records of its own. `unread`: a store of records could not be read, so uniqueness or ownership can't be known. `conflict`: more than one copy of a side file was set aside for the path. `host`: a shared notebook's record that the host owns (ink, transcripts, Python code, live marks) or that moves only together with the file (agent changes, undo history, the tether): not moved here. */
-  reason: "none" | "several" | "shared-name" | "own" | "unread" | "conflict" | "host";
+  /** `none`: no file of that name. `several`: more than one could be it. `elsewhere`: no file of that name is in this notebook, but one is in another notebook (the records are kept: they may belong to it, and Acknowledge leaves them). `shared-name`: other missing files have the same name. `own`: the only one has records of its own. `unread`: a store of records could not be read, so uniqueness or ownership can't be known. `conflict`: more than one copy of a side file was set aside for the path. `host`: a shared notebook's record that the host owns (ink, transcripts, Python code, live marks) or that moves only together with the file (agent changes, undo history, the tether): not moved here. */
+  reason: "none" | "elsewhere" | "several" | "shared-name" | "own" | "unread" | "conflict" | "host";
   candidates: string[];
 };
 export type RepairPlan = { notebook: string; moves: RepairMove[]; unmatched: RepairUnmatched[]; token: string };
@@ -107,7 +108,18 @@ type Slot = "free" | "same" | "ours" | "taken";
 /** The kinds readOrphans lists, by the side file kind that holds them. */
 const SET_ASIDE_KINDS: Record<string, string> = { annotations: "pdf-annotations", outline: "pdf-outline", definitions: "definitions" };
 /** A hard link that a disk or share can't make: the side file is copied instead. */
-const LINK_UNAVAILABLE = new Set(["EPERM", "ENOTSUP", "EOPNOTSUPP", "ENOSYS", "EXDEV", "EMLINK"]);
+const LINK_UNAVAILABLE = new Set(["EPERM", "ENOTSUP", "EOPNOTSUPP", "ENOSYS", "EXDEV", "EMLINK", "EINVAL"]);
+/** Windows holds a file or folder that a scanner, an indexer or a sync client has open: the call is tried again a few times (capped backoff, once per call, no timer left behind) before it is reported. */
+const BUSY = new Set(["EPERM", "EBUSY"]);
+const BUSY_BACKOFF_MS = [25, 75, 200];
+async function whenFree<T>(task: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try { return await task(); } catch (error) {
+      if (!BUSY.has((error as NodeJS.ErrnoException).code ?? "") || attempt >= BUSY_BACKOFF_MS.length) throw error;
+      await delay(BUSY_BACKOFF_MS[attempt]);
+    }
+  }
+}
 
 const plural = (count: number, one: string) => `${count} ${count === 1 ? one : `${one}s`}`;
 const under = (libraryPath: string, notebook: string) => libraryPath.startsWith(`${notebook}/`);
@@ -153,13 +165,30 @@ async function linkedTree(source: string, destination: string): Promise<boolean>
   } catch { return false; }
 }
 
-async function slotOf(source: string, destination: string): Promise<Slot> {
+const pathSegments = (target: string) => target.split(/[\\/]/);
+const listingOf = (segments: string[]) => { const parent = segments.join(path.sep); return /^[A-Za-z]:$/.test(parent) ? `${parent}${path.sep}` : parent || path.sep; };
+
+/** Whether both spellings are listed in their folder as entries of their own (a case-sensitive volume), rather than one entry that two spellings open. Null when the folder can't be listed. */
+async function separateNames(source: string, destination: string): Promise<boolean | null> {
+  const [from, to] = [pathSegments(source), pathSegments(destination)];
+  let at = 0;
+  while (at < from.length && at < to.length && from[at] === to[at]) at += 1;
+  if (at >= from.length || at >= to.length) return false;
+  try { const listing = await readdir(listingOf(from.slice(0, at))); return listing.includes(from[at]) && listing.includes(to[at]); } catch { return null; }
+}
+
+/** Where the destination stands for the source (exported for the tests). */
+export async function slotOf(source: string, destination: string): Promise<Slot> {
   const [from, to] = await Promise.all([source, destination].map((target) => lstat(target, { bigint: true }).catch(() => null)));
   if (!to) return "free";
   if (!from) return "taken";
   if (from.dev === to.dev && from.ino === to.ino) {
     // One entry under two spellings (a case-only rename, a decomposed name) is the file itself; two names of one file are a link.
-    return from.isDirectory() || from.nlink < BigInt(2) || foldedFileName(source) === foldedFileName(destination) ? "same" : "ours";
+    if (from.isDirectory() || from.nlink < BigInt(2)) return "same";
+    if (foldedFileName(source) !== foldedFileName(destination)) return "ours";
+    // Spellings that fold together may still be two names of one file (a case-sensitive volume, after a try that stopped between its link and the removal of the old name).
+    const separate = await separateNames(source, destination);
+    return separate === null ? "taken" : separate ? "ours" : "same";
   }
   return await linkedTree(source, destination) ? "ours" : "taken";
 }
@@ -171,7 +200,12 @@ async function slotOf(source: string, destination: string): Promise<Slot> {
  */
 async function placeWithoutReplacing(from: string, to: string): Promise<boolean> {
   if ((await lstat(from)).isDirectory()) {
-    try { await rename(from, to); return true; } catch (error) { if (["EEXIST", "ENOTEMPTY", "EPERM"].includes(errorCode(error))) return false; throw error; }
+    try { await whenFree(() => rename(from, to)); return true; } catch (error) {
+      if (["EEXIST", "ENOTEMPTY"].includes(errorCode(error))) return false;
+      // Windows says EPERM for a folder in the way as well as for one that is held: only something there is "in the way".
+      if (BUSY.has(errorCode(error)) && await lstat(to).catch(() => null)) return false;
+      throw error;
+    }
   }
   try { await link(from, to); } catch (error) {
     if (errorCode(error) === "EEXIST") return false;
@@ -180,7 +214,26 @@ async function placeWithoutReplacing(from: string, to: string): Promise<boolean>
     await rename(from, to);
     return true;
   }
-  await rm(from, { force: true });
+  await whenFree(() => rm(from, { force: true }));
+  return true;
+}
+
+/**
+ * Respells the folders and the name of `source` as `destination` spells them, level by level (the two are one entry on a case-insensitive disk, or differ in Unicode form): each level that differs is renamed in place, so a parent folder renamed in case is respelled too, and the path a reader builds from the destination is the one the disk lists. False when a level can't be renamed or the two are not spellings of one another.
+ */
+async function respellPath(source: string, destination: string): Promise<boolean> {
+  const [from, to] = [pathSegments(source), pathSegments(destination)];
+  if (from.length !== to.length) return false;
+  let at = 0;
+  while (at < from.length && from[at] === to[at]) at += 1;
+  for (let level = at; level < from.length; level += 1) {
+    if (from[level] === to[level]) continue;
+    if (foldedFileName(from[level]) !== foldedFileName(to[level])) return false;
+    const parent = listingOf(to.slice(0, level));
+    // Already spelled so by an earlier pair of the same folder.
+    if ((await readdir(parent).catch(() => [] as string[])).includes(to[level])) continue;
+    if (!(await aliasRename(path.join(parent, from[level]), path.join(parent, to[level])))) return false;
+  }
   return true;
 }
 
@@ -192,7 +245,7 @@ async function placeWithoutReplacing(from: string, to: string): Promise<boolean>
  * if even that fails, the error says where it is.
  */
 async function aliasRename(source: string, destination: string): Promise<boolean> {
-  const temporary = `${source}.${randomUUID()}.moving`;
+  const temporary = path.join(path.dirname(source), `.${randomUUID()}.moving`);
   await rename(source, temporary);
   const putBack = async (cause?: unknown) => {
     let back = false;
@@ -245,7 +298,7 @@ async function publish(source: string, destination: string, created: Created[], 
  */
 async function moveIntoPlace(source: string, destination: string): Promise<boolean> {
   const slot = await slotOf(source, destination);
-  if (slot === "same") return aliasRename(source, destination);
+  if (slot === "same") return respellPath(source, destination);
   if (slot === "taken") return false;
   const before = await signature(source);
   const created: Created[] = [];
@@ -261,12 +314,12 @@ async function moveIntoPlace(source: string, destination: string): Promise<boole
   // Linked, the source must still be the very file that was linked; copied, unchanged since before the copy.
   const unchanged = (await signature(source)) === before && (!mode.linked || await linkedTree(source, destination));
   if (!unchanged) { await undoCopy(created); throw new Error(`${path.basename(source)} changed while it was being moved, so it stayed where it was`); }
-  await rm(source, { recursive: true, force: true });
+  await whenFree(() => rm(source, { recursive: true, force: true }));
   return true;
 }
 
-/** Python code in a case-only rename: the code file itself is renamed (its folder, shared with the note's images, is left). */
-const movePythonAlias = (source: string, destination: string) => aliasRename(source, destination);
+/** Python code in a case-only rename: its folder (named after the note, shared with the note's images) and the code file are both respelled, as the note's path now reads. */
+const movePythonAlias = (source: string, destination: string) => respellPath(source, destination);
 
 /** What would be moved where. Reads only. */
 export function planNotebookRepair(name: string): Promise<RepairPlan> {
@@ -344,7 +397,16 @@ async function plan(name: string): Promise<{ plan: RepairPlan; asides: Map<strin
     asides.set(originalPath, [...asides.get(originalPath) ?? [], entry]);
     if (shared && hostOwnsSideFile(entry.kind, notebook)) hostRecords.add(hostKey(originalPath, entry.record));
   };
-  for (const { file, record } of await readOrphans(notebook)) {
+  // A set-aside record that can't be read could be a second path of the same name: never taken for absent.
+  let orphans: Awaited<ReturnType<typeof readOrphans>> = [];
+  try { orphans = await readOrphans(notebook); } catch { unread.add("side files set aside"); }
+  for (const kind of Object.keys(SET_ASIDE_KINDS)) {
+    let listed: string[] = [];
+    try { listed = (await readdir(orphanedSidecarsDirectoryPath(notebook, kind))).filter((name) => name.endsWith(".json")); }
+    catch (error) { if (!["ENOENT", "ENOTDIR"].includes(errorCode(error))) unread.add("side files set aside"); }
+    if (listed.length > orphans.filter(({ record }) => record.kind === kind).length) unread.add("side files set aside");
+  }
+  for (const { file, record } of orphans) {
     if (record.sidecar !== undefined && record.sidecar !== null) aside(record.originalPath, { record: record.kind, kind: SET_ASIDE_KINDS[record.kind], at: file, sidecar: record.sidecar });
   }
   const inkAside = orphanedSidecarsDirectoryPath(notebook, "ink");
@@ -460,6 +522,15 @@ async function plan(name: string): Promise<{ plan: RepairPlan; asides: Map<strin
           if (await slotOf(filePathFromParts(source.notebook, source.pathParts), destinationFile) !== "same") own.add(PYTHON);
         }
       } catch { own.add(PYTHON); }
+      // Code of the original layout (a folder of the notebook's _assets, named after the note's stem) is the note's own too.
+      try {
+        const legacy = splitFilePath(legacyPythonSidecarPath(candidate));
+        const legacyFile = filePathFromParts(legacy.notebook, legacy.pathParts);
+        if (await pathExists(legacyFile)) {
+          const legacySource = splitFilePath(legacyPythonSidecarPath(from));
+          if (await slotOf(filePathFromParts(legacySource.notebook, legacySource.pathParts), legacyFile) !== "same") own.add(PYTHON);
+        }
+      } catch { own.add(PYTHON); }
     }
     for (const record of await published(from, candidate)) own.delete(record);
     return own;
@@ -488,6 +559,28 @@ async function plan(name: string): Promise<{ plan: RepairPlan; asides: Map<strin
     else {
       moves.push({ from, to: target, records: kept });
       if (refused.length) unmatched.push({ from, records: refused, reason: "host", candidates: [] });
+    }
+  }
+
+  // A path with no file of its name here may have gone to another notebook (moved outside the app): its records are kept, not offered for deletion.
+  // The name rule is all there is, so this only names the same-name files there; it pairs nothing across notebooks.
+  const lost = unmatched.filter((item) => item.reason === "none");
+  if (lost.length) {
+    const wanted = new Set(lost.map((item) => nameKey(item.from)));
+    const found = new Map<string, string[]>();
+    const unreadable: string[] = [];
+    for (const other of new Set(await libraryNotebookNames())) {
+      if (other === notebook) continue;
+      try {
+        const listing = await listNotebookInventory(other);
+        for (const file of listing.files) if (wanted.has(nameKey(file))) found.set(nameKey(file), [...found.get(nameKey(file)) ?? [], file]);
+        // A notebook that could not be listed in full may hold the file: it is named, so the records are kept.
+        if (!inventoryComplete(listing)) unreadable.push(`${other}/`);
+      } catch { unreadable.push(`${other}/`); }
+    }
+    for (const item of lost) {
+      const where = [...(found.get(nameKey(item.from)) ?? []).sort(), ...unreadable];
+      if (where.length) { item.reason = "elsewhere"; item.candidates = where; }
     }
   }
 
@@ -558,6 +651,9 @@ async function recordHolders() {
 /** One thing that moves with a file, and where its destination stands before anything is written. */
 type Job = { record: string; what: string; cache: boolean; /** False when it may turn out there was nothing to move. */ counted: boolean; state: Slot; move: () => Promise<boolean> };
 
+/** Whether a file holds exactly this text. */
+const holds = async (target: string, text: string) => (await readFile(target, "utf8").catch(() => null)) === text;
+
 /** Records kept in stores, which are written once for all pairs (after the pairs' side files). */
 const STORE_RECORDS = [REVIEWS, STARRED, TAGS, ATTACHMENTS, TETHER, UNDO];
 
@@ -627,14 +723,27 @@ async function applyRepair(name: string, token: string): Promise<RepairResult> {
             move: async () => { const went = await moveIntoPlace(source, destination); if (went) await rm(entry.at, { recursive: true, force: true }); return went; },
           });
         } else {
+          const restored = `${JSON.stringify(entry.sidecar, null, 2)}\n`;
           jobs.push({
             record: entry.record, what: `${entry.record} set aside`, cache: false, counted: true,
-            state: (await pathExists(destination)) ? "taken" : "free",
+            // What an earlier try already restored (same content) is no obstacle; anything else there is.
+            state: (await pathExists(destination)) && !(await holds(destination, restored)) ? "taken" : "free",
             move: async () => {
               await mkdir(path.dirname(destination), { recursive: true });
-              try { await writeFile(destination, `${JSON.stringify(entry.sidecar, null, 2)}\n`, { encoding: "utf8", flag: "wx" }); }
-              catch (error) { if (errorCode(error) === "EEXIST") return false; throw error; }
-              await rm(entry.at, { force: true });
+              // Written whole under a name of its own and then published exclusively: a reader never sees half of it, and a file saved there meanwhile is never replaced.
+              const temporary = path.join(path.dirname(destination), `.libera-restore-${randomUUID()}.tmp`);
+              try {
+                await writeFile(temporary, restored, { encoding: "utf8", flag: "wx" });
+                try { await link(temporary, destination); } catch (error) {
+                  if (errorCode(error) === "EEXIST") { if (!(await holds(destination, restored))) return false; }
+                  else if (!LINK_UNAVAILABLE.has(errorCode(error))) throw error;
+                  else {
+                    try { await copyFile(temporary, destination, constants.COPYFILE_EXCL); }
+                    catch (copyError) { if (errorCode(copyError) !== "EEXIST") throw copyError; if (!(await holds(destination, restored))) return false; }
+                  }
+                }
+              } finally { await rm(temporary, { force: true }).catch(() => undefined); }
+              await whenFree(() => rm(entry.at, { force: true }));
               return true;
             },
           });

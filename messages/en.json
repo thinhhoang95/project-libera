@@ -5443,6 +5443,7 @@
     "tryToFix": "Try to fix…",
     "understandDeletedForGood": "I understand these are deleted for good",
     "unmatchedNone": "No file of this name is in the notebook.",
+    "unmatchedElsewhere": "No file of this name is in this notebook, but one is in another notebook: {candidates}. Its records are kept; they are not moved and not offered for deletion.",
     "unmatchedHost": "The host keeps these in the shared notebook, or moves them only together with the file, so they are not moved here.",
     "unmatchedOwn": "{candidates} already {count, plural, one {has} other {have}} records of {count, plural, one {its} other {their}} own, so {count, plural, one {it is} other {they are}} probably another file.",
     "unmatchedSeveral": "Several files have this name: {candidates}.",
