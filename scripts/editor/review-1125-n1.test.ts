@@ -52,9 +52,9 @@ test("L-H8: deleting a notebook discards its pending agent reviews", () => withT
 
 test("L-C2: a notebook rename's review follow replaces an empty review already at the destination", () => withTemporaryLibrary(["Old"], async () => {
   await writeLibraryFile("Old/n.md", "hello world\n");
-  await addReviewThreads("Old/n.md", "hello world\n", [{ range: { start: 0, end: 5 }, text: "a comment" }]);
-  // A notebook of this name existed before: opening a file there left an empty review behind.
+  // A notebook of this name existed before: opening a file there left an empty review behind (older than the one that moves).
   await loadReview("New/n.md", "hello world\n");
+  await addReviewThreads("Old/n.md", "hello world\n", [{ range: { start: 0, end: 5 }, text: "a comment" }]);
   await renameNotebook("Old", "New");
   const review = await findReview("New/n.md");
   assert.equal(review?.threads.length, 1, "the moved review is the one found, not the empty one");
