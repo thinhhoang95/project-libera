@@ -3,7 +3,7 @@ import { constants, type Dirent } from "node:fs";
 import { copyFile, link, lstat, mkdir, readdir, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
-import { hostOwnsSideFile, readManifestView, type ManifestView } from "@/lib/storage/shared-manifest-view";
+import { hostOwnsSideFile, manifestFile, manifestHasFile, readManifestView, type ManifestView } from "@/lib/storage/shared-manifest-view";
 import { pythonSidecarDocumentPath, pythonSidecarPath } from "@/lib/python/sidecar";
 import { hasReviewEntry, withMovedReview } from "@/lib/agent/review-store";
 import { moveTetheredFilesBatch, readTetherTarget } from "@/lib/references/bib-tether";
@@ -334,7 +334,7 @@ async function plan(name: string): Promise<{ plan: RepairPlan; asides: Map<strin
     const record = SIDECAR_RECORDS[sidecar.kind];
     if (!record) continue;
     add(sidecar.filePath, record, () => signature(sidecar.path));
-    if (shared && hostOwnsSideFile(sidecar.kind, notebook)) hostRecords.add(hostKey(sidecar.filePath, record));
+    if (shared && isSharedNotebookPath(sidecar.filePath) && hostOwnsSideFile(sidecar.kind, notebook)) hostRecords.add(hostKey(sidecar.filePath, record));
   }
 
   // Side files set aside for files that left are records of their original path, unless a live side file of that kind is there.
@@ -342,7 +342,7 @@ async function plan(name: string): Promise<{ plan: RepairPlan; asides: Map<strin
   const aside = (originalPath: string, entry: SetAside) => {
     if (!under(originalPath, notebook) || !getFileType(baseName(originalPath)) || records.get(originalPath)?.has(entry.record)) return;
     asides.set(originalPath, [...asides.get(originalPath) ?? [], entry]);
-    if (shared && hostOwnsSideFile(entry.kind, notebook)) hostRecords.add(hostKey(originalPath, entry.record));
+    if (shared && isSharedNotebookPath(originalPath) && hostOwnsSideFile(entry.kind, notebook)) hostRecords.add(hostKey(originalPath, entry.record));
   };
   for (const { file, record } of await readOrphans(notebook)) {
     if (record.sidecar !== undefined && record.sidecar !== null) aside(record.originalPath, { record: record.kind, kind: SET_ASIDE_KINDS[record.kind], at: file, sidecar: record.sidecar });
@@ -410,7 +410,8 @@ async function plan(name: string): Promise<{ plan: RepairPlan; asides: Map<strin
   const disk = fileExistence();
   const missing: string[] = [];
   for (const libraryPath of records.keys()) {
-    if (!listed.has(libraryPath) && (shared || await absent(disk, libraryPath))) missing.push(libraryPath);
+    // Decided by the path: the notebook's local `_archive` is not in the manifest, so its files are judged on the disk.
+    if (manifest && isSharedNotebookPath(libraryPath) ? !manifestHasFile(manifest, libraryPath) : !listed.has(libraryPath) && await absent(disk, libraryPath)) missing.push(libraryPath);
   }
 
   const filesByName = new Map<string, string[]>();
@@ -599,8 +600,9 @@ async function applyRepair(name: string, token: string): Promise<RepairResult> {
         // The host's manifest decides, read once for the pairs; when it can't be had nothing is written.
         view ??= await readManifestView(notebook);
         if (view.state !== "ok") { problems.push(`The host could not confirm the files of ${notebook} (${view.reason}), so the records of ${move.from} stayed.`); for (const record of move.records) done.set(record, "stayed"); continue; }
-        if (view.files.has(move.from)) { problems.push(`${move.from} is back in the shared notebook, so its records stayed.`); for (const record of move.records) done.set(record, "stayed"); continue; }
-        if (view.files.get(move.to)?.fileId !== files[move.to]?.fileId) { problems.push(`${move.to} is not the file that was shown, so the records of ${move.from} stayed.`); for (const record of move.records) done.set(record, "stayed"); continue; }
+        // Decided by the path: a file of the notebook's local `_archive` is not in the manifest, the disk says whether it is back.
+        if (isSharedNotebookPath(move.from) ? manifestHasFile(view, move.from) : !(await absent(fileExistence(), move.from))) { problems.push(`${move.from} is back in the shared notebook, so its records stayed.`); for (const record of move.records) done.set(record, "stayed"); continue; }
+        if (manifestFile(view, move.to)?.fileId !== files[move.to]?.fileId) { problems.push(`${move.to} is not the file that was shown, so the records of ${move.from} stayed.`); for (const record of move.records) done.set(record, "stayed"); continue; }
       } else {
       if (!(await absent(fileExistence(), move.from))) { problems.push(`${move.from} is back, so its records stayed.`); for (const record of move.records) done.set(record, "stayed"); continue; }
       if (JSON.stringify(await fingerprintOf(move.to)) !== JSON.stringify(files[move.to])) { problems.push(`${move.to} is not the file that was shown, so the records of ${move.from} stayed.`); for (const record of move.records) done.set(record, "stayed"); continue; }

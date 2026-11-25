@@ -29,7 +29,7 @@ import { inspectReferenceLibrary } from "@/lib/storage/references";
 import { inspectLegacyReviewKeys, inspectReviewDocumentProblems, inspectReviewKeys } from "@/lib/storage/review-files";
 import { listSidecars, findOrphanedSidecars, SIDECAR_KINDS, type SidecarInspection } from "@/lib/storage/sidecars";
 import { matchByIdentity, mayBeBack, readOrphans, slotTakenBy, upkeepReattachesByContent } from "@/lib/storage/pdf-sidecars";
-import { hostOwnsSideFile, livePdfMarkIds, mayBeArriving, readManifestView, readSharedSync } from "@/lib/storage/shared-manifest-view";
+import { hostOwnsSideFile, livePdfMarkIds, manifestFile, manifestHasFile, manifestHasFolder, mayBeArriving, readManifestView, readSharedSync } from "@/lib/storage/shared-manifest-view";
 import { isGeneratedPath, isShareablePath } from "../../../electron/collab/notebooks/fs-ops";
 import { getFileType } from "@/lib/storage/file-types";
 import { pythonSidecarDocumentPath, pythonSidecarPath } from "@/lib/python/sidecar";
@@ -429,8 +429,13 @@ async function recordsLeftAt(files: { label: string; libraryPath: string }[], le
  * marks, Python code, images and files of the notebook) and never a record judged only by the version of a file that may still be arriving.
  */
 export function sharedMayClear(action: CleanupAction, notebook: string): boolean {
+  // A record of a path the manifest does not govern (the notebook's local `_archive`, another notebook's file) is this computer's whatever its kind: the disk decides it, as in a local notebook.
+  const subject = action.gone ?? (action.type === "side-file" || action.type === "ink-files" ? action.filePath : "path" in action ? action.path : null);
+  if (subject && action.type !== "asset" && !isSharedNotebookPath(subject)) return true;
   switch (action.type) {
-    case "star": case "tags": case "review": case "attachment": case "set-aside": case "citations": return true;
+    case "star": case "tags": case "review": case "attachment": case "citations": case "tether": return true;
+    // What Try to fix refuses as the host's (live PDF marks, ink) is not offered for removal either: one rule.
+    case "set-aside": return !hostOwnsSideFile(action.file.startsWith("ink/") ? "ink" : action.file.startsWith("annotations/") ? "pdf-annotations" : "", notebook);
     case "side-file": return !hostOwnsSideFile(action.kind, notebook) && (Boolean(action.gone) || action.kind === "pdf-text" || action.kind === "audio-peaks");
     default: return false;
   }
@@ -519,7 +524,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
   const checks: IntegrityCheckResult[] = [];
   const disk = fileExistence();
   /** The shared notebook lists this file (so one the disk lacks is still arriving, not gone). */
-  const listed = (libraryPath: string) => manifestBefore?.state === "ok" && manifestBefore.files.has(libraryPath);
+  const listed = (libraryPath: string) => manifestBefore?.state === "ok" && isSharedNotebookPath(libraryPath) && manifestHasFile(manifestBefore, libraryPath);
   /** Files the manifest lists that this computer does not have yet. */
   let undeliveredFiles: Promise<string[]> | null = null;
   const undelivered = () => undeliveredFiles ??= (async () => {
@@ -635,8 +640,12 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     const { sidecars, unreadable } = await listSidecars(notebook);
     counts.sidecars = sidecars.length;
     // A shared notebook's files are the manifest's: a side file is orphaned when the host's list has no file at its path (a listed file not yet on the disk is arriving; a retired copy still on the disk is gone). Without the list nothing is judged.
+    // Decided per path: the notebook's local `_archive` is not in the manifest, so its files are judged on the disk.
     const orphans = manifestBefore
-      ? manifestBefore.state === "ok" ? sidecars.filter((sidecar) => !manifestBefore.files.has(sidecar.filePath)).map(({ kind, path, filePath }) => ({ kind, path, filePath })) : []
+      ? [
+        ...manifestBefore.state === "ok" ? sidecars.filter((sidecar) => isSharedNotebookPath(sidecar.filePath) && !manifestHasFile(manifestBefore, sidecar.filePath)).map(({ kind, path, filePath }) => ({ kind, path, filePath })) : [],
+        ...await findOrphanedSidecars(notebook, sidecars.filter((sidecar) => !isSharedNotebookPath(sidecar.filePath))),
+      ]
       : await findOrphanedSidecars(notebook, sidecars);
     const orphaned = new Set(orphans.map((orphan) => orphan.path));
     /** The file each side file was made for (size and content hash), as it recorded it. */
@@ -836,7 +845,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
         if (kind === "ink" || !identity || (await disk.isFile(originalPath)) !== true || await slotTaken(kind)(originalPath)) return null;
         // The host records each blob's hash: it is compared, and the file is never read (an online-only placeholder would be downloaded).
         if (manifestBefore?.state !== "ok") return "unknown";
-        const recorded = manifestBefore.files.get(originalPath)?.blobHash;
+        const recorded = manifestFile(manifestBefore, originalPath)?.blobHash;
         return !recorded ? "unknown" : recorded.toLowerCase() === identity.contentHash.toLowerCase() ? originalPath : null;
       }
       return identity ? owner(kind, fileType, identity) : (await disk.isFile(originalPath)) === true && !(await slotTaken(kind)(originalPath)) ? originalPath : null;
@@ -848,7 +857,9 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
      */
     const mayReturn = async (kind: string, fileType: string | null, originalPath: string, identity: { size: number; contentHash: string } | null) => {
       // A shared notebook's owner may be back when the host lists its old path (or cannot say), or the disk has it.
-      if (shared) return manifestBefore?.state !== "ok" || manifestBefore.files.has(originalPath) || (await disk.isFile(originalPath)) !== false;
+      if (shared && isSharedNotebookPath(originalPath)) return manifestBefore?.state !== "ok" || manifestHasFile(manifestBefore, originalPath) || (await disk.isFile(originalPath)) !== false;
+      // The notebook's local `_archive` is not the manifest's: the disk decides there.
+      if (shared) return (await disk.isFile(originalPath)) !== false;
       const candidates = identity && follows(kind, fileType) ? (kind === "ink" ? [...await filesOfType("pdf"), ...await filesOfType("image")] : await filesOfType(fileType!)) : [];
       if (identity) await hashSameSize(candidates.filter((candidate) => candidate.size === identity.size));
       return mayBeBack({ originalPath, source: identity }, candidates, hashes, (libraryPath) => disk.isFile(libraryPath));
@@ -1092,16 +1103,26 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     const unknownPaths = new Set<string>();
     const missing = async (libraryPath: string) => {
       // A shared notebook's file is there when the host lists it (a listed file the disk lacks is arriving), gone when it does not. Without the list a missing file is not judged.
-      if (manifestBefore?.state === "ok") return !manifestBefore.files.has(libraryPath);
+      // Decided by the path, not the notebook: the notebook's local `_archive` and other notebooks' files are the disk's.
+      const byManifest = manifestBefore !== null && isSharedNotebookPath(libraryPath);
+      if (byManifest && manifestBefore.state === "ok") return !manifestHasFile(manifestBefore, libraryPath);
       await disk.check([libraryPath]);
-      if (disk.unknown(libraryPath) || (manifestBefore && !disk.exists(libraryPath))) { unknownPaths.add(libraryPath); return false; }
+      if (disk.unknown(libraryPath) || (byManifest && !disk.exists(libraryPath))) { unknownPaths.add(libraryPath); return false; }
       return !disk.exists(libraryPath);
     };
+    /** A starred or tagged path may be a folder: the manifest's folders for a shared path, and a folder only this computer has (or any folder in a local notebook) is judged on the disk. */
+    const folderThere = async (libraryPath: string) => {
+      if (manifestBefore?.state === "ok" && isSharedNotebookPath(libraryPath) && manifestHasFolder(manifestBefore, libraryPath)) return true;
+      const [owner, ...parts] = libraryPath.split("/");
+      if (!parts.length || parts.some((part) => !part || part === "." || part === "..")) return false;
+      try { return (await lstat(path.join(notebookPath(owner), ...parts))).isDirectory(); } catch { return false; }
+    };
+    const missingEntry = async (libraryPath: string) => (await missing(libraryPath)) && !(await folderThere(libraryPath));
     for (const starred of metadata.starredFilePaths) {
-      if (under(starred, notebook) && await missing(starred)) add({ severity: "warning", path: starred, message: "Starred, but the file is missing.", fix: "Unstar it, or put the file back.", clear: [{ type: "star", path: starred, gone: starred }], ...say("starredFileMissing", undefined, "starredFileMissingFix") });
+      if (under(starred, notebook) && await missingEntry(starred)) add({ severity: "warning", path: starred, message: "Starred, but the file is missing.", fix: "Unstar it, or put the file back.", clear: [{ type: "star", path: starred, gone: starred }], ...say("starredFileMissing", undefined, "starredFileMissingFix") });
     }
     for (const tagged of Object.keys(metadata.fileTags)) {
-      if (under(tagged, notebook) && await missing(tagged)) add({ severity: "warning", path: tagged, message: "Has tags, but the file is missing.", fix: "Put the file back, or its tags stay unused.", clear: [{ type: "tags", path: tagged, gone: tagged }], ...say("taggedFileMissing", undefined, "taggedFileMissingFix") });
+      if (under(tagged, notebook) && await missingEntry(tagged)) add({ severity: "warning", path: tagged, message: "Has tags, but the file is missing.", fix: "Put the file back, or its tags stay unused.", clear: [{ type: "tags", path: tagged, gone: tagged }], ...say("taggedFileMissing", undefined, "taggedFileMissingFix") });
     }
     // Read without migrating older review storage (readReviewKeys would).
     const reviews = await inspectReviewKeys(getStateRoot());
@@ -1194,8 +1215,8 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
           if (disk.unknown(attachment.path)) unchecked += 1;
           // A shared notebook's attachment is missing when the host does not list it; without the list it is not judged.
           let gone: boolean;
-          if (manifestBefore && under(attachment.path, notebook)) {
-            if (manifestBefore.state === "ok") gone = !manifestBefore.files.has(attachment.path);
+          if (manifestBefore && under(attachment.path, notebook) && isSharedNotebookPath(attachment.path)) {
+            if (manifestBefore.state === "ok") gone = !manifestHasFile(manifestBefore, attachment.path);
             else { gone = false; if (!disk.exists(attachment.path) && !disk.unknown(attachment.path)) unchecked += 1; }
           } else gone = !disk.exists(attachment.path) && !disk.unknown(attachment.path);
           if (gone) {
@@ -1210,7 +1231,13 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     } else if (tether && "libraryPath" in tether) {
       await disk.check([tether.libraryPath]);
       if (disk.unknown(tether.libraryPath)) unchecked += 1;
-      if (!disk.exists(tether.libraryPath) && !disk.unknown(tether.libraryPath)) add({ severity: "warning", path: tether.libraryPath, message: "The library is tethered to this .bib file, which is missing.", fix: "Put the file back, or choose the tethered file again in References.", clear: [{ type: "tether", target: tether.libraryPath, gone: tether.libraryPath }], ...say("tetherFileMissing", undefined, "tetherFileMissingFix") });
+      // A tether to a shared file: the host's list decides (a listed file the disk lacks is arriving; one it no longer lists is gone, a retired copy still on the disk or not). Without the list it is not judged.
+      let tetherGone = !disk.exists(tether.libraryPath) && !disk.unknown(tether.libraryPath);
+      if (manifestBefore && under(tether.libraryPath, notebook) && isSharedNotebookPath(tether.libraryPath)) {
+        if (manifestBefore.state === "ok") tetherGone = !manifestHasFile(manifestBefore, tether.libraryPath);
+        else { tetherGone = false; if (!disk.exists(tether.libraryPath)) unchecked += 1; }
+      }
+      if (tetherGone) add({ severity: "warning", path: tether.libraryPath, message: "The library is tethered to this .bib file, which is missing.", fix: "Put the file back, or choose the tethered file again in References.", clear: [{ type: "tether", target: tether.libraryPath, gone: tether.libraryPath }], ...say("tetherFileMissing", undefined, "tetherFileMissingFix") });
     } else if (tether) {
       const state = await probe(tether.absolutePath);
       // A folder that is gone too may be a drive that is unplugged: not for Acknowledge to forget.

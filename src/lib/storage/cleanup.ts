@@ -11,7 +11,7 @@ import { StorageError } from "@/lib/storage/errors";
 import { getFileType } from "@/lib/storage/file-types";
 import { inkFolderPath } from "@/lib/storage/ink";
 import { sharedMayClear, verifyNotebook, type CleanupAction, type IntegrityFinding, type IntegrityLimits } from "@/lib/storage/integrity";
-import { readManifestView, type ManifestView } from "@/lib/storage/shared-manifest-view";
+import { manifestHasFile, readManifestView, type ManifestView } from "@/lib/storage/shared-manifest-view";
 import { fileExistence } from "@/lib/storage/library-links";
 import { rawEmbedsInOtherNotebooks, unreferencedMarkdownAssets } from "@/lib/storage/markdown-assets";
 import { deleteReviewKey, findReview, reviewVersion } from "@/lib/storage/markdown-reviews";
@@ -250,10 +250,23 @@ async function goneHold(disk: ReturnType<typeof fileExistence>, libraryPath: str
   return null;
 }
 
-/** The shared version of "still gone": the host's manifest does not list the file (a copy left on the disk does not make it back; a listed file not yet delivered does). */
-function sharedGoneHold(view: ManifestView, libraryPath: string): Hold | null {
+/**
+ * The shared version of "still gone", decided by the path: for a file the manifest governs, the host's manifest does not list it under the
+ * round's name rule (a copy left on the disk under the exact name does not make it back; a listed file not yet delivered does; a name the
+ * disk opens for a file spelled differently is that file's, kept, as in `goneHold`). A path it does not govern (the notebook's local
+ * `_archive`, a file of another notebook) is the disk's, judged as in a local notebook.
+ */
+async function sharedGoneHold(view: ManifestView, disk: ReturnType<typeof fileExistence>, libraryPath: string): Promise<Hold | null> {
+  if (!isSharedNotebookPath(libraryPath)) return goneHold(disk, libraryPath);
   if (view.state !== "ok") return { reason: "unchecked", message: `The host can't confirm which files the shared notebook has (${view.reason}); the records of ${libraryPath} are kept.` };
-  if (view.files.has(libraryPath)) return { reason: "back", message: `${libraryPath} is in the shared notebook; its records are kept.` };
+  if (manifestHasFile(view, libraryPath)) return { reason: "back", message: `${libraryPath} is in the shared notebook; its records are kept.` };
+  await disk.check([libraryPath]);
+  // The exact name on the disk is a retired copy; another spelling of it that the disk opens is a live file, not to be removed through the alias.
+  if (!disk.exists(libraryPath)) {
+    const physical = await physicalState(libraryPath);
+    if (physical === "unknown") return { reason: "unchecked", message: `${libraryPath} can't be checked (no permission, or a drive is offline); its records are kept.` };
+    if (physical === "file") return { reason: "alias", message: `${libraryPath} opens a file under another spelling of its name (letter case or accents); its records are kept for that file.` };
+  }
   return null;
 }
 
@@ -270,7 +283,7 @@ async function absoluteTetherHold(target: string): Promise<Hold | null> {
 /** Why an action is not stale (any more), or null: the one decision the plan and the removal share. */
 async function staleness(notebook: string, action: CleanupAction, disk = fileExistence(), view: ManifestView | null = null): Promise<Hold | null> {
   if (view && !sharedMayClear(action, notebook)) return { reason: "shared", message: "The host keeps this in the shared notebook; it is kept." };
-  const gone = (libraryPath: string) => view ? sharedGoneHold(view, libraryPath) : goneHold(disk, libraryPath);
+  const gone = (libraryPath: string) => view ? sharedGoneHold(view, disk, libraryPath) : goneHold(disk, libraryPath);
   if (action.gone) { const hold = await gone(action.gone); if (hold) return hold; }
   if (action.type === "set-aside") {
     const origin = await setAsideOrigin(notebook, action.file);
