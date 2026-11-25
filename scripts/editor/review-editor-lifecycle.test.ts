@@ -405,6 +405,21 @@ test("a leave sync retries a changed revision instead of silently discarding the
   } finally { await h.dispose(); }
 });
 
+test("a leave refused because the file moved (its snapshot rewritten under a new key) is silent", async () => {
+  const h = await mountReview();
+  try {
+    await act(async () => h.editor.commands.insertContent("my draft "));
+    await settle(300);
+    const stored = h.documents.get("review-id")!;
+    h.documents.set(stored.id, { ...stored, key: "Notes/moved.md", revision: stored.revision + 1, snapshot: "Text with rewritten links." });
+    await act(async () => h.switchTab("Notes/other.md"));
+    await settle(50);
+    assert.equal(h.documents.get(stored.id)!.snapshot, "Text with rewritten links.");
+    assert.equal(h.calls.includes("sync"), false);
+    assert.equal(h.review.error, "");
+  } finally { await h.dispose(); }
+});
+
 test("a leave sync never overwrites a different snapshot stored by another window", async () => {
   const h = await mountReview();
   try {
@@ -417,6 +432,7 @@ test("a leave sync never overwrites a different snapshot stored by another windo
     await settle(50);
     assert.equal(h.documents.get(stored.id)!.snapshot, remote.snapshot);
     assert.equal(h.calls.includes("sync"), false);
+    // U-H3: the load is not blocked by the refused leave, but the dropped edits are still announced once it is done.
     assert.match(h.review.error, /Review text changed in another window/);
   } finally { await h.dispose(); }
 });

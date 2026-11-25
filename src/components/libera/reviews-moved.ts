@@ -15,8 +15,8 @@ export function reviewsMovedAffect(paths: readonly string[] | undefined, key: st
  * failure: when a move rewrote the snapshot on the server the leave sync is refused (the text changed under it),
  * and the load reads the stored review itself.
  */
-export function trackLeavingWrite(leaving: Set<Promise<unknown>>, write: Promise<unknown>) {
-  const settled: Promise<void> = write.then(() => undefined, () => undefined).finally(() => { leaving.delete(settled); });
+export function trackLeavingWrite(leaving: Set<Promise<unknown>>, write: Promise<unknown>, onFailure?: (cause: unknown) => void) {
+  const settled: Promise<void> = write.then(() => undefined, (cause) => { onFailure?.(cause); }).finally(() => { leaving.delete(settled); });
   leaving.add(settled);
   return settled;
 }
@@ -39,5 +39,5 @@ export function reviewPathsTouchedBy(change: WorkspaceFileChange, links?: { rewr
  */
 export function announceReviewsMoved(paths: readonly string[]) {
   if (!paths.length || typeof window === "undefined") return;
-  window.dispatchEvent(new CustomEvent(REVIEWS_MOVED_EVENT, { detail: { paths: [...paths] } }));
+  window.dispatchEvent(new (window.CustomEvent ?? CustomEvent)(REVIEWS_MOVED_EVENT, { detail: { paths: [...paths] } }));
 }
