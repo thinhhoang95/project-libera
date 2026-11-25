@@ -39,5 +39,5 @@ export function reviewPathsTouchedBy(change: WorkspaceFileChange, links?: { rewr
  */
 export function announceReviewsMoved(paths: readonly string[]) {
   if (!paths.length || typeof window === "undefined") return;
-  window.dispatchEvent(new CustomEvent(REVIEWS_MOVED_EVENT, { detail: { paths: [...paths] } }));
+  window.dispatchEvent(new (window.CustomEvent ?? CustomEvent)(REVIEWS_MOVED_EVENT, { detail: { paths: [...paths] } }));
 }

@@ -128,8 +128,8 @@ test("documents, outlines, bibliographies and includes are read from the source"
   assert.deepEqual(entries.map((entry) => [entry.key, entry.title, entry.year]), [["knuth", "The \\TeXbook", "1984"], ["lamport", undefined, undefined]]);
   assert.deepEqual(readLatexBibliographyReferences("\\bibliography{refs, more}\n\\addbibresource{extra.bib}"), ["refs.bib", "more.bib", "extra.bib"]);
   assert.deepEqual(readLatexIncludes("\\input{chapters/one}\n\\include{two.tex}\n% \\input{skip}\n\\subimport{parts/}{three}"), [
-    { path: "chapters/one.tex", relativeToFile: false },
-    { path: "two.tex", relativeToFile: false },
+    { path: "chapters/one.tex", relativeToFile: false, command: "input" },
+    { path: "two.tex", relativeToFile: false, command: "include" },
     { path: "parts/three.tex", relativeToFile: true },
   ]);
 });

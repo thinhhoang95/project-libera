@@ -417,6 +417,7 @@ test("a leave sync never overwrites a different snapshot stored by another windo
     await settle(50);
     assert.equal(h.documents.get(stored.id)!.snapshot, remote.snapshot);
     assert.equal(h.calls.includes("sync"), false);
-    assert.match(h.review.error, /Review text changed in another window/);
+    // U-H3: the refused leave sync no longer aborts the next tab's load with an error; the other window's snapshot stays.
+    assert.equal(h.review.error, "");
   } finally { await h.dispose(); }
 });
