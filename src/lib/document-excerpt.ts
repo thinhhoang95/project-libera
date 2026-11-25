@@ -23,8 +23,8 @@ export type WordRange = { start: number; end: number };
  * then; edits made since shift them slightly, which only moves a window's edge.
  */
 export type DocumentExcerpt = { pages: number; wordCount: number; ranges: WordRange[]; pdfPages?: number[] };
-/** Where the reader is: a text offset, or a PDF page. */
-export type ReaderPosition = { offset?: number; page?: number };
+/** Where the reader is: a visible text range (or offset), or a PDF page. */
+export type ReaderPosition = { offset?: number; endOffset?: number; page?: number };
 
 export function wordStarts(text: string) {
   return Array.from(text.matchAll(/\S+/g), (match) => match.index);
@@ -128,6 +128,13 @@ function isCovered(anchor: WordRange, ranges: WordRange[]) {
   return ranges.some((range) => range.start <= anchor.start && anchor.end <= range.end);
 }
 
+/** When an anchor itself exceeds its share of the budget, only its centered share can be sent. */
+function effectiveAnchor(anchor: WordRange, share: number, total: number): WordRange {
+  if (anchor.end - anchor.start <= share || share >= total) return anchor;
+  const from = Math.round(Math.min(Math.max((anchor.start + anchor.end - share) / 2, 0), Math.max(0, total - share)));
+  return { start: from, end: Math.min(total, from + Math.round(share)) };
+}
+
 /**
  * The next excerpt of a document: its text, with what was cut marked, and what
  * it covers. Null when the budget and the quotes add nothing to `sent`.
@@ -148,7 +155,7 @@ export function documentExcerpt({ text, pages, quotes = [], reader = {}, sent = 
   const pdfPages = pdf ? pdfPageOffsets(text) : [];
   const wordsPerPage = pdfPages.length ? total / pdfPages.length : WORDS_PER_PAGE;
   const budget = pages ? Math.round(pages * wordsPerPage) : total;
-  const sentRanges = sent.flatMap((excerpt) => excerpt.ranges);
+  const sentRanges = mergeRanges(sent.flatMap((excerpt) => excerpt.ranges));
 
   const source = quotes.length ? normalizeForMatch(text) : null;
   const quoted = quotes.flatMap((quote) => {
@@ -156,16 +163,21 @@ export function documentExcerpt({ text, pages, quotes = [], reader = {}, sent = 
     return place ? [{ start: wordAt(starts, place.start), end: wordAt(starts, place.end - 1) + 1 }] : [];
   });
   const viewedPage = reader.page === undefined ? -1 : pdfPages.findIndex((item) => item.page === reader.page);
+  const startWord = wordAt(starts, reader.offset ?? 0);
+  const endWord = reader.endOffset !== undefined && reader.endOffset > (reader.offset ?? 0)
+    ? Math.max(startWord + 1, wordAt(starts, reader.endOffset - 1) + 1)
+    : startWord + 1;
   const viewed = viewedPage >= 0
     ? { start: wordAt(starts, pdfPages[viewedPage].offset), end: pdfPages[viewedPage + 1] ? wordAt(starts, pdfPages[viewedPage + 1].offset) : total }
-    : { start: wordAt(starts, reader.offset ?? 0), end: wordAt(starts, reader.offset ?? 0) + 1 };
+    : { start: startWord, end: Math.min(total, endWord) };
   const anchors = quoted.length ? quoted : [viewed];
 
   // A larger budget than any sent before adds text around anchors already in
   // the conversation. Otherwise those anchors add nothing, and each new one
   // keeps its share of the budget.
   const widened = !sent.length || budget > Math.max(...sent.map((excerpt) => Math.round(excerpt.pages * wordsPerPage)));
-  const fresh = widened ? anchors : anchors.filter((anchor) => !isCovered(anchor, sentRanges));
+  const share = budget / anchors.length;
+  const fresh = widened ? anchors : anchors.filter((anchor) => !isCovered(effectiveAnchor(anchor, share, total), sentRanges));
   const windows = windowsAround(fresh, budget * fresh.length / anchors.length, total);
   const ranges = subtractRanges(windows, sentRanges).filter((range) => !sent.length || range.end - range.start >= MIN_ADDED_WORDS);
   if (!ranges.length) return null;
@@ -188,11 +200,15 @@ export function documentExcerpt({ text, pages, quotes = [], reader = {}, sent = 
  * larger than one already sent, what the reader sees went already, and no quote
  * is waiting (a quote's place is only worked out when the message is sent).
  */
-export function documentWindowSent(sent: DocumentExcerpt[], { pages, quoted, word, pdfPage }: { pages?: number; quoted: boolean; word?: number; pdfPage?: number }) {
+export function documentWindowSent(sent: DocumentExcerpt[], { pages, quoted, word, endWord, pdfPage }: { pages?: number; quoted: boolean; word?: number; endWord?: number; pdfPage?: number }) {
   if (!sent.length || quoted || !pages || pages > Math.max(...sent.map((excerpt) => excerpt.pages))) return false;
-  return pdfPage !== undefined
-    ? sent.some((excerpt) => excerpt.pdfPages?.includes(pdfPage))
-    : isCovered({ start: word ?? 0, end: (word ?? 0) + 1 }, sent.flatMap((excerpt) => excerpt.ranges));
+  if (pdfPage !== undefined) return sent.some((excerpt) => excerpt.pdfPages?.includes(pdfPage));
+  const start = word ?? 0;
+  const end = endWord !== undefined && endWord > start ? endWord : start + 1;
+  const total = Math.max(end, ...sent.map((excerpt) => excerpt.wordCount));
+  const budget = Math.round(pages * WORDS_PER_PAGE);
+  const sentRanges = mergeRanges(sent.flatMap((excerpt) => excerpt.ranges));
+  return isCovered(effectiveAnchor({ start, end }, budget, total), sentRanges);
 }
 
 export function validateDocumentExcerpt(value: unknown): value is DocumentExcerpt {

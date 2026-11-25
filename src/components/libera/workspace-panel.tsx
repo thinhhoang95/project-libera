@@ -121,6 +121,7 @@ import { editorThemeFontStacks, useResolvedEditorThemes } from "@/components/lib
 import {
   getTextareaOffsetAtVisualProgress,
   getTextareaViewportAnchorOffset,
+  getTextareaViewportBounds,
   getTextareaVisualProgressForRange,
   scrollTextareaToOffset,
 } from "@/lib/textarea-position";
@@ -230,6 +231,7 @@ const MARKDOWN_SCROLL_VIEW_STATE_KEYS: ReadonlySet<string> = new Set<keyof Markd
   "visualScrollLeft", "visualScrollTop", "visualScrollAnchorPos", "visualScrollAnchorOffset",
   // The outline's line moves as headings are crossed: a reading position too.
   "line",
+  "visibleFrom", "visibleTo",
 ]);
 const MARKDOWN_SCROLL_SYNC_ANCHOR_PROGRESS = 0.6;
 const MARKDOWN_SPLIT_STORAGE_KEY = "libera.markdownEditorPreviewSplitPercent";
@@ -964,7 +966,7 @@ function WorkspacePanelContent({
           textarea.setSelectionRange(start, end);
           scrollTextareaToOffset(textarea, start, { block: "center" });
         }
-        updateMarkdownViewState({ reveal: undefined, selectionStart: markdownReveal.start, selectionEnd: markdownReveal.end });
+        updateMarkdownViewState({ reveal: undefined, selectionStart: markdownReveal.start, selectionEnd: markdownReveal.end, visibleFrom: undefined, visibleTo: undefined });
       });
     });
     return () => window.cancelAnimationFrame(frame);
@@ -1030,11 +1032,15 @@ function WorkspacePanelContent({
     const textarea = textareaRef.current;
     const preview = markdownPreviewRef.current;
     const anchor = textarea?.isConnected ? readSourceScrollAnchor(textarea) : null;
+    const bounds = textarea?.isConnected && textarea.clientHeight > 0
+      ? getTextareaViewportBounds(textarea, MARKDOWN_SCROLL_SYNC_ANCHOR_PROGRESS)
+      : null;
     updateMarkdownViewState({
       ...pendingMarkdownViewportRef.current,
       ...(textarea?.isConnected ? {
         editorScrollLeft: textarea.scrollLeft, editorScrollTop: textarea.scrollTop,
         editorScrollOffset: anchor?.offset, editorScrollPos: anchor?.pos,
+        ...(bounds ? { visibleFrom: bounds.visibleFrom, visibleTo: bounds.visibleTo } : {}),
         selectionStart: textarea.selectionStart, selectionEnd: textarea.selectionEnd,
         linkSelection: textarea.selectionEnd > textarea.selectionStart
           ? { start: textarea.selectionStart, end: textarea.selectionEnd }
@@ -1282,7 +1288,7 @@ function WorkspacePanelContent({
 
       pendingStaleEditorScrollStateRef.current = null;
 
-      const syncAnchorOffset = getTextareaViewportAnchorOffset(
+      const { anchor: syncAnchorOffset, visibleFrom, visibleTo } = getTextareaViewportBounds(
         editor,
         MARKDOWN_SCROLL_SYNC_ANCHOR_PROGRESS,
       );
@@ -1295,6 +1301,8 @@ function WorkspacePanelContent({
         editorScrollLeft: editor.scrollLeft,
         editorScrollTop: editor.scrollTop,
         line: getMarkdownLineForOffset(editor.value, syncAnchorOffset),
+        visibleFrom,
+        visibleTo,
         previewScrollLeft: previewPane.scrollLeft,
         previewScrollTop: previewPane.scrollTop,
       });
@@ -1328,6 +1336,15 @@ function WorkspacePanelContent({
         syncTextareaToMarkdownPreview(sourcePosition ?? undefined);
       }
 
+      const topSourcePosition = getPreviewViewportAnchorPosition(previewPane, 0);
+      const bottomSourcePosition = getPreviewViewportAnchorPosition(previewPane, 1);
+      const visibleFrom = topSourcePosition
+        ? getTextareaOffsetAtVisualProgress(editor, topSourcePosition.range, topSourcePosition.progress)
+        : null;
+      const visibleTo = bottomSourcePosition
+        ? getTextareaOffsetAtVisualProgress(editor, bottomSourcePosition.range, bottomSourcePosition.progress)
+        : null;
+
       reportMarkdownScrollViewState({
         editorScrollLeft: editor.scrollLeft,
         editorScrollTop: editor.scrollTop,
@@ -1335,6 +1352,7 @@ function WorkspacePanelContent({
           sourceOffset === null
             ? undefined
             : getMarkdownLineForOffset(editor.value, sourceOffset),
+        ...(visibleFrom !== null ? { visibleFrom, visibleTo: visibleTo !== null ? Math.max(visibleFrom, visibleTo) : visibleFrom } : {}),
         previewScrollLeft: previewPane.scrollLeft,
         previewScrollTop: previewPane.scrollTop,
       });
@@ -1587,6 +1605,8 @@ function WorkspacePanelContent({
       selectionEnd: offset,
       selectionStart: offset,
       slideIndex: slide.index,
+      visibleFrom: undefined,
+      visibleTo: undefined,
     });
 
     if (!textarea) {
@@ -1873,6 +1893,13 @@ function WorkspacePanelContent({
 
     event.preventDefault();
     markProgrammaticEditorScroll();
+    updateMarkdownViewState({
+      line: getMarkdownLineForOffset(textarea.value, clampedOffset),
+      selectionStart: clampedOffset,
+      selectionEnd: clampedOffset,
+      visibleFrom: undefined,
+      visibleTo: undefined,
+    });
     textarea.focus();
     textarea.setSelectionRange(clampedOffset, clampedOffset);
     scrollTextareaToOffset(textarea, clampedOffset);

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
+import type { ReaderPosition } from "@/lib/document-excerpt";
 import type { OpenTab } from "./types";
 
 /**
@@ -61,13 +62,79 @@ let allRevision = 0;
 /** The key of what a tab's reading position decides, apart from its text (see changedDraftKeys). */
 export const viewKey = (tabId: string) => `view:${tabId}`;
 
-/** What the chat's "sent" marks take from a tab's view state (readerPosition in document-chat-panel.tsx). */
+function lineOrSelectionOffset(draft: string, state: { line?: number; selectionStart?: number }): ReaderPosition {
+  if (state.line === undefined) return { offset: state.selectionStart };
+  let offset = 0;
+  for (let line = 1; line < state.line; line++) {
+    const next = draft.indexOf("\n", offset);
+    if (next < 0) break;
+    offset = next + 1;
+  }
+  return { offset };
+}
+
+/** Where the reader is in a tab: the chat's page budget sits there when nothing is quoted. */
+export function readerPosition(tab: OpenTab | undefined): ReaderPosition {
+  const view = tab?.viewState;
+  if (!tab || !view) return {};
+  if (tab.file.fileType === "pdf") return { page: view.pdf?.page };
+  if (tab.file.fileType === "latex") {
+    const state = view.latex;
+    if (!state) return {};
+    const visual = state.editorMode === "visual" && !/\.(bib|sty|cls)$/i.test(tab.file.name);
+    if (visual) {
+      if (state.visualVisibleFrom !== undefined) {
+        return state.visualVisibleTo !== undefined && state.visualVisibleTo > state.visualVisibleFrom
+          ? { offset: state.visualVisibleFrom, endOffset: state.visualVisibleTo }
+          : { offset: state.visualVisibleFrom };
+      }
+      if (state.visualScrollPos !== undefined) return { offset: state.visualScrollPos };
+      // Tabs saved before Visual mode had its own scroll kept it in `editorScrollPos`.
+      if (state.visualScrollTop === undefined && state.editorScrollPos !== undefined) return { offset: state.editorScrollPos };
+      return lineOrSelectionOffset(tab.draft, state);
+    }
+    if (state.visibleFrom !== undefined) {
+      return state.visibleTo !== undefined && state.visibleTo > state.visibleFrom
+        ? { offset: state.visibleFrom, endOffset: state.visibleTo }
+        : { offset: state.visibleFrom };
+    }
+    if (state.editorScrollPos !== undefined) return { offset: state.editorScrollPos };
+    return lineOrSelectionOffset(tab.draft, state);
+  }
+  const state = tab.file.fileType === "markdown" ? view.markdown : view.text;
+  if (!state) return {};
+  if (state.visibleFrom !== undefined) {
+    return state.visibleTo !== undefined && state.visibleTo > state.visibleFrom
+      ? { offset: state.visibleFrom, endOffset: state.visibleTo }
+      : { offset: state.visibleFrom };
+  }
+  // Markdown's line follows the viewport in Visual, Source and Preview alike.
+  if (tab.file.fileType !== "markdown" && state.editorScrollPos !== undefined) return { offset: state.editorScrollPos };
+  return lineOrSelectionOffset(tab.draft, state);
+}
+
+/** What the chat's "sent" marks take from a tab's view state (matches readerPosition above). */
 function readerSignature(tab: OpenTab) {
   const view = tab.viewState;
   if (!view) return "";
   if (tab.file.fileType === "pdf") return `p${view.pdf?.page}`;
-  const state = tab.file.fileType === "markdown" ? view.markdown : tab.file.fileType === "latex" ? view.latex : view.text;
+  if (tab.file.fileType === "latex") {
+    const state = view.latex;
+    if (!state) return "";
+    const visual = state.editorMode === "visual" && !/\.(bib|sty|cls)$/i.test(tab.file.name);
+    if (visual) {
+      if (state.visualVisibleFrom !== undefined) return `vv${state.visualVisibleFrom}:${state.visualVisibleTo ?? ""}`;
+      if (state.visualScrollPos !== undefined) return `vs${state.visualScrollPos}`;
+      if (state.visualScrollTop === undefined && state.editorScrollPos !== undefined) return `vs${state.editorScrollPos}`;
+      return state.line === undefined ? `vc${state.selectionStart}` : `vl${state.line}`;
+    }
+    if (state.visibleFrom !== undefined) return `sv${state.visibleFrom}:${state.visibleTo ?? ""}`;
+    if (state.editorScrollPos !== undefined) return `ss${state.editorScrollPos}`;
+    return state.line === undefined ? `sc${state.selectionStart}` : `sl${state.line}`;
+  }
+  const state = tab.file.fileType === "markdown" ? view.markdown : view.text;
   if (!state) return "";
+  if (state.visibleFrom !== undefined) return `v${state.visibleFrom}:${state.visibleTo ?? ""}`;
   if (tab.file.fileType !== "markdown" && state.editorScrollPos !== undefined) return `s${state.editorScrollPos}`;
   return state.line === undefined ? `c${state.selectionStart}` : `l${state.line}`;
 }

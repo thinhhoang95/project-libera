@@ -359,6 +359,30 @@ export function getTextareaViewportAnchorOffset(
   return measurer.offsetAtContentY(contentY);
 }
 
+/** Reads the viewport's top, bottom and anchor offsets in one pass (reusing a single mirror on legacy textareas). */
+export function getTextareaViewportBounds(
+  textarea: HTMLTextAreaElement,
+  anchorProgress: number,
+) {
+  const codeMirror = getCodeMirrorTextareaAdapter(textarea);
+  if (codeMirror) {
+    const visibleFrom = codeMirror.viewportAnchorOffset(0);
+    const visibleTo = Math.max(visibleFrom, codeMirror.viewportAnchorOffset(1));
+    const anchor = codeMirror.viewportAnchorOffset(anchorProgress);
+    return { anchor, visibleFrom, visibleTo };
+  }
+  const measurer = createMeasurer(textarea);
+  if (!measurer) {
+    return { anchor: 0, visibleFrom: 0, visibleTo: 0 };
+  }
+  const contentHeight = Math.max(1, textarea.clientHeight - measurer.metrics.paddingTop);
+  const top = textarea.scrollTop;
+  const visibleFrom = measurer.offsetAtContentY(top);
+  const visibleTo = Math.max(visibleFrom, measurer.offsetAtContentY(top + contentHeight));
+  const anchor = measurer.offsetAtContentY(top + contentHeight * clamp(anchorProgress, 0, 1));
+  return { anchor, visibleFrom, visibleTo };
+}
+
 export function getTextareaVisualProgressForRange(
   textarea: HTMLTextAreaElement,
   offset: number,

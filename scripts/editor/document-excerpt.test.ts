@@ -136,3 +136,39 @@ test("dragging is logarithmic, stays in range and reaches both ends", () => {
   const first = pagesForDrag(300, 300, -110);
   assert.ok(first > 10 && first < 30);
 });
+
+test("a visible range expands equally above and below to fill one page without cropping what is on screen", () => {
+  const text = words(10_000);
+  const starts = wordStarts(text);
+  // Viewport shows 300 words (w5000..w5299); 1 page = 500 words -> 100 above, 300 visible, 100 below.
+  const part = documentExcerpt({ text, pages: 1, reader: { offset: starts[5_000], endOffset: starts[5_300] } })!;
+  assert.equal(size(part.excerpt.ranges), WORDS_PER_PAGE);
+  assert.deepEqual(part.excerpt.ranges, [{ start: 4_900, end: 5_400 }]);
+  assert.ok(part.text.includes("w5000 ") && part.text.includes("w5299 "));
+  assert.ok(documentWindowSent([part.excerpt], { pages: 1, quoted: false, word: 5_000, endWord: 5_300 }));
+  // Scrolling down so newly visible words (w5400..w5499) appear is not treated as already sent.
+  assert.equal(documentWindowSent([part.excerpt], { pages: 1, quoted: false, word: 5_200, endWord: 5_500 }), false);
+  const next = documentExcerpt({ text, pages: 1, reader: { offset: starts[5_200], endOffset: starts[5_500] }, sent: [part.excerpt] })!;
+  assert.ok(next.text.includes("w5400 ") && next.text.includes("w5499 "));
+});
+
+test("a visible range wider than one page centers one page on what is visible and marks it sent", () => {
+  const text = words(10_000);
+  const starts = wordStarts(text);
+  const reader = { offset: starts[5_000], endOffset: starts[5_700] };
+  const first = documentExcerpt({ text, pages: 1, reader })!;
+  assert.deepEqual(first.excerpt.ranges, [{ start: 5_100, end: 5_600 }]);
+  assert.equal(documentExcerpt({ text, pages: 1, reader, sent: [first.excerpt] }), null);
+  assert.equal(documentWindowSent([first.excerpt], { pages: 1, quoted: false, word: 5_000, endWord: 5_700 }), true);
+});
+
+test("adjacent sent excerpts merge when checking whether a visible range is already covered", () => {
+  const text = words(5_000);
+  const starts = wordStarts(text);
+  const sent = [
+    { pages: 1, wordCount: 5_000, ranges: [{ start: 0, end: 500 }] },
+    { pages: 1, wordCount: 5_000, ranges: [{ start: 500, end: 1_000 }] },
+  ];
+  assert.equal(documentExcerpt({ text, pages: 1, reader: { offset: starts[400], endOffset: starts[600] }, sent }), null);
+  assert.equal(documentWindowSent(sent, { pages: 1, quoted: false, word: 400, endWord: 600 }), true);
+});

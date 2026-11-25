@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import test, { mock } from "node:test";
 import { JSDOM } from "jsdom";
 import { act, createElement, Profiler, useEffect, useMemo, useRef, type ReactNode } from "react";
-import { changedDraftKeys, draftRevision, useChromeTabs, useDraftRevisionFor, viewKey } from "../../src/components/libera/tab-chrome";
+import { changedDraftKeys, draftRevision, readerPosition, useChromeTabs, useDraftRevisionFor, viewKey } from "../../src/components/libera/tab-chrome";
 import { useStableHandlers } from "../../src/components/libera/use-stable-handlers";
 import { flushPendingState } from "../../src/components/libera/deferred-save";
 import type { OpenTab } from "../../src/components/libera/types";
@@ -53,6 +53,38 @@ test("a caret or scroll publication moves no draft key; a text, page count or cl
   assert.ok(changedDraftKeys([pdf], [{ ...pdf, viewState: { pdf: { page: 1, pageCount: 12 } } as OpenTab["viewState"] }]).includes("p"), "page count");
   assert.ok(changedDraftKeys([pdf], [{ ...pdf, viewState: { pdf: { page: 4 } } as OpenTab["viewState"] }]).includes(viewKey("p")), "reading page");
   assert.ok(changedDraftKeys([a, b], [a]).includes("b"), "a closed tab");
+});
+
+test("readerPosition and changedDraftKeys follow LaTeX Visual mode's own viewport instead of stale Source scroll", () => {
+  const texFile = { path: "Paper/main.tex", name: "main.tex", fileType: "latex", notebook: "Paper", createdAt: "2026-09-14", updatedAt: "2026-09-14" } as OpenTab["file"];
+  const tex = (latex: NonNullable<OpenTab["viewState"]>["latex"]): OpenTab => ({
+    id: "tex", draft: "line1\nline2\nline3\n", saved: "", status: "clean", file: texFile, viewState: { latex },
+  });
+
+  // In Visual mode with stale Source-mode editorScrollPos=0, Visual's visible range wins.
+  const visual = tex({ editorMode: "visual", editorScrollPos: 0, visibleFrom: 0, visibleTo: 200, visualScrollPos: 5_000, visualVisibleFrom: 5_000, visualVisibleTo: 6_200, line: 1 });
+  assert.deepEqual(readerPosition(visual), { offset: 5_000, endOffset: 6_200 });
+
+  // Scrolling in Visual mode without visualVisibleFrom still uses visualScrollPos, never stale Source editorScrollPos.
+  const visualScrollOnly = tex({ editorMode: "visual", editorScrollPos: 0, visualScrollPos: 7_500, line: 1 });
+  assert.deepEqual(readerPosition(visualScrollOnly), { offset: 7_500 });
+
+  // Legacy Visual tabs (no visualScroll* at all) still fall back to editorScrollPos.
+  const legacyVisual = tex({ editorMode: "visual", editorScrollPos: 4_000 });
+  assert.deepEqual(readerPosition(legacyVisual), { offset: 4_000 });
+
+  // In Source mode, Source's visible range wins and ignores Visual's position.
+  const source = tex({ editorMode: "source", editorScrollPos: 200, visibleFrom: 200, visibleTo: 900, visualScrollPos: 5_000, visualVisibleFrom: 5_000, visualVisibleTo: 6_200 });
+  assert.deepEqual(readerPosition(source), { offset: 200, endOffset: 900 });
+
+  // Switching modes or scrolling in Visual mode wakes only viewKey(tab.id), not draft keys.
+  assert.deepEqual(changedDraftKeys([source], [visual]), [viewKey("tex")]);
+  const visualScrolled = tex({ editorMode: "visual", editorScrollPos: 0, visualScrollPos: 8_000, visualVisibleFrom: 8_000, visualVisibleTo: 9_100, line: 1 });
+  assert.deepEqual(changedDraftKeys([visual], [visualScrolled]), [viewKey("tex")]);
+
+  // Markdown visible range overrides heading-only line when present.
+  const md = tabOf("md", { draft: "x".repeat(5_000), viewState: { markdown: { line: 1, visibleFrom: 3_000, visibleTo: 3_800 } } });
+  assert.deepEqual(readerPosition(md), { offset: 3_000, endOffset: 3_800 });
 });
 
 test("a caret publication bumps nothing, and a draft in tab X wakes only what follows X", async () => {

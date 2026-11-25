@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { EditorView } from "@codemirror/view";
+import { BlockType, type EditorView } from "@codemirror/view";
 
-import { readCodeMirrorScroll, restoreCodeMirrorScroll, RESTORE_HOLD_LIMIT_MS, RESTORE_SETTLE_MS } from "../../src/lib/codemirror-scroll";
+import { readCodeMirrorScroll, readCodeMirrorVisibleRange, restoreCodeMirrorScroll, RESTORE_HOLD_LIMIT_MS, RESTORE_SETTLE_MS } from "../../src/lib/codemirror-scroll";
 
 type ScrollEffect = { value: { range: { head: number }; y: string; yMargin: number } };
 
@@ -276,4 +276,55 @@ test("switching away before the restore finishes cancels it", (context) => {
   frames.run();
   assert.equal(done, 0);
   assert.equal(scrollDOM.scrollLeft, 0);
+});
+
+test("readCodeMirrorVisibleRange reads top and bottom blocks, refines wrapped text, handles widgets and skips folded preamble", () => {
+  const blocks = [
+    { from: 0, to: 1_500, top: 0, bottom: 32, height: 32, type: BlockType.WidgetAfter },
+    { from: 1_501, to: 2_500, top: 32, bottom: 432, height: 400, type: BlockType.Text },
+    { from: 2_501, to: 3_500, top: 432, bottom: 832, height: 400, type: BlockType.Text },
+  ];
+  const makeView = (scrollTop: number, opts?: { posThrows?: boolean; topPos?: number; bottomPos?: number; clientHeight?: number }) => {
+    const clientHeight = opts?.clientHeight ?? 400;
+    return {
+      scrollDOM: {
+        clientHeight, scrollTop, scrollLeft: 0,
+        getBoundingClientRect: () => ({ top: 100, left: 20, right: 620, height: clientHeight }),
+      },
+      contentDOM: { getBoundingClientRect: () => ({ left: 60, right: 600 }) },
+      documentTop: 100 - scrollTop,
+      scaleY: 1,
+      lineBlockAtHeight: (height: number) => blocks.find((b) => height < b.bottom) ?? blocks.at(-1)!,
+      posAtCoords: (coords: { x: number; y: number }) => {
+        if (opts?.posThrows) throw new Error("Viewport failed to stabilize");
+        return coords.y < 200 ? (opts?.topPos ?? 1_700) : (opts?.bottomPos ?? 2_900);
+      },
+    } as unknown as EditorView;
+  };
+
+  assert.equal(readCodeMirrorVisibleRange(makeView(0, { clientHeight: 0 })), null);
+
+  // At top with folded preamble covering [0, 1500]: skips hidden preamble so visible body is anchored.
+  assert.deepEqual(
+    readCodeMirrorVisibleRange(makeView(0, { bottomPos: 2_300 }), { skipLeadingFoldedTo: 1_501 }),
+    { from: 1_501, to: 2_300 },
+  );
+
+  // Without skipping (e.g., expanded preamble or Source mode), starts at block 0.
+  assert.deepEqual(
+    readCodeMirrorVisibleRange(makeView(0, { bottomPos: 2_300 })),
+    { from: 0, to: 2_300 },
+  );
+
+  // Scrolled into wrapped text blocks: refines top and bottom to exact posAtCoords.
+  assert.deepEqual(
+    readCodeMirrorVisibleRange(makeView(100, { topPos: 1_800, bottomPos: 2_750 }), { skipLeadingFoldedTo: 1_501 }),
+    { from: 1_800, to: 2_750 },
+  );
+
+  // When posAtCoords throws, falls back cleanly to lineBlockAtHeight bounds.
+  assert.deepEqual(
+    readCodeMirrorVisibleRange(makeView(100, { posThrows: true }), { skipLeadingFoldedTo: 1_501 }),
+    { from: 1_501, to: 3_500 },
+  );
 });

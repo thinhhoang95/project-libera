@@ -21,9 +21,8 @@ import { findBeginDocument } from "../../document-begin";
  * touched. */
 
 export { visualStateFields };
-export { setAuxData, setMacroSources, setNumberingIncludes, setNumberingStart, type MacroSource } from "./model";
-export { rebuildVisualEffect } from "./structural";
-export { visualRevealRanges } from "./structural";
+export { setAuxData, setMacroSources, setNumberingIncludes, setNumberingStart, preambleOpenField, type MacroSource } from "./model";
+export { preambleEndOf, rebuildVisualEffect, visualRevealRanges } from "./structural";
 export { toggleLatexFormat, isFormatActive } from "./keys";
 
 /** State the Visual mode reads (definitions, numbering, `.aux` labels): installed in both modes, so switching keeps it. */

@@ -14,7 +14,7 @@ import { createPortal } from "react-dom";
 import { useTranslations } from "next-intl";
 import { ClipboardPaste, Copy, Scissors, Volume2 } from "lucide-react";
 import { speakMarkdown } from "@/lib/tts/player";
-import { readCodeMirrorScroll, restoreCodeMirrorScroll } from "@/lib/codemirror-scroll";
+import { readCodeMirrorScroll, readCodeMirrorVisibleRange, restoreCodeMirrorScroll } from "@/lib/codemirror-scroll";
 import { codeMirrorReflowAdapter, keepScrollOnReflow } from "@/lib/reflow-scroll-anchor";
 import { codeHighlightStyle, codeLanguageName, findCodeLanguage, loadCodeLanguage } from "@/lib/code-languages";
 import { useCanvasViewStateCapture } from "@/components/libera/canvas-view-state";
@@ -108,11 +108,13 @@ export function CodeEditor({
 
   const reportViewState = useCallback((target: EditorView) => {
       const selection = target.state.selection.main;
+      const visible = readCodeMirrorVisibleRange(target);
       callbacks.current.onViewStateChange({
         selectionStart: selection.anchor,
         selectionEnd: selection.head,
         line: target.state.doc.lineAt(selection.head).number,
         ...readCodeMirrorScroll(target),
+        ...(visible ? { visibleFrom: visible.from, visibleTo: visible.to } : {}),
       });
   }, []);
   useCanvasViewStateCapture(() => {
@@ -215,9 +217,23 @@ export function CodeEditor({
     const head = created.state.selection.main.head;
     const headLine = created.state.doc.lineAt(head);
     setCursor({ line: headLine.number, column: head - headLine.from + 1, selected: 0 });
-    cancelRestoreRef.current = restore ? restoreCodeMirrorScroll(created, restore, () => { cancelRestoreRef.current = null; }) : null;
-    if (!cancelRestoreRef.current && restore?.selectionStart !== undefined) {
-      created.dispatch({ effects: EditorView.scrollIntoView(head, { y: "center" }) });
+    const scheduleInitialViewState = (target: EditorView) => {
+      if (viewStateTimerRef.current !== null) clearTimeout(viewStateTimerRef.current);
+      viewStateTimerRef.current = setTimeout(() => {
+        if (viewRef.current === target && !cancelRestoreRef.current && target.scrollDOM.clientHeight > 0) reportViewState(target);
+      }, VIEW_STATE_DELAY_MS);
+    };
+    cancelRestoreRef.current = restore
+      ? restoreCodeMirrorScroll(created, restore, () => {
+        cancelRestoreRef.current = null;
+        scheduleInitialViewState(created);
+      })
+      : null;
+    if (!cancelRestoreRef.current) {
+      if (restore?.selectionStart !== undefined) {
+        created.dispatch({ effects: EditorView.scrollIntoView(head, { y: "center" }) });
+      }
+      scheduleInitialViewState(created);
     }
 
     let disposed = false;

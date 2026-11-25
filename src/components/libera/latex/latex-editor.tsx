@@ -31,7 +31,7 @@ import { latexCompletionSource, latexFormattingKeymap, latexInputHandler, latexP
 import { latexLanguageSupport } from "@/lib/latex/codemirror/latex-language";
 import { latexMathPreview } from "@/lib/latex/codemirror/preview";
 import {
-  isVisualModeOn, latexVisualMode, latexVisualState, rebuildVisualEffect, setAuxData, setMacroSources, setNumberingIncludes, setNumberingStart, visualCompartment, visualEntrySelection,
+  isVisualModeOn, latexVisualMode, latexVisualState, preambleEndOf, preambleOpenField, rebuildVisualEffect, setAuxData, setMacroSources, setNumberingIncludes, setNumberingStart, visualCompartment, visualEntrySelection,
   visualRevealRanges, type MacroSource,
 } from "@/lib/latex/codemirror/visual";
 import { EMPTY_AUX, type LatexAuxData } from "@/lib/latex/aux-file";
@@ -41,7 +41,7 @@ import { encodeFilePath } from "@/components/libera/api-client";
 import { latexSnippetCompletionSource } from "@/lib/latex/codemirror/snippets";
 import { snippetBodyFromSelection } from "@/lib/latex/snippets";
 import { decideReviewHunks, latexReviewExtension, reviewHunksField, type ReviewHunk } from "@/lib/latex/codemirror/review";
-import { readCodeMirrorScroll, restoreCodeMirrorScroll } from "@/lib/codemirror-scroll";
+import { readCodeMirrorScroll, readCodeMirrorVisibleRange, restoreCodeMirrorScroll } from "@/lib/codemirror-scroll";
 import { codeMirrorReflowAdapter, keepScrollOnReflow, type EditorScrollState } from "@/lib/reflow-scroll-anchor";
 import {
   compiledLocationForPosition, latexSyncExtension, markCompileShown, markCompileStarted, positionForCompiledLine, revealPosition,
@@ -78,6 +78,8 @@ export type LatexEditorHandle = {
   markCompileStarted: () => void;
   markCompileShown: () => void;
   text: () => string;
+  /** Document offsets currently visible in the editor, or null while restoring or unmeasured. */
+  visibleRange: () => { from: number; to: number } | null;
 };
 
 type LatexEditorProps = {
@@ -212,10 +214,27 @@ function initialModeScroll(state: LatexTabViewState | undefined, editorMode: Lat
   return { source, visual: savedModeScroll(state, true) ?? (editorMode === "visual" ? source : undefined) };
 }
 
-function modeScrollPatch(scroll: EditorScrollState, visual: boolean): LatexTabViewState {
+function latexVisibleRange(target: EditorView) {
+  const visual = isVisualModeOn(target.state);
+  const skipLeadingFoldedTo = visual && !target.state.field(preambleOpenField, false)
+    ? preambleEndOf(target.state)
+    : undefined;
+  return readCodeMirrorVisibleRange(target, skipLeadingFoldedTo && skipLeadingFoldedTo > 0 ? { skipLeadingFoldedTo } : undefined);
+}
+
+function modeScrollPatch(scroll: EditorScrollState, visible: { from: number; to: number } | null, visual: boolean): LatexTabViewState {
   return visual
-    ? { visualScrollLeft: scroll.editorScrollLeft, visualScrollOffset: scroll.editorScrollOffset, visualScrollPos: scroll.editorScrollPos, visualScrollTop: scroll.editorScrollTop }
-    : scroll;
+    ? {
+      visualScrollLeft: scroll.editorScrollLeft,
+      visualScrollOffset: scroll.editorScrollOffset,
+      visualScrollPos: scroll.editorScrollPos,
+      visualScrollTop: scroll.editorScrollTop,
+      ...(visible ? { visualVisibleFrom: visible.from, visualVisibleTo: visible.to } : {}),
+    }
+    : {
+      ...scroll,
+      ...(visible ? { visibleFrom: visible.from, visibleTo: visible.to } : {}),
+    };
 }
 
 /** The part of a line TeX had read when it stopped, from its "l.12 …" context
@@ -496,12 +515,13 @@ export function LatexEditor({
       const selection = target.state.selection.main;
       const visual = isVisualModeOn(target.state);
       const scroll = readCodeMirrorScroll(target);
+      const visible = latexVisibleRange(target);
       modeScrollRef.current![visual ? "visual" : "source"] = scroll;
       callbacks.current.onViewStateChange({
         selectionStart: selection.anchor,
         selectionEnd: selection.head,
         line: target.state.doc.lineAt(selection.head).number,
-        ...modeScrollPatch(scroll, visual),
+        ...modeScrollPatch(scroll, visible, visual),
       });
   }, []);
   useCanvasViewStateCapture(() => {
@@ -606,7 +626,8 @@ export function LatexEditor({
             }
           }
           if (update.startState.field(reviewHunksField) !== update.state.field(reviewHunksField)) setHunks(update.state.field(reviewHunksField));
-          if (update.docChanged || update.selectionSet) {
+          const preambleChanged = isTex && update.startState.field(preambleOpenField, false) !== update.state.field(preambleOpenField, false);
+          if (update.docChanged || update.selectionSet || preambleChanged) {
             if (viewStateTimerRef.current !== null) clearTimeout(viewStateTimerRef.current);
             viewStateTimerRef.current = setTimeout(() => reportViewState(update.view), VIEW_STATE_DELAY_MS);
           }
@@ -641,10 +662,24 @@ export function LatexEditor({
     viewRef.current = created;
     setView(created);
     findSession.attach(created);
+    const scheduleInitialViewState = (target: EditorView) => {
+      if (viewStateTimerRef.current !== null) clearTimeout(viewStateTimerRef.current);
+      viewStateTimerRef.current = setTimeout(() => {
+        if (viewRef.current === target && !cancelRestoreRef.current && target.scrollDOM.clientHeight > 0) reportViewState(target);
+      }, VIEW_STATE_DELAY_MS);
+    };
     const savedScroll = modeScrollRef.current![visual ? "visual" : "source"];
-    cancelRestoreRef.current = savedScroll ? restoreCodeMirrorScroll(created, savedScroll, () => { cancelRestoreRef.current = null; }) : null;
-    if (!cancelRestoreRef.current && restore?.selectionStart !== undefined) {
-      created.dispatch({ effects: EditorView.scrollIntoView(created.state.selection.main.head, { y: "center" }) });
+    cancelRestoreRef.current = savedScroll
+      ? restoreCodeMirrorScroll(created, savedScroll, () => {
+        cancelRestoreRef.current = null;
+        scheduleInitialViewState(created);
+      })
+      : null;
+    if (!cancelRestoreRef.current) {
+      if (restore?.selectionStart !== undefined) {
+        created.dispatch({ effects: EditorView.scrollIntoView(created.state.selection.main.head, { y: "center" }) });
+      }
+      scheduleInitialViewState(created);
     }
 
     // Side panels and window resizes rewrap long lines; hold the reader's place
@@ -703,6 +738,7 @@ export function LatexEditor({
       markCompileStarted: () => view.dispatch({ effects: markCompileStarted.of(null) }),
       markCompileShown: () => view.dispatch({ effects: markCompileShown.of(null) }),
       text: () => view.state.doc.toString(),
+      visibleRange: () => (cancelRestoreRef.current ? null : latexVisibleRange(view)),
     };
     return () => { if (editorRef.current?.view === view) editorRef.current = null; };
   }, [editorRef, view]);
@@ -787,7 +823,20 @@ export function LatexEditor({
       ...(selection ? { selection } : {}),
       scrollIntoView: !saved,
     });
-    if (saved) cancelRestoreRef.current = restoreCodeMirrorScroll(view, saved, () => { cancelRestoreRef.current = null; });
+    const scheduleModeViewState = () => {
+      if (viewStateTimerRef.current !== null) clearTimeout(viewStateTimerRef.current);
+      viewStateTimerRef.current = setTimeout(() => {
+        if (viewRef.current === view && !cancelRestoreRef.current && view.scrollDOM.clientHeight > 0) reportViewState(view);
+      }, VIEW_STATE_DELAY_MS);
+    };
+    if (saved) {
+      cancelRestoreRef.current = restoreCodeMirrorScroll(view, saved, () => {
+        cancelRestoreRef.current = null;
+        scheduleModeViewState();
+      });
+    } else {
+      scheduleModeViewState();
+    }
   }, [compileRoot, documentPath, reportViewState, view, visualActive]);
 
   // Spelling is checked in the Visual mode only, when the setting is on (spellcheck.ts says why).

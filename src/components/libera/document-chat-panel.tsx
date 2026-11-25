@@ -20,7 +20,8 @@ import { markdownLinkWorkspacePath } from "@/lib/markdown-file-links";
 import { ChatFileComposer, type ChatCommentTarget } from "./chat-file-composer";
 import { isTextFileType, type LiberaFileNode, type LiberaFilePayload } from "@/lib/types";
 import type { OpenTab } from "./types";
-import { useDraftRevisionFor, useLiveValueFor, viewKey, type ChromeTab } from "./tab-chrome";
+import { readerPosition, useDraftRevisionFor, useLiveValueFor, viewKey, type ChromeTab } from "./tab-chrome";
+import { getLatexEditor } from "./latex/latex-editor-registry";
 import { LiveMessage, streamingMessages, withLiveReplies } from "./chat-streaming";
 import { readAgentEvents, readChatResponse } from "./chat-stream-client";
 import { AgentRunView } from "./agent-activity";
@@ -77,23 +78,13 @@ function selectionExcerpt(text: string) {
 
 type T = ReturnType<typeof useTranslations>;
 
-/** Where the reader is in a tab: the chat's page budget sits there when nothing is quoted. */
-function readerPosition(tab: OpenTab | undefined): ReaderPosition {
-  const view = tab?.viewState;
-  if (!tab || !view) return {};
-  if (tab.file.fileType === "pdf") return { page: view.pdf?.page };
-  const state = tab.file.fileType === "markdown" ? view.markdown : tab.file.fileType === "latex" ? view.latex : view.text;
-  if (!state) return {};
-  // Markdown's line follows the viewport in Visual, Source and Preview alike.
-  if (tab.file.fileType !== "markdown" && state.editorScrollPos !== undefined) return { offset: state.editorScrollPos };
-  if (state.line === undefined) return { offset: state.selectionStart };
-  let offset = 0;
-  for (let line = 1; line < state.line; line++) {
-    const next = tab.draft.indexOf("\n", offset);
-    if (next < 0) break;
-    offset = next + 1;
+/** Live reading position when sending: reads mounted LaTeX editors directly so recent scrolls or resizes are never stale. */
+function liveReaderPosition(tab: OpenTab | undefined): ReaderPosition {
+  if (tab?.file.fileType === "latex") {
+    const range = getLatexEditor(tab.id)?.visibleRange();
+    if (range) return range.to > range.from ? { offset: range.from, endOffset: range.to } : { offset: range.from };
   }
-  return { offset };
+  return readerPosition(tab);
 }
 
 /** One pill in the composer's context tray: an icon, a short name and a remove button; details live in the tooltip. */
@@ -195,8 +186,12 @@ function DocumentContextChip({ context, icon, tooltip, tab, messages, pages, quo
   const canAdjust = adjustable && !context.excerpt && !sentWhole && total > 1 && !AUDIO_FILE.test(context.path);
   const budget = context.excerpt?.pages ?? (canAdjust && pages && pages < total ? pages : undefined);
   const reader = readerPosition(tab);
+  const word = reader.offset === undefined ? undefined : wordAt(starts, reader.offset);
+  const endWord = word !== undefined && reader.endOffset !== undefined && reader.endOffset > (reader.offset ?? 0)
+    ? Math.max(word + 1, wordAt(starts, reader.endOffset - 1) + 1)
+    : undefined;
   const sent = trackSent && (sentWhole || documentWindowSent(sentDocumentExcerpts(messages, context.path), {
-    pages: budget, quoted, pdfPage: reader.page, word: reader.offset === undefined ? undefined : wordAt(starts, reader.offset),
+    pages: budget, quoted, pdfPage: reader.page, word, endWord,
   }));
   return <ContextChip kind="document" icon={icon} title={context.name} badge={budget ? t("pageBadge", { count: budget }) : undefined} sent={sent}
     tooltip={budget ? t("budgetTooltip", { pages: budget, where: quoted ? "quoted" : "reading", tooltip }) : tooltip} removeLabel={removeLabel} onRemove={onRemove}
@@ -1163,7 +1158,7 @@ export const DocumentChatPanel = memo(function DocumentChatPanel({ viewedPhoto =
             const sent = sentDocumentExcerpts(chat.messages, context.path);
             if (AUDIO_FILE.test(context.path) || (!pages && !sent.length)) return { ...context, text, ...(pageCount ? { pageCount } : {}) };
             const tab = readOpenTabs().find((item) => (item.untitled ? item.id : item.file.path) === context.path);
-            const part = documentExcerpt({ text, pages, pdf, sent, quotes: quotesOf(context.path), reader: readerPosition(tab) });
+            const part = documentExcerpt({ text, pages, pdf, sent, quotes: quotesOf(context.path), reader: liveReaderPosition(tab) });
             return part && { ...context, ...part, pageCount: pageCount ?? documentPageCount(part.excerpt.wordCount) };
           }));
         message.contexts = resolved.filter((context) => context !== null);

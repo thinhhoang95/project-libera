@@ -20,6 +20,16 @@ function lowerBound(values: number[], target: number) {
   while (low < high) { const mid = (low + high) >>> 1; if (values[mid] < target) low = mid + 1; else high = mid; }
   return low;
 }
+function tiptapHeadingPositions(doc: ProseMirrorNode) {
+  let positions = headingPositions.get(doc);
+  if (!positions) {
+    positions = [];
+    doc.descendants((node, pos) => { if (node.type.name === "heading") positions!.push(pos); });
+    headingPositions.set(doc, positions);
+  }
+  return positions;
+}
+
 export function markdownLineForTiptapPosition(
   editor: Editor,
   markdown: string,
@@ -28,13 +38,7 @@ export function markdownLineForTiptapPosition(
 ) {
   if (editor.isDestroyed) return null;
 
-  const doc = editor.state.doc;
-  let positions = headingPositions.get(doc);
-  if (!positions) {
-    positions = [];
-    doc.descendants((node, pos) => { if (node.type.name === "heading") positions!.push(pos); });
-    headingPositions.set(doc, positions);
-  }
+  const positions = tiptapHeadingPositions(editor.state.doc);
   const precedingHeadings = lowerBound(positions, Math.max(0, position));
   const headingOffset = precedingHeadings ? headingOffsets[precedingHeadings - 1] : 0;
   if (headingOffset === undefined) return null;
@@ -46,7 +50,35 @@ export function markdownLineForTiptapPosition(
     sourceLines.set(editor, lines);
   }
   return lowerBound(lines.starts, headingOffset + 1);
+}
 
+/**
+ * Estimates the Markdown source offset for a ProseMirror position by
+ * interpolating between the surrounding headings (or the document ends when
+ * there are no headings). O(log H) using the cached heading index, so scroll
+ * tracking can locate passages inside long sections or headingless notes.
+ */
+export function markdownOffsetForTiptapPosition(
+  editor: Editor,
+  markdown: string,
+  position: number,
+  headingOffsets = markdownHeadingOffsets(markdown),
+) {
+  if (editor.isDestroyed) return null;
+  const docSize = editor.state.doc.content.size;
+  if (!docSize || !markdown.length) return 0;
+  const clamped = Math.max(0, Math.min(docSize, position));
+  const positions = tiptapHeadingPositions(editor.state.doc);
+  const aligned = positions.length === headingOffsets.length;
+  const nextIndex = aligned ? lowerBound(positions, clamped) : 0;
+  const pmStart = aligned && nextIndex > 0 ? positions[nextIndex - 1] : 0;
+  const pmEnd = aligned && nextIndex < positions.length ? positions[nextIndex] : docSize;
+  const srcStart = aligned && nextIndex > 0 ? headingOffsets[nextIndex - 1] : 0;
+  const srcEnd = aligned && nextIndex < headingOffsets.length ? headingOffsets[nextIndex] : markdown.length;
+  const pmSpan = pmEnd - pmStart;
+  if (pmSpan <= 0) return Math.max(0, Math.min(markdown.length, srcStart));
+  const ratio = Math.max(0, Math.min(1, (clamped - pmStart) / pmSpan));
+  return Math.max(0, Math.min(markdown.length, Math.round(srcStart + ratio * (srcEnd - srcStart))));
 }
 
 export function navigateTiptapToMarkdownHeading(editor: Editor, markdown: string, offset: number) {

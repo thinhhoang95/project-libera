@@ -30,7 +30,7 @@ import { TiptapCitationLayer, useTiptapCitations } from "@/components/libera/ref
 import { useReferenceRender } from "@/components/libera/references/reference-render-context";
 import { droppedQuoteMarkdown, pdfQuoteFromDrop } from "@/components/libera/references/pdf-quote-cite";
 import type { PdfQuoteSource } from "@/lib/references/pdf-quote";
-import { MARKDOWN_OUTLINE_NAVIGATE_EVENT, markdownLineForTiptapPosition, navigateTiptapToMarkdownHeading, revealTiptapMarkdownRange, type MarkdownOutlineNavigateDetail } from "@/lib/markdown-outline-navigation";
+import { MARKDOWN_OUTLINE_NAVIGATE_EVENT, markdownLineForTiptapPosition, markdownOffsetForTiptapPosition, navigateTiptapToMarkdownHeading, revealTiptapMarkdownRange, type MarkdownOutlineNavigateDetail } from "@/lib/markdown-outline-navigation";
 import { useMarkdownHeadingIndex } from "./use-markdown-heading-index";
 import { HighlightTool, highlightToolKey, defaultHighlightToolState } from "@/lib/tiptap-highlight-tool";
 import { TiptapFind, tiptapFindMatchRun, tiptapFindPluginKey, updateTiptapFind } from "@/lib/tiptap-find";
@@ -166,9 +166,16 @@ function getVisualViewportViewState(
   const top = containerRect.top + Math.max(1, visibleHeight * VISUAL_SCROLL_OUTLINE_ANCHOR_PROGRESS);
   const left = Math.max(containerRect.left + 1, editorRect.left + 1);
   let position: number | null = null;
+  let topPos: number | null = null;
+  let bottomPos: number | null = null;
 
   try {
     position = editor.view.posAtCoords({ left, top })?.pos ?? null;
+    if (visibleHeight > 0) {
+      topPos = editor.view.posAtCoords({ left, top: containerRect.top + 1 })?.pos ?? scrollState.visualScrollAnchorPos ?? null;
+      bottomPos = editor.view.posAtCoords({ left, top: containerRect.top + visibleHeight - 1 })?.pos
+        ?? (editorRect.bottom <= containerRect.top + visibleHeight ? editor.state.doc.content.size : position);
+    }
   } catch {
     // The view can disappear between a queued scroll frame and unmount.
   }
@@ -176,9 +183,12 @@ function getVisualViewportViewState(
   const line = position === null
     ? null
     : markdownLineForTiptapPosition(editor, markdown, position, headingOffsets);
+  const visibleFrom = topPos === null ? null : markdownOffsetForTiptapPosition(editor, markdown, topPos, headingOffsets);
+  const visibleTo = bottomPos === null ? null : markdownOffsetForTiptapPosition(editor, markdown, bottomPos, headingOffsets);
 
   return {
     ...(line === null ? {} : { line }),
+    ...(visibleFrom !== null ? { visibleFrom, visibleTo: visibleTo !== null ? Math.max(visibleFrom, visibleTo) : visibleFrom } : {}),
     ...scrollState,
   };
 }
@@ -730,6 +740,8 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
         const container = scrollContainerRef.current;
         onViewStateChangeRef.current?.({
           reveal: undefined,
+          visibleFrom: undefined,
+          visibleTo: undefined,
           visualSelection: editor.state.selection.toJSON(),
           ...(container ? getVisualScrollState(editor, container, null) : {}),
         });

@@ -64,6 +64,9 @@ export type MarkdownTabViewState = EditorScrollState & {
   visualScrollAnchorOffset?: number;
   /** ProseMirror selection JSON, independent of source-text offsets. */
   visualSelection?: Record<string, unknown>;
+  /** Source offsets currently visible in the active Markdown view, for AI chat context cropping. */
+  visibleFrom?: number;
+  visibleTo?: number;
   zoom?: number;
   /** One-shot request (Global Search) to show and select a passage, by source offsets. */
   reveal?: { start: number; end: number; nonce: number };
@@ -105,6 +108,11 @@ export type LatexTabViewState = EditorScrollState & {
   visualScrollOffset?: number;
   visualScrollPos?: number;
   visualScrollTop?: number;
+  /** Document offsets currently visible in Source (`visible*`) and Visual (`visualVisible*`) modes. */
+  visibleFrom?: number;
+  visibleTo?: number;
+  visualVisibleFrom?: number;
+  visualVisibleTo?: number;
   /** "visual" draws a `.tex` file as formatted text, formulas and widgets (docs/latex-visual-editor-plan.md). */
   editorMode?: "source" | "visual";
   /** "current" typesets the open file itself instead of its main file. */
@@ -148,6 +156,9 @@ export type TextTabViewState = EditorScrollState & {
   line?: number;
   selectionEnd?: number;
   selectionStart?: number;
+  /** Document offsets currently visible in the editor, for AI chat context cropping. */
+  visibleFrom?: number;
+  visibleTo?: number;
   /** One-shot request (Global Search) to show and select lines. */
   reveal?: { line: number; endLine?: number; nonce: number };
 };

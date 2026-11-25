@@ -1,4 +1,4 @@
-import { EditorView } from "@codemirror/view";
+import { BlockType, EditorView } from "@codemirror/view";
 import { codeMirrorTopAnchor, type EditorScrollState, type ReflowScrollAnchor } from "./reflow-scroll-anchor";
 
 export function readCodeMirrorScroll(view: EditorView): EditorScrollState {
@@ -10,6 +10,62 @@ export function readCodeMirrorScroll(view: EditorView): EditorScrollState {
     editorScrollPos: anchor?.pos,
     editorScrollTop: scrollTop,
   };
+}
+
+/**
+ * The document character range currently visible in a CodeMirror viewport.
+ * Uses CodeMirror's height map (`lineBlockAtHeight`) so it still works when
+ * the top or bottom edge lands on a block widget or replaced range (math,
+ * figures, tables, folded preamble), then refines within wrapped text lines
+ * via `posAtCoords`. Returns null without layout (zero height).
+ */
+export function readCodeMirrorVisibleRange(
+  view: EditorView,
+  options?: { skipLeadingFoldedTo?: number },
+): { from: number; to: number } | null {
+  const { scrollDOM, contentDOM } = view;
+  const rect = scrollDOM.getBoundingClientRect();
+  const height = scrollDOM.clientHeight || rect.height;
+  if (!height) return null;
+  const scale = view.scaleY || 1;
+  const docTop = view.documentTop;
+  if (!Number.isFinite(docTop)) return null;
+  const topHeight = Math.max(0, (rect.top - docTop) / scale);
+  const bottomHeight = Math.max(topHeight, (rect.top + height - docTop) / scale);
+  let from: number;
+  let to: number;
+  let topBlock: ReturnType<EditorView["lineBlockAtHeight"]>;
+  let bottomBlock: ReturnType<EditorView["lineBlockAtHeight"]>;
+  try {
+    topBlock = view.lineBlockAtHeight(topHeight);
+    bottomBlock = view.lineBlockAtHeight(bottomHeight);
+    from = topBlock.from;
+    to = Math.max(from, bottomBlock.to);
+  } catch {
+    return null;
+  }
+  try {
+    const contentRect = contentDOM.getBoundingClientRect();
+    const left = Math.max(rect.left + 1, contentRect.left + 1);
+    const right = Number.isFinite(rect.right) && Number.isFinite(contentRect.right)
+      ? Math.max(left, Math.min(rect.right - 1, contentRect.right - 1))
+      : left;
+    if (topBlock.type === BlockType.Text && topBlock.to > topBlock.from) {
+      const topPos = view.posAtCoords({ x: left, y: rect.top + 1 }, false);
+      if (topPos >= topBlock.from && topPos <= topBlock.to) from = topPos;
+    }
+    if (bottomBlock.type === BlockType.Text && bottomBlock.to > bottomBlock.from) {
+      const bottomPos = view.posAtCoords({ x: right, y: rect.top + height - 1 }, false);
+      if (bottomPos >= bottomBlock.from && bottomPos <= bottomBlock.to) to = Math.max(from, bottomPos);
+    }
+  } catch {
+    // Keep lineBlockAtHeight's bounds when posAtCoords is unavailable.
+  }
+  const skipTo = options?.skipLeadingFoldedTo;
+  if (skipTo !== undefined && skipTo > 0 && from < skipTo && to > skipTo) {
+    from = skipTo;
+  }
+  return { from, to: Math.max(from, to) };
 }
 
 /** How long the restored text is held in place after the editor's height last
