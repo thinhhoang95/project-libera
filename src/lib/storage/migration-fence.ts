@@ -207,22 +207,84 @@ export function assertLifecycleReservation(): void {
   try { reservation.revalidate(); } catch (error) { throw asStorageError(error); }
 }
 
-/** Runs a record-rewriting operation on a notebook (Try to fix, Acknowledge), refused while a migration involves it or is about to, or while a share holds it. */
-export async function withNotebookOperation<T>(notebook: string, work: () => Promise<T>): Promise<T> {
-  const leave = await enterOperation(notebook);
-  try { return await withLifecycleReservation([notebook], work); } finally { leave(); }
+// ---- One writer per notebook ------------------------------------------------------
+//
+// Upkeep, Try to fix and Acknowledge rewrite the same records, so they never
+// overlap on a notebook: a mutex chained on promises (nothing polls). Try to
+// fix and Acknowledge queue behind whatever holds it; routine upkeep, which
+// can always run on a later pass, skips instead of queueing, so two tree reads
+// never run the same pass twice. An operation that starts another one on the
+// same notebook from inside itself is let through (it already holds the lock).
+
+const MUTEXES = Symbol.for("libera.notebookMutexes");
+type Mutexes = { tails: Map<string, Promise<void>>; holders: Map<string, number> };
+const HELD_HERE = new AsyncLocalStorage<Set<string>>();
+
+function mutexes(): Mutexes {
+  const holder = globalThis as { [MUTEXES]?: Mutexes };
+  return (holder[MUTEXES] ??= { tails: new Map(), holders: new Map() });
 }
 
-/** Like `withNotebookOperation`, for routine upkeep: when it may not run now it is skipped (`false`) and tried again on a later pass. */
+/** Takes the notebook's turn, after everything queued before; resolves with the release. */
+async function takeTurn(notebook: string): Promise<() => void> {
+  const { tails, holders } = mutexes();
+  const before = tails.get(notebook) ?? Promise.resolve();
+  let release!: () => void;
+  const mine = new Promise<void>((resolve) => { release = resolve; });
+  const tail = before.then(() => mine);
+  tails.set(notebook, tail);
+  bump(holders, notebook, 1);
+  await before;
+  let left = false;
+  return () => {
+    if (left) return;
+    left = true;
+    release();
+    bump(holders, notebook, -1);
+    if (tails.get(notebook) === tail) tails.delete(notebook);
+  };
+}
+
+/** The notebook's turn when nothing holds or awaits it, else null. */
+function takeTurnIfFree(notebook: string): Promise<() => void> | null {
+  return mutexes().holders.has(notebook) ? null : takeTurn(notebook);
+}
+
+/** Runs `work` while holding `turn`'s notebook, remembered for operations it starts on that notebook. */
+function holding<T>(notebook: string, release: () => void, work: () => Promise<T>): Promise<T> {
+  const held = new Set(HELD_HERE.getStore() ?? []);
+  held.add(notebook);
+  return HELD_HERE.run(held, async () => { try { return await work(); } finally { release(); } });
+}
+
+/** Runs a record-rewriting operation on a notebook (Try to fix, Acknowledge), refused while a migration involves it or is about to, or while a share holds it. One at a time per notebook, with upkeep too. */
+export async function withNotebookOperation<T>(notebook: string, work: () => Promise<T>): Promise<T> {
+  const run = async () => {
+    const leave = await enterOperation(notebook);
+    try { return await withLifecycleReservation([notebook], work); } finally { leave(); }
+  };
+  if (HELD_HERE.getStore()?.has(notebook)) return run();
+  const release = await takeTurn(notebook);
+  return holding(notebook, release, run);
+}
+
+/** Like `withNotebookOperation`, for routine upkeep: when it may not run now (a migration, a share, or another operation or upkeep pass on the notebook) it is skipped (`false`) and tried again on a later pass. */
 export async function whenNotebookIdle(notebook: string, work: () => Promise<void>): Promise<boolean> {
-  let leave: () => void;
-  try { leave = await enterOperation(notebook); } catch (error) { if (error instanceof StorageError) return false; throw error; }
-  try {
-    // Routine upkeep only looks: it steps aside for a share, and tries again on a later pass.
-    if (isReservedBy(lifecycleDirectory(), notebookRoot(notebook), "share")) return false;
-    await work();
-    return true;
-  } finally { leave(); }
+  const reentrant = HELD_HERE.getStore()?.has(notebook) === true;
+  const turn = reentrant ? null : takeTurnIfFree(notebook);
+  if (!reentrant && !turn) return false;
+  const release = turn ? await turn : () => undefined;
+  const run = async () => {
+    let leave: () => void;
+    try { leave = await enterOperation(notebook); } catch (error) { if (error instanceof StorageError) return false; throw error; }
+    try {
+      // Routine upkeep only looks: it steps aside for a share, and tries again on a later pass.
+      if (isReservedBy(lifecycleDirectory(), notebookRoot(notebook), "share")) return false;
+      await work();
+      return true;
+    } finally { leave(); }
+  };
+  return reentrant ? run() : holding(notebook, release, run);
 }
 
 /**

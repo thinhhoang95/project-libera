@@ -1,11 +1,12 @@
 import { copyLifecycleSidecar } from "@/lib/storage/sidecar-lifecycle";
-import { randomUUID } from "node:crypto";
-import { readdir, readFile, rm, stat } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { readdir, readFile, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { recordPdfAnnotationsSource } from "@/lib/storage/annotations";
 import { sharedNotebookMarker } from "@/lib/collab/shared-notebook";
 import { getFileType } from "@/lib/storage/file-types";
-import { pathExists, writeJsonAtomically } from "@/lib/storage/fs-utils";
+import { isCaseOnlyRename, pathExists, renameCaseAlias, writeJsonAtomically } from "@/lib/storage/fs-utils";
+import { foldedFileName } from "@/lib/storage/file-names";
 import { fileExistence } from "@/lib/storage/library-links";
 import { DestinationTakenError, movePathExclusive, writeFileExclusive } from "../../../electron/collab/notebooks/fs-ops";
 import { cachedPdfIdentity, parsePdfIdentity, type PdfIdentity } from "@/lib/storage/pdf-identity";
@@ -102,6 +103,23 @@ async function readJson(file: string): Promise<unknown> {
 
 const sidecarIdentity = (json: unknown) => parsePdfIdentity((json as { source?: unknown } | null)?.source);
 
+/** Bytes allowed for the side-car's own name inside a set-aside name: 255 less the `<ms>-<uuid8>-` prefix (23) and the `.<pid>.<uuid>.tmp` the atomic write appends (up to 52), with margin. */
+const SET_ASIDE_NAME_BYTES = 170;
+
+/** A side-car's file name shortened to fit a set-aside name, keeping its `.pdf.json` ending and a hash of the whole name so two long names never collide; the original path stays in the record. */
+export function setAsideBaseName(base: string) {
+  if (Buffer.byteLength(base) <= SET_ASIDE_NAME_BYTES) return base;
+  const ending = /\.pdf\.json$/i.test(base) ? base.slice(-9) : ".json";
+  const digest = createHash("sha256").update(base).digest("hex").slice(0, 12);
+  const room = SET_ASIDE_NAME_BYTES - Buffer.byteLength(ending) - digest.length - 1;
+  let head = "";
+  for (const character of base) {
+    if (Buffer.byteLength(head + character) > room) break;
+    head += character;
+  }
+  return `${head}-${digest}${ending}`;
+}
+
 /** Sets a side-car aside, with where it came from. */
 async function setAside(notebook: string, store: KindStore, sidecarPath: string, originalPath: string) {
   const text = await readFile(sidecarPath, "utf8").catch(() => null);
@@ -110,10 +128,11 @@ async function setAside(notebook: string, store: KindStore, sidecarPath: string,
   try { json = JSON.parse(text); } catch { return; }
   if (json === null) return;
   const record: OrphanRecord = { kind: store.kind, originalPath, orphanedAt: new Date().toISOString(), source: sidecarIdentity(json), sidecar: json };
-  const name = `${Date.now()}-${randomUUID().slice(0, 8)}-${path.basename(sidecarPath)}`;
-  await writeJsonAtomically(path.join(orphanedSidecarsDirectoryPath(notebook, store.kind), name), record);
-  // Newer bytes written while the record was saved are not what was set aside: keep them.
-  if (await readFile(sidecarPath, "utf8").catch(() => null) !== text) return;
+  const name = `${Date.now()}-${randomUUID().slice(0, 8)}-${setAsideBaseName(path.basename(sidecarPath))}`;
+  const stored = path.join(orphanedSidecarsDirectoryPath(notebook, store.kind), name);
+  await writeJsonAtomically(stored, record);
+  // Newer bytes written while the record was saved are not what was set aside: keep them, and drop the record, which would come back later as a stale copy.
+  if (await readFile(sidecarPath, "utf8").catch(() => null) !== text) { await rm(stored, { force: true }).catch(() => undefined); return; }
   await rm(sidecarPath, { force: true });
 }
 
@@ -303,8 +322,66 @@ export async function deletePdfSidecars(libraryPath: string) {
 
 /** When each orphaned side-car was first seen without its PDF, by side-car path. */
 const missingSince = new Map<string, number>();
-const lastStoredScan = new Map<string, number>();
+/** When set-aside records were last matched, and against which PDFs: a changed set of PDFs is new evidence, so it is matched at once. */
+const lastStoredScan = new Map<string, { at: number; signature: string }>();
 const backfilled = new Set<string>();
+
+/** A library path under the round's one name rule: each segment NFC and case folded. */
+const foldedLibraryPath = (libraryPath: string) => libraryPath.split("/").map(foldedFileName).join("/");
+
+/**
+ * The one PDF among `candidates` that is `libraryPath` under another spelling
+ * (a case-only or Unicode-normalization-only rename), never the path itself;
+ * null when none or several.
+ */
+export function pdfSpellingOf(libraryPath: string, candidates: Array<{ path: string }>): string | null {
+  const folded = foldedLibraryPath(libraryPath);
+  const found = candidates.filter((candidate) => candidate.path !== libraryPath && foldedLibraryPath(candidate.path) === folded);
+  return found.length === 1 ? found[0].path : null;
+}
+
+const sameRecord = async (from: string, to: string) => {
+  try {
+    const [a, b] = await Promise.all([stat(from, { bigint: true }), stat(to, { bigint: true })]);
+    return a.ino !== BigInt(0) && a.ino === b.ino && a.dev === b.dev;
+  } catch { return false; }
+};
+
+/**
+ * Renames one record (a side-car or its folder) to another spelling of its
+ * name. One slot on a case-insensitive disk (or a normalization-insensitive
+ * one), so it goes through a temporary name; two slots elsewhere, so it moves
+ * into the free one. False, with nothing changed, when the slot holds
+ * something else.
+ */
+async function respellRecord(from: string, to: string): Promise<boolean> {
+  if (from === to) return true;
+  if (await isCaseOnlyRename(from, to)) { await renameCaseAlias(from, to); return true; }
+  if (await sameRecord(from, to)) {
+    const aside = `${from}.${process.pid}.${randomUUID()}.alias`;
+    await rename(from, aside);
+    if (await moveToFreeSlot(aside, to)) return true;
+    await rename(aside, from).catch(() => undefined);
+    return false;
+  }
+  return moveToFreeSlot(from, to);
+}
+
+/** Moves a side-car (and the folders on its way) from the spelling of a PDF's old path to the one its PDF has now. */
+async function respellSidecar(store: KindStore, notebook: string, sidecarPath: string, targetLibraryPath: string): Promise<boolean> {
+  const { notebook: owner, pathParts } = splitFilePath(targetLibraryPath);
+  if (owner !== notebook) return false;
+  const root = store.directory(notebook);
+  const from = path.relative(root, sidecarPath).split(path.sep);
+  const to = path.relative(root, store.path(owner, pathParts)).split(path.sep);
+  if (from.length !== to.length) return false;
+  let current = root;
+  for (let index = 0; index < from.length; index += 1) {
+    if (!(await respellRecord(path.join(current, from[index]), path.join(current, to[index])))) return false;
+    current = path.join(current, to[index]);
+  }
+  return true;
+}
 
 type Found = { store: KindStore; sidecarPath: string; libraryPath: string };
 
@@ -373,23 +450,26 @@ export async function reconcilePdfSidecars(notebook: string, pdfFiles: Array<{ p
       else if (exists && store.kind === "annotations" && !backfilled.has(notebook)) lacksIdentity.push(found.libraryPath);
     }
   }
-  // Annotations saved before they recorded their PDF's identity get it once, in the background.
+  // Annotations saved before they recorded their PDF's identity get it once. This runs inside
+  // the caller's notebook fence (the tree's upkeep holds it), so no move or repair interleaves.
   if (!backfilled.has(notebook)) {
     backfilled.add(notebook);
-    void (async () => {
-      for (const libraryPath of lacksIdentity) {
+    for (const libraryPath of lacksIdentity) {
+      try {
         const { notebook: owner, pathParts } = splitFilePath(libraryPath);
         const json = await readJson(pdfAnnotationsPath(owner, pathParts));
         // Notes older than their PDF's last change may be for an earlier file under this name: what the PDF is now is no evidence of what they were made for, so they stay without an identity.
         if (!sidecarIdentity(json) && !(await changedSinceNotes(owner, pathParts))) await recordPdfAnnotationsSource(libraryPath).catch(() => undefined);
-      }
-    })();
+      } catch { /* One unreadable record does not stop the others. */ }
+    }
   }
   for (const key of missingSince.keys()) if (!missing.some((found) => found.sidecarPath === key) && key.startsWith(notebookPrefix(notebook))) missingSince.delete(key);
 
-  const scanStored = missing.length > 0 || now - (lastStoredScan.get(notebook) ?? 0) >= STORED_ORPHAN_SCAN_MS;
+  const signature = createHash("sha1").update(pdfFiles.map((file) => `${file.path}\u0000${file.size}`).sort().join("\n")).digest("hex");
+  const previous = lastStoredScan.get(notebook);
+  const scanStored = missing.length > 0 || !previous || previous.signature !== signature || now - previous.at >= STORED_ORPHAN_SCAN_MS;
   const stored = scanStored ? await readOrphans(notebook) : [];
-  if (scanStored) lastStoredScan.set(notebook, now);
+  if (scanStored) lastStoredScan.set(notebook, { at: now, signature });
   if (!missing.length && !stored.length) return { reattached: 0, setAside: 0 };
 
   const hashes = new Map<string, Promise<string | null>>();
@@ -406,27 +486,38 @@ export async function reconcilePdfSidecars(notebook: string, pdfFiles: Array<{ p
   // A moved PDF's bytes may have arrived since the host reported the move: reattach its side-cars at the active path.
   if (shared) reattached += await replayPendingPdfMoves(notebook);
   for (const found of shared ? [] : missing) {
-    const identity = sidecarIdentity(await readJson(found.sidecarPath));
-    const target = identity ? await match(found.store, identity) : null;
-    if (target) {
-      const { notebook: owner, pathParts } = splitFilePath(target);
-      // Exclusive: an annotation saved there since the check above is kept, and the source stays until the move has published it.
-      if (await moveToFreeSlot(found.sidecarPath, found.store.path(owner, pathParts))) {
+    // One side-car's trouble (a name too long, a file that vanished) never stops the others.
+    try {
+      // The same file under another spelling (a case-only or normalization-only rename) is the same name under the round's rule: its side-car takes the new spelling.
+      const spelling = pdfSpellingOf(found.libraryPath, pdfFiles);
+      if (spelling && await respellSidecar(found.store, notebook, found.sidecarPath, spelling)) {
         missingSince.delete(found.sidecarPath);
         reattached += 1;
         continue;
       }
-    }
-    const first = missingSince.get(found.sidecarPath) ?? now;
-    missingSince.set(found.sidecarPath, first);
-    if (now - first >= ORPHAN_GRACE_MS) {
-      await setAside(notebook, found.store, found.sidecarPath, found.libraryPath);
-      missingSince.delete(found.sidecarPath);
-      setAsideCount += 1;
-    }
+      const identity = sidecarIdentity(await readJson(found.sidecarPath));
+      const target = identity ? await match(found.store, identity) : null;
+      if (target) {
+        const { notebook: owner, pathParts } = splitFilePath(target);
+        // Exclusive: an annotation saved there since the check above is kept, and the source stays until the move has published it.
+        if (await moveToFreeSlot(found.sidecarPath, found.store.path(owner, pathParts))) {
+          missingSince.delete(found.sidecarPath);
+          reattached += 1;
+          continue;
+        }
+      }
+      const first = missingSince.get(found.sidecarPath) ?? now;
+      missingSince.set(found.sidecarPath, first);
+      if (now - first >= ORPHAN_GRACE_MS) {
+        await setAside(notebook, found.store, found.sidecarPath, found.libraryPath);
+        missingSince.delete(found.sidecarPath);
+        setAsideCount += 1;
+      }
+    } catch { /* Tried again on a later pass. */ }
   }
 
   for (const { file, record } of stored) {
+   try {
     const store = KINDS.find((candidate) => candidate.kind === record.kind)!;
     let target: string | null = null;
     if (shared) {
@@ -436,7 +527,11 @@ export async function reconcilePdfSidecars(notebook: string, pdfFiles: Array<{ p
       if (current && record.source && current.contentHash === record.source.contentHash && !(await slotTaken(store, record.originalPath))) target = record.originalPath;
     } else if (record.source) target = await match(store, record.source);
     // Without a recorded identity, only the PDF coming back under its old path is its own.
-    else if (await pdfExists(record.originalPath, existence) && !(await slotTaken(store, record.originalPath))) target = record.originalPath;
+    else {
+      // ... or under another spelling of that path (a case-only or normalization-only rename).
+      const back = await pdfExists(record.originalPath, existence) ? record.originalPath : pdfSpellingOf(record.originalPath, pdfFiles);
+      if (back && !(await slotTaken(store, back))) target = back;
+    }
     if (target) {
       const { notebook: owner, pathParts } = splitFilePath(target);
       const destination = store.path(owner, pathParts);
@@ -450,6 +545,7 @@ export async function reconcilePdfSidecars(notebook: string, pdfFiles: Array<{ p
       }
     }
     if (!shared && now - Date.parse(record.orphanedAt) > ORPHAN_RETENTION_MS && !(await mayBeBack(record, pdfFiles, hashes, pdfExists))) await rm(file, { force: true });
+   } catch { /* Tried again on a later pass. */ }
   }
   return { reattached, setAside: setAsideCount };
 }
@@ -514,6 +610,8 @@ function hashOf(libraryPath: string, hashes: Map<string, Promise<string | null>>
  */
 export async function mayBeBack(record: { originalPath: string; source: { size: number; contentHash: string } | null }, candidates: Array<{ path: string; size: number }>, hashes: Map<string, Promise<string | null>>, exists: (libraryPath: string) => Promise<boolean | null>) {
   if ((await exists(record.originalPath)) !== false) return true;
+  // The file under another spelling of its path (case-only or normalization-only rename) is the owner back.
+  if (pdfSpellingOf(record.originalPath, candidates)) return true;
   const source = record.source;
   if (!source) return false;
   for (const candidate of candidates) {
