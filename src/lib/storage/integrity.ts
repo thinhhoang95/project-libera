@@ -21,7 +21,7 @@ import { fileExistence, libraryNotebookNames, linkCandidates, resolveLinkTargetW
 import { decodeMarkdownHeadingHash, findMarkdownHeadingAnchorIndex, markdownHeadingAnchors, type MarkdownHeadingAnchor } from "@/lib/markdown-heading-anchors";
 import { markdownHtmlAnchors } from "@/lib/markdown-link-occurrences";
 import { listLegacyAnnotations, savedAnnotationIds, type SavedAnnotationIds } from "@/lib/storage/annotations";
-import { parseTranscript } from "@/lib/storage/transcripts";
+import { parseTranscript, transcriptCompanionFilePath } from "@/lib/storage/transcripts";
 import { markdownImageTargets, unreferencedMarkdownAssets } from "@/lib/storage/markdown-assets";
 import { extractNotebookLinkDestinations, forgetNotebookLinkReads, linkIndexPath, readLinkIndex } from "@/lib/storage/notebook-links";
 import { assertSafeSegment, audioPeaksPath, getLinkedFolder, withReadOnlyStorage, getStateRoot, notebookMetadataPath, notebookPath, notebookSystemDirectoryPath, orphanedSidecarsDirectoryPath, relativeFilePath, filePathFromParts, splitFilePath, transcriptPath } from "@/lib/storage/paths";
@@ -257,13 +257,17 @@ function clock(seconds: number) {
  * measured, so the position of a link can't be judged; null and not stale:
  * nothing saved.
  */
+const readTranscriptLength = (value: unknown) => { const transcript = parseTranscript(value); return transcript && { duration: transcript.audio.duration, size: transcript.audio.size }; };
+
 async function recordingDuration(libraryPath: string): Promise<{ duration: number | null; stale: boolean }> {
   const [notebook, ...parts] = libraryPath.split("/");
   let size: number;
   try { size = (await stat(filePathFromParts(notebook, parts))).size; } catch { return { duration: null, stale: true }; }
   let stale = false;
   for (const [file, read] of [
-    [transcriptPath(notebook, parts), (value: unknown) => { const transcript = parseTranscript(value); return transcript && { duration: transcript.audio.duration, size: transcript.audio.size }; }],
+    [transcriptPath(notebook, parts), readTranscriptLength],
+    // A shared recording's transcript (or one a takedown left beside it) is the companion file next to it.
+    [transcriptCompanionFilePath(notebook, parts), readTranscriptLength],
     [audioPeaksPath(notebook, parts), (value: unknown) => { const peaks = value as { key?: unknown; duration?: unknown } | null; return { duration: peaks?.duration, size: typeof peaks?.key === "string" ? Number(peaks.key.split(":")[0]) : NaN }; }],
   ] as const) {
     try {
@@ -411,12 +415,18 @@ async function recordsLeftAt(files: { label: string; libraryPath: string }[], le
       for (const entry of Object.values(inspected.library?.entries ?? {})) for (const attachment of entry.attachments) if (attachment.kind !== "url") found(attachment.path, "reference attachment");
     }
   });
-  for (const notebook of new Set(files.map((file) => file.libraryPath.split("/")[0]))) {
+  // Every notebook's tether, not only those of the notebooks the files are in: a library in another notebook may be tethered to a .bib here.
+  const owners = new Set(files.map((file) => file.libraryPath.split("/")[0]));
+  const tethered = new Set(owners);
+  await guarded("notebooks with a .bib tether", async () => { for (const library of await libraryNotebookNames()) tethered.add(library); });
+  for (const notebook of tethered) {
     await guarded(`.bib tether of ${notebook}`, async () => {
       const tether = await readTetherTarget(notebook);
+      // A tether that can't be read is unverified only where it could name these files: in a notebook they are in, or any other (it may point here).
       if (tether && "damaged" in tether) return unchecked(`.bib tether of ${notebook}`, tether.damaged);
       if (tether && "libraryPath" in tether) found(tether.libraryPath, ".bib tether");
     });
+    if (!owners.has(notebook)) continue;
     await guarded(`side files set aside in ${notebook}`, async () => {
       for (const { record } of await readOrphans(notebook)) found(record.originalPath, "set-aside side file");
     });
@@ -632,7 +642,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
   });
 
   await run("sidecars", async (add) => {
-    const { sidecars, unreadable } = await listSidecars(notebook);
+    const { sidecars, unreadable } = await listSidecars(notebook, { companions: true });
     counts.sidecars = sidecars.length;
     // A shared notebook's files are the manifest's: a side file is orphaned when the host's list has no file at its path (a listed file not yet on the disk is arriving; a retired copy still on the disk is gone). Without the list nothing is judged.
     const orphans = manifestBefore

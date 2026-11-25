@@ -26,18 +26,24 @@ export async function copyLifecycleSidecar(source: string, target: string, root:
   return true;
 }
 
-/** Retain path-only audio inputs outside the active-path pruning directories. */
-export async function preserveLifecycleSidecar(source: string, root: string): Promise<void> {
+/**
+ * Retain path-only audio inputs outside the active-path pruning directories.
+ * True when a recovery copy of the source's bytes is there now (written, or
+ * already kept); false when none is (no source, or no safe place), so a caller
+ * that retires the source knows it must not.
+ */
+export async function preserveLifecycleSidecar(source: string, root: string): Promise<boolean> {
   const original = await fs.lstat(root);
   const bytes = await readIfExists(source);
-  if (!bytes || !original.isDirectory() || original.isSymbolicLink()) return;
+  if (!bytes || !original.isDirectory() || original.isSymbolicLink()) return false;
   const record = Buffer.from(JSON.stringify({ version: 1, source, contentBase64: bytes.toString("base64") }));
   const target = path.join(root, ".libera", "collab", "sidecar-recovery", `${sha256(record)}.json`);
-  if (await readIfExists(target) !== null) return;
+  if (await readIfExists(target) !== null) return true;
   const guard: WriteGuard = { root, canCommit: async () => {
     const current = await fs.lstat(root).catch(() => null);
     return !!current?.isDirectory() && !current.isSymbolicLink() && current.dev === original.dev && current.ino === original.ino &&
       current.birthtimeMs === original.birthtimeMs && await statIfExists(target) === null;
   } };
   await writeFileAtomic(target, record, guard);
+  return await readIfExists(target) !== null;
 }

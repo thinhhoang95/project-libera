@@ -555,7 +555,7 @@ const hashText = (text: string) => createHash("sha256").update(text).digest("hex
 
 // What a file's records are called when a move refuses to take them over.
 const RECORD_NAMES: Record<string, string> = {
-  "pdf-annotations": "annotations", "image-annotations": "annotations", "pdf-outline": "outline", transcript: "transcript",
+  "pdf-annotations": "annotations", "image-annotations": "annotations", "pdf-outline": "outline", transcript: "transcript", "transcript-companion": "transcript",
   definitions: "definitions", ink: "ink", python: "Python code",
 };
 
