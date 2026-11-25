@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import fsp, { readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
@@ -203,8 +203,15 @@ test("a file that arrives at the destination after the check is kept by a move, 
       await createFolder("Nb", "sub");
       await writeLibraryFile("Nb/a.md", "source");
       afterFirstCheck(t, disk(destination), () => writeFileSync(disk(destination), "arrival"));
-      await assert.rejects(run(), is409, label);
-      assert.equal(await readFile(disk("Nb/a.md"), "utf8"), "source", `${label}: the source stays`);
+      if (label === "archive") {
+        // The archive picks its own name: the taken one is given up and the next is used (F2, L-C4).
+        await run();
+        assert.equal(await readFile(disk("Nb/_archive/a-1.md"), "utf8"), "source", "archive: the file is under the next name");
+        assert.equal(existsSync(disk("Nb/a.md")), false, "archive: the source moved");
+      } else {
+        await assert.rejects(run(), is409, label);
+        assert.equal(await readFile(disk("Nb/a.md"), "utf8"), "source", `${label}: the source stays`);
+      }
       assert.equal(await readFile(disk(destination), "utf8"), "arrival", `${label}: the arrival is kept`);
     });
     t.mock.restoreAll();
