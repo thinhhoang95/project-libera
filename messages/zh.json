@@ -5447,6 +5447,7 @@
     "tryToFix": "尝试修复…",
     "understandDeletedForGood": "我了解这些内容将被永久删除",
     "unmatchedNone": "笔记本中没有此名称的文件。",
+    "unmatchedElsewhere": "此笔记本中没有此名称的文件，但另一个笔记本中有：{candidates}。其记录会保留，不会被移动，也不会被提议删除。",
     "unmatchedHost": "主机将这些内容保存在共享笔记本中，或仅随文件一起移动，因此不会在此处移动。",
     "unmatchedOwn": "{candidates}已有{count, plural, one {自己的} other {各自的}}记录，因此{count, plural, one {它} other {它们}}很可能是另一个文件。",
     "unmatchedSeveral": "有多个文件使用此名称：{candidates}。",

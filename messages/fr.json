@@ -5447,6 +5447,7 @@
     "tryToFix": "Essayer de corriger…",
     "understandDeletedForGood": "Je comprends que ces éléments seront supprimés définitivement",
     "unmatchedNone": "Aucun fichier portant ce nom ne se trouve dans le carnet.",
+    "unmatchedElsewhere": "Aucun fichier de ce nom n’est dans ce carnet, mais il y en a un dans un autre carnet : {candidates}. Ses enregistrements sont conservés ; ils ne sont ni déplacés ni proposés à la suppression.",
     "unmatchedHost": "L’hôte les conserve dans le carnet partagé, ou ne les déplace qu’avec le fichier ; ils ne sont donc pas déplacés ici.",
     "unmatchedOwn": "{candidates} {count, plural, one {a déjà ses propres enregistrements} other {ont déjà leurs propres enregistrements}}, donc {count, plural, one {il s’agit probablement d’un autre fichier} other {ce sont probablement d’autres fichiers}}.",
     "unmatchedSeveral": "Plusieurs fichiers portent ce nom : {candidates}.",
