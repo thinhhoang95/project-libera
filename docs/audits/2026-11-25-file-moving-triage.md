@@ -110,4 +110,93 @@ Second wave as slots free: W3, W4, K2, X1, R1, H1, O1.
 
 ## Results
 
-To be filled in after merging.
+All 27 packages merged into `fix/file-moving-review`. Of the 89 critical, high and medium findings, 79 are fixed and
+10 partly fixed (U-H1, L-C4, L-H1, L-H6, S-M3, S-M4, R-M4, E-H1, E-M7, O-M2); none was rejected as not a bug. Two sub-items were judged not bugs from the code: L-M4's symlinked
+folders (the tree and the check never treat a symlink as a folder) and O-M2's symlink skip (the tree skips them too).
+Most packages showed their new tests failing before the fix; the table notes where they could not.
+
+| Package | Fixed | Partly fixed, or left (what) |
+|---|---|---|
+| W1 editor writers | U-C1, U-C2, U-H2, U-M4 | The live recording tab's segment draft is unchanged (no library file to move). |
+| W2 link rewrites into open tabs | U-H3, U-H4, U-H5, U-H6 | U-H4 covers Try to fix and other windows' moves through W4's call to `afterMoveReviewState`. TipTap: text composed mid-IME is replaced by the rewrite. Hook wiring has no test (no DOM). |
+| W3 retarget and panes | U-H9, U-H10, U-M3, U-M6 | Single-file moves do not remap `fileInteractions` or heading numbering. |
+| W4 other windows | U-H7, U-H8, U-M5 | U-H1: a notebook rename is not broadcast to other windows. A saved-workspace change queued during a workspace switch can be remapped twice (swap or chain). Hook flow has no test. |
+| W5 migration dialog and drops | U-C4, U-C5, U-M1, U-M2 | A shared source is refused with the existing "can't be migrated yet" message. |
+| F1 fs primitives | L-C3, L-H4 (fs, notebooks), U-C3, L-C4 (3) | none. No real NFD-to-NFC notebook rename test (NTFS keeps both names). |
+| F2 single-file ops | L-C1, L-C4 (2), L-H5 | L-M4: symlinked folders are not a bug (see above). `archiveFile` retries a taken name instead of choosing inside the locks. A `.md` → other rename is refused while the note embeds an `_assets` image. |
+| F3 folder ops | L-C4 (1), L-C2 (folders) | L-H1: an `_assets/<note>` folder is respelled only when it holds nothing but Python code; with images in it, the code is respelled and the folder keeps its casing. |
+| N1 notebooks and path stores | R-H2, L-H8, L-C2 (rename), L-C4 (rename), L-M1 | S-M3: a true swap of two root names is held pending, not resolved. `/api/tree?notebook=` has no route test. |
+| M1 migration | L-C4 (5), L-C2, L-H4, L-H3, L-M3 | L-C4 (4): a writer between `assertNotMigrating` and its path lock is not covered. L-H6: a crash between the baseline write and its flag can rewrite baselines twice. L-C2 did not reproduce (the fix is a safety net). |
+| B1 batch and shared writes | L-H7, L-M2, U-H5 (server), S-H5, R-M3, S-M4 (folder rename), L-H4 (local batch) | The shared preflight still keys by `manifestPathKey` (pinned by S17). |
+| T1 transcripts | L-H3, O-H3, S-C1 (5), L-M3 (tethers) | Try to fix does not move a transcript companion; it is reported for Acknowledge. |
+| R1 references | L-H2, E-H9 | `moveReferenceAttachments` can now fail a move (reported as unfinished). |
+| K1 shared link engine | R-C1, R-C2, R-H1 | S-M4 (inbound links): a collaborator's move rewrites local notes; a Finder move on the host's disk rewrites local notes only. Cost: one host read per shared Markdown note per shared move. |
+| K2 Markdown rewrites | R-H6, R-H7, R-M1, R-M2 | R-M4: when the agent removed every link to the moved file, its baseline and undo original keep the old link; migration and shared moves don't re-plan baselines. Rewrite order was not a bug in effect (same text either way). The links panel's parser still lacks GFM footnotes. |
+| X1 LaTeX | R-H3, R-H4, R-H5 | The check now reports an existing `\input{../x}` as an error (the compiler refuses it). Mirror depth caps and `\graphicspath` with `..` are not covered. |
+| A1 Markdown assets | E-C1, E-H7, E-M5 | An offline linked folder blocks image deletion in every notebook until it is connected. The case-sensitive branch of E-H7 is a unit test only. |
+| D1 linked folders | E-C2, E-M8 | A folder linked by hand without a marker can't be told from a replacement. |
+| U1 ink upkeep | E-C3, E-H1 (ink), E-H6, E-M1 | The "folder changed while copying" guard has no test. |
+| U2 PDF upkeep | E-H4, E-H8 | E-H1 (PDF): a set-aside record blocked by a newer annotation in its slot stays kept. The backfill-inside-the-fence path has no test. |
+| P1 Try to fix | E-H2, E-M6 | E-M7: Try to fix reports `elsewhere` and Acknowledge holds the records; the 90-day expiry of set-aside records still deletes those of a file moved to another notebook. |
+| C1 Acknowledge | E-H3, E-M2, E-M3, E-C3 (check) | none |
+| S1 shared authority | O-C1, O-H1, E-H5, E-M4, O-M1 | On pdfLive notebooks, old orphan live-marks sidecars are now clearable by Acknowledge (not Try to fix). O-M2's "starred or tagged shared folders" is not a bug: only files are starred or tagged (`notebook-panel.tsx`, `file-tags-dialog.tsx`), so S1's acceptance of folders was taken back after the core test run. |
+| S2 shared PDF records | S-C1 (1–4) | none |
+| S3 shared follow and acknowledgement | S-C2, S-H3, S-H4 | A notebook with an in-app move or delete the server hasn't confirmed is checked partly (Try to fix and Acknowledge wait), offline too. Remembered own changes are memory only: after a restart they are followed as a collaborator's. |
+| H1 collab host | S-H1, S-H2, S-M1, S-M2, S-M4 (host) | A folder holding very recent empty files can still split (the scan's 3 s settle hold). |
+| O1 the check | O-H2, O-H4, O-M3 | O-M2: illustration paths, saved workspaces, where-was-i, document chat, expanded paths and live PDF comments are listed as not checked. Disk-only companions of shared files are not compared with the manifest. |
+
+Decisions made while fixing:
+
+- **S-C2: follow once, at the acknowledgement.** An in-app shared rename or delete moves no local record until the
+  host records the transition at the server's acknowledgement (`transitions-recorded` event); a change the server
+  rolls back gets no row and its records stay. The manifest view reads `unavailable` while such changes wait.
+- **S-C1: host-owned records don't block a name.** `assertNoLeftoverRecords` skips the kinds `hostOwnsSideFile`
+  names, through one option on `destinationRecords().at` (F2's single reader).
+- **O-H4: leftover info findings fail tests.** `LEFTOVER_INFO_CODES` in `notebook-test-helpers.ts`; a finding's text
+  ends with `[code]` so `allow` can name it.
+- **Manifest keys stay `manifestPathKey` on the host.** H1, B1 and S3 used the host and server rule (NFC plus lower
+  case), which differs from `foldedFileName` for `ß` and `ı`; changing it would touch the server.
+
+Fixed while merging: line endings restored to CRLF in five files that agents had rewritten as LF; conflicts in
+`repair.ts` (imports), `files.ts` and `destination-records.ts` (F2's reader with S2's host-owned skip),
+`shared-record-follow.ts` (K1's local link follow-up and S3's expected changes), `markdown-reviews.ts` (N1's
+`moveWithin` kept), `use-libera-workspace.ts` (`followFileMove` takes `{ report, announce }`; W4's review refresh
+uses W2's `afterMoveReviewState`), `integrity.ts` and `sidecars.ts` (`listSidecars` takes `{ companions, onEntry }`).
+After the merge: a newline literal one agent's scripted edit broke, two missing imports, a helper renamed out of a
+local of the same name, and three type annotations.
+
+Battery: no package added a polling loop or a fixed-interval timer. New waits are event-driven one-shots (the
+acknowledgement nudge, the IME composition end) and P1's three-step backoff on busy Windows files. Extra I/O: one
+stat per linked folder per `getLinkedFolders` call (D1), one host read per shared Markdown note per shared move
+(K1), and `destinationRecords` reading undo manifests, tethers and the older review database per single-file move
+(F2).
+
+### Tests
+
+- Each package ran its own new test file and at most two existing ones, once (a few ran three). No full suites,
+  builds or browser checks ran, by the user's request to keep testing light.
+- Central checks on the merged branch: `npx tsc --noEmit -p tsconfig.json` clean (after the fixes above); eslint on
+  the changed files clean (warnings only); `check-messages` reports only `migrationVanishedNotebook` in vi and zh,
+  which fails on `main` too.
+- Core editor run, once (concurrency 2): every `review-1125-*` file, the existing files the agents changed, and the
+  files O1 listed as likely affected by the stricter helper: 424 tests, 411 passed, 11 failed, 2 skipped. All 11
+  were fixed and their files run again once (now passing):
+  - Seven failed on `linkIndexOutOfDate` or `citationIndexOutOfDate`, which O1 had made strict. Both indexes are
+    rebuilt lazily by design, so they were taken out of `LEFTOVER_INFO_CODES`. Search-index staleness and corrupt
+    indexes stay strict.
+  - `notebook-cleanup` "a stale record whose name is now a folder": S1 had counted a folder as present for stars
+    and tags. Only files carry them, so the check is file-only again.
+  - `review-1125-m1` L-H3: since T1 a companion transcript moves as its recording's side file, and M1 also moved
+    it as an item, so migration moved it twice. Migration now leaves it to the side-file move.
+  - `review-1125-s2` path reuse on pdfLive: F2's set-aside check held the name for a live-marks record S2 had
+    set aside. Set-aside records of host-owned kinds no longer hold a name, as S2's rule already said for sidecars.
+  - `notebook-repair-identity` "records of a note moved to another notebook are not held": P1's E-M7 now holds
+    them while a file of that name is in another notebook, which reverses this 2026-11-20 assertion. The test
+    follows P1. **For the user to confirm** (see below).
+- Collab: the three `review-1125` collab files, once: 12 of 12 pass.
+- Not run: the full editor and collab suites, the server suite, e2e and the app itself.
+
+**Open for the user:** E-M7 reverses one assertion of the 2026-11-20 name-only round. A note moved to another
+notebook keeps its stars, sidecars and other records in its old notebook, held (reason `elsewhere`), while a file
+of that name exists in the other notebook. Before, Try to fix reported `none` and Acknowledge could delete them.
+Nothing is paired across notebooks.
