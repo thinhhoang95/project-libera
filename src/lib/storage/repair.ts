@@ -16,7 +16,7 @@ import { fileExistence, libraryNotebookNames } from "@/lib/storage/library-links
 import { readMarkdownAssetDocuments, unreferencedMarkdownAssets, movePythonSidecar } from "@/lib/storage/markdown-assets";
 import { moveReviewPaths } from "@/lib/storage/markdown-reviews";
 import { readOrphans } from "@/lib/storage/pdf-sidecars";
-import { assertSafeSegment, filePathFromParts, getLinkedFolder, getStateRoot, notebookPath, orphanedSidecarsDirectoryPath, splitFilePath, withReadOnlyStorage } from "@/lib/storage/paths";
+import { assertSafeSegment, filePathFromParts, getLinkedFolderReadOnly, getStateRoot, notebookPath, orphanedSidecarsDirectoryPath, splitFilePath, withReadOnlyStorage } from "@/lib/storage/paths";
 import { inspectReferenceLibrary, moveReferenceAttachmentsBatch, readReferenceLibrary } from "@/lib/storage/references";
 import { isEmptyReview, type ReviewDocument } from "@/lib/markdown-review";
 import { inspectReviewDocuments, inspectReviewKeys } from "@/lib/storage/review-files";
@@ -120,7 +120,8 @@ const digest = (text: string) => createHash("sha256").update(text).digest("hex")
 export function assertRepairable(name: string) {
   const notebook = assertSafeSegment(name, "Notebook name");
   if (notebook.startsWith(".")) throw new StorageError("That is not a notebook.", 400);
-  if (getLinkedFolder(notebook)?.unresolved) throw new StorageError(`${notebook} is not connected on this computer. Reconnect it first.`, 409);
+  // Read without upgrades: finding the folder must not move its stateRoot before the plan's token is checked (applyCleanup, applyNotebookRepair).
+  if (getLinkedFolderReadOnly(notebook)?.unresolved) throw new StorageError(`${notebook} is not connected on this computer. Reconnect it first.`, 409);
   return notebook;
 }
 

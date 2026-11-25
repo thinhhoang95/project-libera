@@ -114,8 +114,8 @@ test("F44: a folder that cannot take a marker is remembered as connected by hand
   await relinkDirectory(name, moved);
   mock.restoreAll();
   assert.ok(!existsSync(path.join(moved, MARKER)));
-  const state = readDirectoryModeState(getAdminRoot());
-  assert.equal(state.folders[0].unmarked, true);
+  // As written (before any reading upgrades it); D1 E-M8: a writable reading that stamps the marker clears the flag.
+  assert.equal(JSON.parse(fs.readFileSync(directoryModeStatePath(getAdminRoot()), "utf8")).folders[0].unmarked, true);
   dropLinkedFoldersCache();
   const folder = getLinkedFolder(name)!;
   assert.equal(folder.unresolved, undefined, "the hand-made connection holds without a marker");

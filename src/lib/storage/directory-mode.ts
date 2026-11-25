@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { mkdir, readFile, rename, stat } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -15,6 +16,7 @@ import {
 import { WORKSPACE_METADATA_FILE } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
 import { getFileType } from "@/lib/storage/file-types";
+import { foldedFileName } from "@/lib/storage/file-names";
 import { pathExists } from "@/lib/storage/fs-utils";
 import { mergeReviewDocuments } from "@/lib/storage/markdown-reviews";
 import {
@@ -44,9 +46,36 @@ export function getDirectoryModeSummary(): DirectoryModeSummary {
   };
 }
 
+/** A path as the disk sees it: links followed for the part that exists, the rest as written. */
+function resolvedPath(target: string) {
+  const rest: string[] = [];
+  let current = target;
+  for (;;) {
+    try {
+      return path.join(realpathSync.native(current), ...rest.reverse());
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) return target;
+      rest.push(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+function segmentsOf(target: string) {
+  const { root } = path.parse(target);
+  return [foldedFileName(root), ...target.slice(root.length).split(/[\\/]+/).filter(Boolean).map(foldedFileName)];
+}
+
+/** Two spellings or routes (links, case, Unicode form) to one place: the round's name rule (file-names.ts) on the real paths. */
+function samePlace(left: string, right: string) {
+  const [one, two] = [left, right].map((target) => segmentsOf(resolvedPath(target)));
+  return one.length === two.length && one.every((segment, index) => segment === two[index]);
+}
+
 function isInside(parentPath: string, targetPath: string) {
-  const relative = path.relative(parentPath, targetPath);
-  return !relative.startsWith("..") && !path.isAbsolute(relative);
+  const [parent, target] = [parentPath, targetPath].map((value) => segmentsOf(resolvedPath(value)));
+  return target.length >= parent.length && parent.every((segment, index) => segment === target[index]);
 }
 
 async function assertLinkableDirectory(input: unknown) {
@@ -144,7 +173,7 @@ export async function openDirectory(input: unknown) {
   const state = readDirectoryModeState(adminRoot);
   const marker: string | null = readFolderId(directoryPath);
   const byId = marker ? state.folders.find((folder) => folder.id === marker) : undefined;
-  const byPath = state.folders.find((folder) => folder.path === directoryPath);
+  const byPath = state.folders.find((folder) => samePlace(folder.path, directoryPath));
   // Another directory now stands where a link pointed (the linked one was
   // renamed outside Libera): it is not that folder, and taking it for it would
   // hand it the old folder's notes state. Relinking says it is the same.
@@ -153,6 +182,8 @@ export async function openDirectory(input: unknown) {
   }
   const id = ensureDirectoryIdentity(adminRoot, directoryPath);
   const existing = byId ?? byPath;
+  // Stamped now (or already marked): a stale "connected without a marker" no longer applies.
+  const marked = Boolean(id) && readFolderId(directoryPath) === id;
   const name = existing?.name ?? uniqueFolderName(
     baseFolderName(directoryPath),
     [...libraryNotebookNames(adminRoot), ...state.folders.map((folder) => folder.name)],
@@ -161,8 +192,13 @@ export async function openDirectory(input: unknown) {
   writeDirectoryModeState(adminRoot, {
     ...state,
     folders: existing
-      ? state.folders.map((folder) => folder === existing ? { ...folder, path: directoryPath, ...(id ? { id } : {}),
-        locations: { ...folder.locations, [directoryMachineKey()]: directoryPath } } : folder)
+      ? state.folders.map((folder) => {
+        if (folder !== existing) return folder;
+        const kept = { ...folder };
+        if (marked) delete kept.unmarked;
+        return { ...kept, path: directoryPath, ...(id ? { id } : {}),
+          locations: { ...folder.locations, [directoryMachineKey()]: directoryPath } };
+      })
       : [...state.folders, { name, path: directoryPath, ...(id ? { id } : {}), locations: { [directoryMachineKey()]: directoryPath } }],
     recent: withRecentDirectory(state.recent, directoryPath),
   });
@@ -195,7 +231,7 @@ export async function relinkDirectory(name: unknown, input: unknown) {
   if (!folder) throw new StorageError("That folder is not linked to Libera.", 404);
   const marker: string | null = readFolderId(directoryPath);
   if (marker && folder.id && marker !== folder.id) throw new StorageError("This folder belongs to a different link.", 409);
-  if (state.folders.some((item) => item !== folder && (item.path === directoryPath || (marker && item.id === marker)))) {
+  if (state.folders.some((item) => item !== folder && (samePlace(item.path, directoryPath) || (marker && item.id === marker)))) {
     throw new StorageError("This folder is already linked.", 409);
   }
   const id: string | undefined = ensureDirectoryIdentity(adminRoot, directoryPath, folder.id) ?? folder.id;

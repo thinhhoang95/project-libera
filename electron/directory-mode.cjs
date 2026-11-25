@@ -79,6 +79,11 @@ function normalizeDirectoryPath(value) {
     : resolved;
 }
 
+/** A path under the name rule (NFC and case folding, as storage/file-names.ts foldedFileName), to tell two spellings of one place. */
+function foldedPath(value) {
+  return String(value).normalize("NFC").toUpperCase().toLowerCase().normalize("NFC");
+}
+
 function directoryModeStatePath(adminRoot) {
   return path.join(adminRoot, ...DIRECTORY_MODE_STATE_PATH);
 }
@@ -127,7 +132,7 @@ function normalizeDirectoryModeState(value) {
       .filter(([key, value]) => key && typeof value === "string" && value && !value.includes("\0")));
     const folderPath = normalizeDirectoryPath(locations[directoryMachineKey()] || item?.path);
     if (!folderPath || !isValidFolderName(item?.name)) continue;
-    if (folders.some((folder) => folder.path === folderPath || folder.name.toLowerCase() === item.name.toLowerCase())) continue;
+    if (folders.some((folder) => foldedPath(folder.path) === foldedPath(folderPath) || folder.name.toLowerCase() === item.name.toLowerCase())) continue;
     folders.push({ name: item.name, path: folderPath,
       ...(VALID_FOLDER_ID.test(item.id) ? { id: item.id } : {}),
       ...(item.unmarked === true ? { unmarked: true } : {}),
@@ -148,10 +153,18 @@ function normalizeDirectoryModeState(value) {
 function writeDirectoryModeState(adminRoot, state) {
   const normalized = normalizeDirectoryModeState(state);
   const target = directoryModeStatePath(adminRoot);
-  const temporary = `${target}.${process.pid}.${Date.now()}.tmp`;
+  const temporary = `${target}.${randomUUID()}.tmp`;
   fs.mkdirSync(path.dirname(target), { recursive: true });
   try {
-    fs.writeFileSync(temporary, `${JSON.stringify(normalized, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    // A name no other writer shares, created only if absent, and on disk before it replaces the state file.
+    const handle = fs.openSync(temporary, "wx", 0o600);
+    try {
+      fs.writeFileSync(handle, `${JSON.stringify(normalized, null, 2)}
+`, "utf8");
+      try { fs.fsyncSync(handle); } catch { /* a volume that cannot sync still takes the rename */ }
+    } finally {
+      fs.closeSync(handle);
+    }
     fs.renameSync(temporary, target);
   } finally {
     fs.rmSync(temporary, { force: true });
@@ -221,6 +234,8 @@ function readDirectoryModeState(adminRoot, { readOnly = false } = {}) {
         const locations = { ...folder.locations, [directoryMachineKey()]: folder.path };
         const upgraded = { ...folder, ...(id ? { id } : {}), locations };
         delete upgraded.unresolved;
+        // A marker the folder now carries makes "connected by hand without one" stale: kept, it would let a markerless impostor pass later.
+        if (id && readFolderId(folder.path) === id) delete upgraded.unmarked;
         if (JSON.stringify(upgraded) !== JSON.stringify(folder)) changed = true;
         return upgraded;
       } catch { return folder; }
@@ -285,6 +300,7 @@ module.exports = {
   legacyDirectoryStateRoot,
   directoryStateRoot,
   findLinkedFolder,
+  foldedPath,
   libraryNotebookNames,
   normalizeDirectoryModeState,
   normalizeDirectoryPath,

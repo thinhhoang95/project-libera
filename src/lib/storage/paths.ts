@@ -126,7 +126,8 @@ export type LinkedFolder = {
   unresolved?: boolean;
 };
 
-type LinkedFoldersCache = { key: string; folders: LinkedFolder[] };
+/** `markers` is what each cached folder's `.libera-folder.json` looked like (a stat, not a read) when the folders were read. */
+type LinkedFoldersCache = { key: string; folders: LinkedFolder[]; markers: Array<[string, string]> };
 const LINKED_FOLDERS_CACHE = Symbol.for("libera.linkedFolders");
 const READ_ONLY_STORAGE = Symbol.for("libera.readOnlyStorage");
 const readOnlyStorage = (globalThis as { [READ_ONLY_STORAGE]?: AsyncLocalStorage<true> })[READ_ONLY_STORAGE] ??= new AsyncLocalStorage<true>();
@@ -141,31 +142,53 @@ export function withReadOnlyStorage<T>(task: () => Promise<T>): Promise<T> {
   return readOnlyStorage.run(true, task);
 }
 
+/** What a folder's identity marker is on disk right now: one stat, never a read. A changed answer means the folder (or its marker) was replaced. */
+function markerStamp(folderPath: string) {
+  try {
+    const stats = statSync(path.join(folderPath, ".libera-folder.json"));
+    return `${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeMs}`;
+  } catch {
+    return "missing";
+  }
+}
+
+function stateKey(statePath: string) {
+  try {
+    const stats = statSync(statePath);
+    return `${statePath}:${directoryMachineKey()}:${stats.ino}:${stats.mtimeMs}:${stats.ctimeMs}:${stats.size}`;
+  } catch {
+    // No state file means no linked folders.
+    return `${statePath}:${directoryMachineKey()}:missing`;
+  }
+}
+
 /**
  * Read the linked folders. The state file can be written by another server
- * worker, so cache only while its identity on disk is unchanged.
+ * worker, so cache only while its identity on disk is unchanged. The cache
+ * also holds only while every folder's marker stat is unchanged (a stat of
+ * `.libera-folder.json` per linked folder, a read only when that stat moved):
+ * a folder moved away and replaced by an unrelated one at the same path while
+ * Libera runs leaves the state file untouched, and the replacement must not
+ * pass for the linked folder. The reading that follows judges the marker
+ * (electron/directory-mode.cjs readDirectoryModeState) and marks a mismatch
+ * `unresolved`, so every consumer treats the folder as not connected.
  */
 export function getLinkedFolders(): LinkedFolder[] {
   const adminRoot = getAdminRoot();
   const statePath = directoryModeStatePath(adminRoot);
-  let key = `${statePath}:${directoryMachineKey()}:missing`;
-
-  try {
-    const stats = statSync(statePath);
-    key = `${statePath}:${directoryMachineKey()}:${stats.ino}:${stats.mtimeMs}:${stats.ctimeMs}:${stats.size}`;
-  } catch {
-    // No state file means no linked folders.
-  }
-
+  const key = stateKey(statePath);
   const cache = globalThis as { [LINKED_FOLDERS_CACHE]?: LinkedFoldersCache };
   const cached = cache[LINKED_FOLDERS_CACHE];
 
-  if (cached?.key === key) {
+  if (cached?.key === key && cached.markers.every(([folderPath, stamp]) => markerStamp(folderPath) === stamp)) {
     return cached.folders;
   }
 
+  // The stamps follow the reading, so a marker this reading just wrote is the one recorded (no second reading for it).
   const readOnly = readOnlyStorage.getStore() === true;
-  const folders = readDirectoryModeState(adminRoot, { readOnly }).folders.map((folder) => ({
+  const state = readDirectoryModeState(adminRoot, { readOnly });
+  const markers = state.folders.map((folder): [string, string] => [folder.path, markerStamp(folder.path)]);
+  const folders = state.folders.map((folder) => ({
     name: folder.name,
     path: folder.path,
     stateRoot: directoryStateRoot(adminRoot, folder.path, folder.id),
@@ -174,15 +197,16 @@ export function getLinkedFolders(): LinkedFolder[] {
   // Not kept: the next reading upgrades what this one left as it was.
   if (readOnly) return folders;
   // Reading may migrate an older state file, which changes its identity.
-  let storedKey = key;
-  try {
-    const stats = statSync(statePath);
-    storedKey = `${statePath}:${directoryMachineKey()}:${stats.ino}:${stats.mtimeMs}:${stats.ctimeMs}:${stats.size}`;
-  } catch {
-    // Still no state file.
-  }
-  cache[LINKED_FOLDERS_CACHE] = { key: storedKey, folders };
+  cache[LINKED_FOLDERS_CACHE] = { key: stateKey(statePath), folders, markers };
   return folders;
+}
+
+/**
+ * One linked folder as it is found without upgrading anything (the state a
+ * check or a plan sees): for guards that run before a plan's token is checked.
+ */
+export function getLinkedFolderReadOnly(name: string): LinkedFolder | null {
+  return readOnlyStorage.run(true, () => getLinkedFolder(name));
 }
 
 export function getLinkedFolder(name: string): LinkedFolder | null {
