@@ -602,8 +602,8 @@ const RECORD_NAMES: Record<string, string> = {
  * Caches are made again, so they may be replaced; so may an empty review,
  * which is what opening a note makes.
  */
-export async function assertNoLeftoverRecords(notebook: string, parts: string[], fileType: string, ownSidecars = false, moving?: string[], again = "move") {
-  const names = await leftoverRecords(notebook, parts, fileType, ownSidecars, moving);
+export async function assertNoLeftoverRecords(notebook: string, parts: string[], fileType: string, ownSidecars = false, moving?: string[], again = "move", hostOwned?: (kind: string) => boolean) {
+  const names = await leftoverRecords(notebook, parts, fileType, ownSidecars, moving, hostOwned);
   if (!names.length) return;
   const list = names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names[0];
   throw new LeftoverRecordsError(`${relativeFilePath(notebook, parts)} still has the ${list} of a file that was there before. Check the notebook to give them to a file or remove them, then ${again} again.`, 409);
@@ -616,10 +616,10 @@ export async function assertNoLeftoverRecords(notebook: string, parts: string[],
  * `ownSidecars`: the path is the file's own under another spelling of its name (a case-only rename), so the sidecar paths found there are the file's, not an earlier file's.
  * `moving`: the file moving there from the same notebook, which is not a rival owner of older-layout notes.
  */
-async function leftoverRecords(notebook: string, parts: string[], fileType: string, ownSidecars = false, moving?: string[]) {
+async function leftoverRecords(notebook: string, parts: string[], fileType: string, ownSidecars = false, moving?: string[], hostOwned?: (kind: string) => boolean) {
   const records = await destinationRecords();
   if (records.blocker) throw new LeftoverRecordsError(records.blocker, 409);
-  return records.at(notebook, parts, fileType, { ownSidecars, moving });
+  return records.at(notebook, parts, fileType, { ownSidecars, moving, hostOwned });
 }
 
 /**

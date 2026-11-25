@@ -53,6 +53,7 @@ import {
 } from "@/lib/storage/paths";
 import { MARKDOWN_ASSETS_DIR } from "@/lib/storage/constants";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
+import { hostOwnsSideFile } from "@/lib/storage/shared-manifest-view";
 import { copyReviewPath } from "@/lib/storage/markdown-reviews";
 import { getFileNode, getTree } from "@/lib/storage/tree";
 import { assertCopyKeepsType, assertNoLeftoverFolderRecords, assertNoLeftoverRecords, assertTypeChangeLosesNothing, readLiberaFile, textVersion } from "@/lib/storage/files";
@@ -740,7 +741,7 @@ export async function moveSharedFile(relativePath: string, destinationDirectory:
     throw new StorageError("Destination file already exists.", 409);
   }
   // A slot free in the manifest can still hold records of an earlier file on this computer: refused before the host moves anything, as a local move is.
-  if (sourcePath !== nextPath && !own) await assertNoLeftoverRecords(destination.notebook, nextParts, assertSupportedFileName(safeName));
+  if (sourcePath !== nextPath && !own) await assertNoLeftoverRecords(destination.notebook, nextParts, assertSupportedFileName(safeName), false, undefined, "move", (kind) => hostOwnsSideFile(kind, destination.notebook));
   // A change of file type never drops a record kept on this computer (annotations, definitions, reviews, pending agent changes): refused before the host moves anything.
   // What the host owns (ink, transcripts, a PDF's notes) is checked by the host and by the live PDF's reconciliation.
   if (sourcePath !== nextPath) await assertTypeChangeLosesNothing(current.notebook, current.pathParts, sourcePath, assertSupportedFileName(current.name), assertSupportedFileName(safeName), HOST_OWNED_SIDECARS);
@@ -912,7 +913,7 @@ function manifestCompanionRecords(entryPaths: string[], notebook: string, parts:
  * the notebook is an error: the check cannot be made.
  */
 async function assertSharedPathFree(notebook: string, parts: string[], fileType: string, options: SharedWriteOptions, again: string) {
-  await assertNoLeftoverRecords(notebook, parts, fileType, false, undefined, again);
+  await assertNoLeftoverRecords(notebook, parts, fileType, false, undefined, again, (kind) => hostOwnsSideFile(kind, notebook));
   const kept = manifestCompanionRecords((await listSharedEntries(notebook, options)).map((entry) => entry.path), notebook, parts, fileType);
   if (!kept.length) return;
   const list = kept.length > 1 ? `${kept.slice(0, -1).join(", ")} and ${kept.at(-1)}` : kept[0];

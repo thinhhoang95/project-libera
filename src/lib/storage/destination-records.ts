@@ -48,6 +48,8 @@ export type DestinationOptions = {
   ownSidecars?: boolean;
   /** The file being moved there from the same notebook: it is not a rival owner of older-layout records. */
   moving?: string[];
+  /** Kinds the host owns in a shared notebook: never a leftover Check Notebook could clear (S-C1), so they don't block the path. */
+  hostOwned?: (kind: string) => boolean;
 };
 
 /**
@@ -121,7 +123,7 @@ export async function destinationRecords() {
       if (!options.ownSidecars) {
         // Older annotation layouts too (legacyAnnotationSidecars): the arriving file would be given them.
         for (const sidecar of [...await existingSidecars(notebook, parts, fileType), ...await legacyAnnotationSidecars(notebook, parts, fileType, options.moving)]) {
-          if (caches.has(sidecar.kind)) continue;
+          if (caches.has(sidecar.kind) || options.hostOwned?.(sidecar.kind)) continue;
           // An ink folder with nothing in it holds no strokes.
           if (sidecar.kind === "ink" && !(await readdir(sidecar.path).catch(() => ["?"])).length) continue;
           kept.add(RECORD_NAMES[sidecar.kind] ?? sidecar.kind);

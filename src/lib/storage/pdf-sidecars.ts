@@ -141,9 +141,8 @@ async function setAside(notebook: string, store: KindStore, sidecarPath: string,
  * A path-only event proves nothing about which file is which, so nothing is
  * overwritten or erased: each side-car is copied to the new path only when
  * the PDF there has the bytes the side-car records, and only into a free
- * destination; the original stays. Removals leave side-cars in place for
- * reconcilePdfSidecars, which sets aside or re-attaches them by identity.
- * A removal sets them aside only when other bytes already took the name (retireRemovedPdf).
+ * destination; the original is retired only once the old name has no PDF.
+ * A removal sets them aside (retireRemovedPdf), or leaves them when the PDF at the name has the bytes they record. A rename moves them: the old name keeps nothing once its PDF is gone.
  * A legacy side-car (no recorded bytes) follows by legacySidecarFollows: a
  * move this user made through the host (`explicit`) carries it, since the
  * readers already trusted it at the old path; a collaborator's move carries it
@@ -181,13 +180,13 @@ async function retireRemovedPdf(libraryPath: string) {
     const { notebook, pathParts } = splitFilePath(libraryPath);
     const present = await pdfExists(libraryPath);
     if (present === null) return; // Unreadable: not known to be gone.
-    // Gone: the side-cars stay. The host may put these very bytes back (a
-    // refused delete rolls back), and a different PDF arriving later under
-    // this name is told apart by the readers' identity check.
-    if (!present) return;
     const pdf = filePathFromParts(notebook, pathParts);
     for (const store of KINDS) {
       const sidecarPath = store.path(notebook, pathParts);
+      // Gone: the host confirmed the delete (this runs after the server acknowledged it), so the notes are retired
+      // like a local delete's: set aside, recoverable and put back with the same bytes under the same name, and
+      // never left to block the path for a new file. Legacy notes (no recorded bytes) go too: there is no PDF for them.
+      if (!present) { await setAside(notebook, store, sidecarPath, libraryPath); continue; }
       const identity = sidecarIdentity(await readJson(sidecarPath));
       const current = identity ? await cachedPdfIdentity(pdf).catch(() => null) : null;
       // Same bytes: still this PDF's. Different bytes: the name was reused. A legacy
@@ -228,6 +227,9 @@ async function followOneMove(from: string, to: string, explicit = false, fileId?
         const matches = current !== null && current.contentHash === identity.contentHash && current.size === identity.size;
         if (!matches) mismatch = true;
         return matches;
+      }, {
+        // A rename moves the notes: nothing stays at the old name once the PDF is not there any more (a copy of the PDF, or a name another file took, keeps them).
+        retireSource: async () => (await pdfExists(from)) === false,
       })) { changed += 1; heldLegacy.delete(held); }
       else if (mismatch) waiting = true;
     }
