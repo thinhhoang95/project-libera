@@ -1,5 +1,6 @@
 import { unified } from "unified";
 import remarkParse from "remark-parse";
+import remarkGfm from "remark-gfm";
 import { decodeAttribute, destinationFrom, destinationRange, rewriteMarkdownImageSources } from "@/lib/markdown-image-sources";
 import { isSlideChartDataFile, parseSlideChartSpec, slideChartBlocks } from "@/lib/slide-charts";
 import { latexPathOccurrences, type LatexPathKind } from "@/lib/latex/path-occurrences";
@@ -42,7 +43,8 @@ type MdNode = {
   children?: MdNode[];
 };
 
-const parser = unified().use(remarkParse);
+// GFM, as the editor reads notes: `[^1]: old/doc.md` is a footnote's text, not a reference definition holding a path.
+const parser = unified().use(remarkParse).use(remarkGfm);
 const MARKDOWN = /\.(?:md|markdown)$/i;
 const LATEX = /\.tex$/i;
 
@@ -74,29 +76,63 @@ function htmlOccurrences(markdown: string, node: MdNode, add: (kind: MovedPathKi
   }
 }
 
-/** A chart's `data:` value in the block's lines (YAML or JSON), as written, with its quotes. */
-function chartDataSpan(line: string, data: string) {
-  const key = /^data\s*:\s*/.exec(line) ?? /"data"\s*:\s*/.exec(line);
-  if (!key) return null;
-  const start = key.index + key[0].length;
-  let end: number;
-  let value: string;
-  if (line[start] === '"') {
-    end = start + 1;
-    while (end < line.length && line[end] !== '"') end += line[end] === "\\" ? 2 : 1;
-    end += 1;
-    try { value = JSON.parse(line.slice(start, end)); } catch { return null; }
-  } else if (line[start] === "'") {
-    end = start + 1;
-    while (end < line.length && !(line[end] === "'" && line[end + 1] !== "'")) end += line[end] === "'" ? 2 : 1;
-    end += 1;
-    value = line.slice(start + 1, end - 1).replace(/''/g, "'");
-  } else {
-    const plain = line.slice(start).replace(/\s+#.*$/, "").trimEnd();
-    end = start + plain.length;
-    value = plain;
+const CHART_PROBE = '"libera-chart-probe.csv"';
+
+/** `text` from `start` to the end of the quoted scalar opening there (`"` with `\` escapes, `'` with `''`), or -1 when it never closes. */
+function quotedEnd(text: string, start: number) {
+  const quote = text[start];
+  for (let index = start + 1; index < text.length; index++) {
+    if (quote === '"' && text[index] === "\\") index++;
+    else if (text[index] === quote) {
+      if (quote === "'" && text[index + 1] === "'") index++;
+      else return index + 1;
+    }
   }
-  return value.trim() === data ? { start, end, value: value.trim() } : null;
+  return -1;
+}
+
+/**
+ * Where a chart block (its code, YAML or JSON) writes its `data` value, as
+ * written with its quotes: any form the chart reader accepts (indented, flow,
+ * quoted keys, a value on the lines after the key). Candidates are found by
+ * shape, and each is confirmed with the reader itself: the span replaced by
+ * another value must make that the chart's `data`. A `#` comment, a nested
+ * `data` key or anything else the reader does not take as the data fails that.
+ */
+function chartDataSpan(code: string) {
+  const keys = /(^|[\s{,])(?:data|"data"|'data')[ \t]*:/g;
+  for (const key of code.matchAll(keys)) {
+    let start = key.index! + key[0].length;
+    while (/\s/.test(code[start] ?? "")) start++;
+    if (start >= code.length) continue;
+    const lineStart = code.lastIndexOf("\n", key.index! + key[0].length - 1) + 1;
+    const indent = /^[ \t]*/.exec(code.slice(lineStart))![0].length;
+    const ends: number[] = [];
+    if (code[start] === '"' || code[start] === "'") ends.push(quotedEnd(code, start));
+    else {
+      const lineEnd = code.indexOf("\n", start) < 0 ? code.length : code.indexOf("\n", start);
+      const stripped = (end: number) => start + code.slice(start, end).replace(/\s+#.*$/, "").trimEnd().length;
+      ends.push(stripped(lineEnd));
+      // A plain value goes on over the lines indented deeper than its key.
+      let end = lineEnd;
+      for (;;) {
+        const next = code.indexOf("\n", end + 1) < 0 ? code.length : code.indexOf("\n", end + 1);
+        const line = code.slice(end + 1, next);
+        if (end >= code.length || !line.trim() || line.trim().startsWith("#") || /^[ \t]*/.exec(line)![0].length <= indent) break;
+        end = next;
+      }
+      if (end !== lineEnd) ends.push(stripped(end));
+      // In flow style the value stops at `,`, `}` or `]`.
+      const flow = code.slice(start, lineEnd).search(/[,}\]]/);
+      if (flow > 0) ends.push(start + code.slice(start, start + flow).trimEnd().length);
+    }
+    for (const end of ends) {
+      if (end <= start) continue;
+      const probed = parseSlideChartSpec(code.slice(0, start) + CHART_PROBE + code.slice(end));
+      if ("spec" in probed && probed.spec.data === "libera-chart-probe.csv") return { start, end };
+    }
+  }
+  return null;
 }
 
 function chartOccurrences(markdown: string, add: (kind: MovedPathKind, start: number, end: number, value: string) => void) {
@@ -105,15 +141,17 @@ function chartOccurrences(markdown: string, add: (kind: MovedPathKind, start: nu
   for (const block of slideChartBlocks(markdown)) {
     const parsed = parseSlideChartSpec(block.code);
     if (!("spec" in parsed) || !isSlideChartDataFile(parsed.spec.data)) continue;
-    const data = parsed.spec.data!.trim();
-    // `block.line` is the fence's line (1-based), so body line i is line `block.line + i` counted from 0.
-    for (const [index, line] of block.code.split("\n").entries()) {
-      const span = chartDataSpan(line, data);
-      if (!span) continue;
-      const lineStart = lineStarts[block.line + index];
-      add("chart", lineStart + span.start, lineStart + span.end, span.value);
-      break;
-    }
+    const span = chartDataSpan(block.code);
+    if (!span) continue;
+    // `block.line` is the fence's line (1-based), so body line i is line `block.line + i` counted from 0 (the code joins them with `\n`, whatever the file's line ends are).
+    const codeLines = [0];
+    for (let index = 0; index < block.code.length; index += 1) if (block.code[index] === "\n") codeLines.push(index + 1);
+    const at = (position: number) => {
+      let line = 0;
+      while (line + 1 < codeLines.length && codeLines[line + 1] <= position) line++;
+      return lineStarts[block.line + line] + position - codeLines[line];
+    };
+    add("chart", at(span.start), at(span.end - 1) + 1, parsed.spec.data!.trim());
   }
 }
 
@@ -129,6 +167,22 @@ export function markdownPathOccurrences(markdown: string): PathOccurrence[] {
   const definitions = new Map<string, MdNode>();
   walk(root, (node) => {
     if (node.type === "definition" && node.identifier && !definitions.has(node.identifier.toUpperCase())) definitions.set(node.identifier.toUpperCase(), node);
+  });
+  // Inline HTML is one node per tag: what lies between a `<code>` node and its `</code>` node is code too.
+  const insideCode = new Set<MdNode>();
+  walk(root, (parent) => {
+    let open: string | null = null;
+    for (const child of parent.children ?? []) {
+      if (child.type !== "html") continue;
+      const html = markdown.slice(child.position?.start.offset ?? 0, child.position?.end.offset);
+      if (open) {
+        insideCode.add(child);
+        if (new RegExp(`</${open}\\s*>`, "i").test(html)) open = null;
+        continue;
+      }
+      const last = [...html.matchAll(/<(script|style|pre|code)\b[^>]*>/gi)].at(-1);
+      if (last && !new RegExp(`</${last[1]}\\s*>`, "i").test(html.slice(last.index! + last[0].length))) open = last[1];
+    }
   });
   const found: PathOccurrence[] = [];
   const seen = new Set<string>();
@@ -160,7 +214,7 @@ export function markdownPathOccurrences(markdown: string): PathOccurrence[] {
       definition(definitions.get(node.identifier.toUpperCase()), "link");
     } else if (node.type === "imageReference" && node.identifier) {
       definition(definitions.get(node.identifier.toUpperCase()), "image");
-    } else if (node.type === "html") {
+    } else if (node.type === "html" && !insideCode.has(node)) {
       htmlOccurrences(markdown, node, add);
     }
   });
@@ -275,7 +329,8 @@ export function writeDestinationPath(written: string, value: string, nextPath: s
   const next = `${path}${suffix}`;
   if (!escaped) return { written: next, value: next };
   if (html) return { written: next.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/'/g, "&#39;").replace(/</g, "&lt;").replace(/>/g, "&gt;"), value: next };
-  if (/\s/.test(next)) return null;
+  // Whitespace is only a destination's own inside angle brackets, which the span (their content) already had: kept, never added, and never across a line.
+  if (/[\r\n]/.test(next) || (/\s/.test(next) && !/\s/.test(written))) return null;
   return { written: next.replace(/[\\()<>&"']/g, (character) => `\\${character}`), value: next };
 }
 
@@ -287,7 +342,14 @@ export function writeChartValue(written: string, next: string) {
   return plain ? next : JSON.stringify(next);
 }
 
-/** A LaTeX path as written in braces; null when TeX would read it otherwise (braces, `%`, `#`, a backslash). */
-export function writeLatexPath(next: string) {
-  return /[{}%#\\]/.test(next) ? null : next;
+/**
+ * A LaTeX path as written in braces; null when TeX or our readers would read it
+ * otherwise: braces, `%`, `#`, a backslash; spaces at either end (the readers
+ * trim them, and braces cannot quote them); and in `\bibliography{...}` a comma,
+ * which separates keys there (latex/path-occurrences.ts, readLatexBibliographyReferences).
+ */
+export function writeLatexPath(next: string, kind?: LatexPathKind) {
+  if (/[{}%#\\]/.test(next) || next !== next.trim()) return null;
+  if (kind === "latex-bibliography" && next.includes(",")) return null;
+  return next;
 }

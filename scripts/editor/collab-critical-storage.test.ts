@@ -123,7 +123,7 @@ test("R20: a suspended sidecar copy cannot overwrite a replacement notebook", ()
 }));
 
 
-test("R20: identity-matched audio copies retain their source and shared recovery survives pruning", () => fixture(async () => {
+test("R20: identity-matched audio copies retire their source behind a recovery copy that survives pruning", () => fixture(async () => {
   await markShared("Notes");
   const audio = "portable audio bytes";
   const hash = createHash("sha256").update(audio).digest("hex");
@@ -132,10 +132,13 @@ test("R20: identity-matched audio copies retain their source and shared recovery
   const bytes = JSON.stringify({ version: TRANSCRIPT_VERSION, segments: [], speakers: [], audio: { contentHash: hash, size: Buffer.byteLength(audio) } });
   await write(source, bytes);
   assert.equal(await followSharedAudioChanges([{ from: "Notes/old.m4a", to: "Notes/new.m4a" }], []), 1);
-  assert.equal(await fs.readFile(source, "utf8"), bytes);
+  // T1 (S-C1 item 5): the identity-matched copy retires the active source, but only with a recovery copy kept; no orphan stays at the old path.
+  assert.equal(await fs.stat(source).then(() => true, () => false), false);
   assert.equal(await fs.readFile(destination, "utf8"), bytes);
   await pruneAudioSidecars("Notes");
-  assert.equal(await fs.readFile(source, "utf8"), bytes, "a missing cloud source does not erase recovery in the next library scan");
+  const recovery = path.join(notebookPath("Notes"), ".libera", "collab", "sidecar-recovery");
+  const kept = await Promise.all((await fs.readdir(recovery)).map(async (name) => Buffer.from((JSON.parse(await fs.readFile(path.join(recovery, name), "utf8")) as { contentBase64: string }).contentBase64, "base64").toString("utf8")));
+  assert.ok(kept.includes(bytes), "recovery survives the next library scan");
 }));
 
 

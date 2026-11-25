@@ -119,14 +119,26 @@ export async function updateReview(id: string, revision: number, change: (doc: R
   });
 }
 const under = (key: string, folder: string) => key === folder || key.startsWith(`${folder}/`);
-export async function moveReviewPath(from: string, to: string) {
+/**
+ * Every review at or under `from` follows to `to`. With `replaceEmpty` (a notebook folder renamed, whose
+ * destination may hold a review that opening a file there made), an empty review at a destination gives way;
+ * one with anything in it is kept and the review moving there stays (the paths whose reviews stayed are returned).
+ */
+export async function moveReviewPath(from: string, to: string, options: { replaceEmpty?: boolean } = {}): Promise<string[]> {
+  if (from === to) return [];
   return transaction(async (tx) => {
+    if (options.replaceEmpty) {
+      const moves = new Map<string, string>();
+      for (const [, key] of tx.keys()) if (under(key, from)) moves.set(key, to + key.slice(from.length));
+      return moveWithin(tx, moves, options);
+    }
     // A review whose file has not synced yet still follows its file.
     for (const [id, key] of tx.keys()) if (under(key, from)) {
       const doc = await tx.getIfPresent(id);
       if (doc) { doc.key = to + doc.key.slice(from.length); doc.revision++; }
       else tx.rekey(id, to + key.slice(from.length));
     }
+    return [];
   });
 }
 /**
@@ -138,39 +150,41 @@ export async function moveReviewPath(from: string, to: string) {
  */
 export async function moveReviewPaths(moves: ReadonlyMap<string, string>, options: { replaceEmpty?: boolean } = {}): Promise<string[]> {
   if (!moves.size) return [];
-  return transaction(async (tx) => {
-    const stayed = new Set<string>();
-    if (options.replaceEmpty) {
-      const sourceOf = new Map([...moves].map(([from, to]) => [to, from]));
-      const replaced = new Map<string, string[]>();
-      // An empty destination review gives way only to a review that really is at the source.
-      const reviewed = new Set(tx.keys().map(([, key]) => key));
-      for (const [id, key] of tx.keys()) {
-        const from = sourceOf.get(key);
-        if (from === undefined || moves.has(key) || !reviewed.has(from)) continue;
-        // A review whose file has not synced yet can't be shown to be empty.
-        const doc = await tx.getIfPresent(id);
-        if (doc && isEmptyReview(doc)) replaced.set(key, [...replaced.get(key) ?? [], id]);
-        else stayed.add(from);
-      }
-      for (const [key, ids] of replaced) if (!stayed.has(sourceOf.get(key)!)) for (const id of ids) tx.remove(id);
-    }
+  return transaction((tx) => moveWithin(tx, moves, options));
+}
+async function moveWithin(tx: ReviewTransaction<ReviewDocument>, moves: ReadonlyMap<string, string>, options: { replaceEmpty?: boolean }): Promise<string[]> {
+  const stayed = new Set<string>();
+  if (options.replaceEmpty) {
+    const sourceOf = new Map([...moves].map(([from, to]) => [to, from]));
+    const replaced = new Map<string, string[]>();
+    // An empty destination review gives way only to a review that really is at the source.
+    const reviewed = new Set(tx.keys().map(([, key]) => key));
     for (const [id, key] of tx.keys()) {
-      const to = moves.get(key);
-      if (to === undefined || to === key || stayed.has(key)) continue;
+      const from = sourceOf.get(key);
+      if (from === undefined || moves.has(key) || !reviewed.has(from)) continue;
+      // A review whose file has not synced yet can't be shown to be empty.
       const doc = await tx.getIfPresent(id);
-      if (doc) { doc.key = to; doc.revision++; }
-      else tx.rekey(id, to);
+      if (doc && isEmptyReview(doc)) replaced.set(key, [...replaced.get(key) ?? [], id]);
+      else stayed.add(from);
     }
-    return [...stayed];
-  });
+    for (const [key, ids] of replaced) if (!stayed.has(sourceOf.get(key)!)) for (const id of ids) tx.remove(id);
+  }
+  for (const [id, key] of tx.keys()) {
+    const to = moves.get(key);
+    if (to === undefined || to === key || stayed.has(key)) continue;
+    const doc = await tx.getIfPresent(id);
+    if (doc) { doc.key = to; doc.revision++; }
+    else tx.rekey(id, to);
+  }
+  return [...stayed];
 }
 /**
  * A move rewrote these notes' paths (storage/move-links.ts). A review taken
  * of the text before gets the text after, its comments' anchors mapped
  * through each edit in turn (`edits` run from the end of the text to its
  * start), so a comment is never taken for one on changed text. A review of
- * another text is left to sync when the note is next opened.
+ * an earlier text (the move also rewrote its images or citation keys) is
+ * first mapped to the text before the edits, as opening the note would.
  */
 export async function rewriteReviewSnapshots(changes: readonly { path: string; before: string; edits: readonly { start: number; end: number; text: string }[] }[]) {
   const byPath = new Map(changes.filter((change) => change.edits.length).map((change) => [change.path, change]));
@@ -180,9 +194,10 @@ export async function rewriteReviewSnapshots(changes: readonly { path: string; b
       const change = byPath.get(key);
       if (!change) continue;
       const doc = await tx.getIfPresent(id);
-      if (!doc || doc.snapshot !== change.before) continue;
+      if (!doc) continue;
       let text = change.before;
-      let next = doc;
+      // The same move may already have rewritten the note's images or citation keys: the snapshot is then the text before that, which anchors are mapped from to the text this rewrite starts from (as opening the note would), and on through the edits.
+      let next = doc.snapshot === change.before ? doc : syncReview(doc, change.before, false);
       for (const edit of change.edits) {
         text = text.slice(0, edit.start) + edit.text + text.slice(edit.end);
         next = syncReview(next, text, false);

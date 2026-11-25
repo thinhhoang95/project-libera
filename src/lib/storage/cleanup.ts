@@ -11,9 +11,9 @@ import { StorageError } from "@/lib/storage/errors";
 import { getFileType } from "@/lib/storage/file-types";
 import { inkFolderPath } from "@/lib/storage/ink";
 import { sharedMayClear, verifyNotebook, type CleanupAction, type IntegrityFinding, type IntegrityLimits } from "@/lib/storage/integrity";
-import { readManifestView, type ManifestView } from "@/lib/storage/shared-manifest-view";
+import { manifestHasFile, readManifestView, type ManifestView } from "@/lib/storage/shared-manifest-view";
 import { fileExistence } from "@/lib/storage/library-links";
-import { rawEmbedsInOtherNotebooks, unreferencedMarkdownAssets } from "@/lib/storage/markdown-assets";
+import { assetPathKey, rawEmbedsInOtherNotebooks, unreferencedMarkdownAssets } from "@/lib/storage/markdown-assets";
 import { deleteReviewKey, findReview, reviewVersion } from "@/lib/storage/markdown-reviews";
 import { assertSafeSegment, getAdminRoot, notebookPath, notebookSystemDirectoryPath, splitFilePath, withReadOnlyStorage } from "@/lib/storage/paths";
 import { refreshNotebookCitations } from "@/lib/storage/reference-citations";
@@ -49,10 +49,14 @@ import { readWorkspaceMetadata, setFileTagsForPath, setStarredFilePath } from "@
 // transcripts, live marks, Python code, the notebook's images), and a file is
 // gone when the host's manifest does not list it, read again right before the
 // removals; when the host can't confirm it, nothing is removed.
-// Two things are never offered
-// either: records Try to fix could not pair only because several files have
-// their file's name (they may belong to one of them), and anything a check that
-// ran only in part found (it can't tell what is stale).
+// Some things are never offered
+// either: records Try to fix could not pair because several files have their
+// file's name (they may belong to one of them) or because a store could not be
+// read or two copies were set aside (each said as it is); records of a name a
+// file with records of its own now has, unless the record names the bytes it
+// was made for and no file has them; set-aside files whose record can't be
+// read; and anything a check that ran only in part found (it can't tell what
+// is stale).
 
 /** One concrete record an item removes, and the file it was kept for (null when the record is not a file's own). */
 export type CleanupEntry = { record: string; origin: string | null };
@@ -144,7 +148,7 @@ function partsIn(notebook: string, libraryPath: string) {
 const setAsideRoot = (notebook: string) => path.join(notebookSystemDirectoryPath(notebook), ORPHANED_SIDECARS_DIR);
 const setAsideFile = (notebook: string, file: string) => path.join(setAsideRoot(notebook), ...file.split("/").map(assertName));
 
-/** The path a set-aside file was kept for, from its record; null when it has none. */
+/** The path a set-aside file was kept for, from its record; null when it has none, or the record can't be read (never a reason to delete the file). */
 async function setAsideOrigin(notebook: string, file: string) {
   try {
     const parts = file.split("/").map(assertName);
@@ -219,7 +223,7 @@ async function versionOf(notebook: string, action: CleanupAction) {
   return found;
 }
 
-type HoldReason = "ambiguous" | "back" | "alias" | "unchecked" | "tether" | "image-used" | "images-unscanned" | "shared";
+type HoldReason = "ambiguous" | "own" | "unread" | "conflict" | "unattributed" | "back" | "alias" | "unchecked" | "tether" | "image-used" | "images-unscanned" | "shared";
 type Hold = { reason: HoldReason; message: string };
 
 /** What a library path physically opens, whatever spelling it is given (a disk that ignores case or Unicode form answers for an alias). */
@@ -250,10 +254,23 @@ async function goneHold(disk: ReturnType<typeof fileExistence>, libraryPath: str
   return null;
 }
 
-/** The shared version of "still gone": the host's manifest does not list the file (a copy left on the disk does not make it back; a listed file not yet delivered does). */
-function sharedGoneHold(view: ManifestView, libraryPath: string): Hold | null {
+/**
+ * The shared version of "still gone", decided by the path: for a file the manifest governs, the host's manifest does not list it under the
+ * round's name rule (a copy left on the disk under the exact name does not make it back; a listed file not yet delivered does; a name the
+ * disk opens for a file spelled differently is that file's, kept, as in `goneHold`). A path it does not govern (the notebook's local
+ * `_archive`, a file of another notebook) is the disk's, judged as in a local notebook.
+ */
+async function sharedGoneHold(view: ManifestView, disk: ReturnType<typeof fileExistence>, libraryPath: string): Promise<Hold | null> {
+  if (!isSharedNotebookPath(libraryPath)) return goneHold(disk, libraryPath);
   if (view.state !== "ok") return { reason: "unchecked", message: `The host can't confirm which files the shared notebook has (${view.reason}); the records of ${libraryPath} are kept.` };
-  if (view.files.has(libraryPath)) return { reason: "back", message: `${libraryPath} is in the shared notebook; its records are kept.` };
+  if (manifestHasFile(view, libraryPath)) return { reason: "back", message: `${libraryPath} is in the shared notebook; its records are kept.` };
+  await disk.check([libraryPath]);
+  // The exact name on the disk is a retired copy; another spelling of it that the disk opens is a live file, not to be removed through the alias.
+  if (!disk.exists(libraryPath)) {
+    const physical = await physicalState(libraryPath);
+    if (physical === "unknown") return { reason: "unchecked", message: `${libraryPath} can't be checked (no permission, or a drive is offline); its records are kept.` };
+    if (physical === "file") return { reason: "alias", message: `${libraryPath} opens a file under another spelling of its name (letter case or accents); its records are kept for that file.` };
+  }
   return null;
 }
 
@@ -270,11 +287,13 @@ async function absoluteTetherHold(target: string): Promise<Hold | null> {
 /** Why an action is not stale (any more), or null: the one decision the plan and the removal share. */
 async function staleness(notebook: string, action: CleanupAction, disk = fileExistence(), view: ManifestView | null = null): Promise<Hold | null> {
   if (view && !sharedMayClear(action, notebook)) return { reason: "shared", message: "The host keeps this in the shared notebook; it is kept." };
-  const gone = (libraryPath: string) => view ? sharedGoneHold(view, libraryPath) : goneHold(disk, libraryPath);
+  const gone = (libraryPath: string) => view ? sharedGoneHold(view, disk, libraryPath) : goneHold(disk, libraryPath);
   if (action.gone) { const hold = await gone(action.gone); if (hold) return hold; }
   if (action.type === "set-aside") {
     const origin = await setAsideOrigin(notebook, action.file);
-    if (origin) return gone(origin);
+    // A file whose record can't be read has no known owner: whether that file is back can't be told, so it is held, never removed.
+    if (!origin) return { reason: "unattributed", message: `${action.file}: its record is missing or can't be read, so it can't be told what it was kept for; it is kept.` };
+    return gone(origin);
   }
   if (action.type === "tether" && !action.gone) return absoluteTetherHold(action.target);
   return null;
@@ -296,8 +315,9 @@ async function collect(notebook: string, repair: RepairPlan, options: CleanupOpt
   const report = await verifyNotebook(notebook, { limits: options.limits });
   // What a check that ran only in part found can't be told stale: a loop that protects records may not have run.
   const partial = new Set(report.checks.filter((check) => check.status === "incomplete" || check.status === "failed").map((check) => check.id));
-  // Records of a name that Try to fix could not pair for there being several files by it: one of them may be the file.
-  const ambiguous = new Set(repair.unmatched.filter((item) => item.candidates.length).map((item) => item.from));
+  // Records of a name Try to fix did not pair though a file has the name, and why: several files have it (one of them may be the file; held), or the one file has records of its own
+  // (`own`: stale when the record names the bytes it was made for and no file has them), or Try to fix could not read a store or found two copies (held, with that said).
+  const named = new Map(repair.unmatched.filter((item) => item.candidates.length).map((item) => [item.from, item.reason] as const));
   const clearable: Array<IntegrityFinding & { clear: CleanupAction[] }> = [];
   const holds = new Map<HoldReason, number>();
   const hold = (reason: HoldReason) => holds.set(reason, (holds.get(reason) ?? 0) + 1);
@@ -313,14 +333,18 @@ async function collect(notebook: string, repair: RepairPlan, options: CleanupOpt
     if (partial.has(finding.check)) { heldPartial += 1; continue; }
     const clear: CleanupAction[] = [];
     for (const action of finding.clear) {
-      const subject = ambiguous.size ? await subjectOf(notebook, action) : null;
-      if (subject && ambiguous.has(subject)) { hold("ambiguous"); continue; }
+      const subject = named.size ? await subjectOf(notebook, action) : null;
+      const why = subject ? named.get(subject) : undefined;
+      if (why) {
+        if (why === "own" && "identified" in action && action.identified) { /* the check found no file with the bytes it was made for: the file now called that is not its file */ }
+        else { hold(why === "own" || why === "unread" || why === "conflict" ? why : "ambiguous"); continue; }
+      }
       const stale = await staleness(notebook, action, disk, view);
       if (stale) { hold(stale.reason); continue; }
       if (isImage(action)) {
         if (embeds === undefined) embeds = await rawEmbedsInOtherNotebooks(notebook, { includeOwn: true });
         if (!embeds) { hold("images-unscanned"); continue; }
-        if (embeds.has((action as { path: string }).path.toLowerCase())) { hold("image-used"); continue; }
+        if (embeds.has(assetPathKey((action as { path: string }).path))) { hold("image-used"); continue; }
       }
       clear.push(action);
     }
@@ -337,6 +361,10 @@ async function collect(notebook: string, repair: RepairPlan, options: CleanupOpt
   const count = (reason: HoldReason) => holds.get(reason) ?? 0;
   const them = (n: number) => (n === 1 ? "it" : "they");
   if (count("ambiguous")) notes.push(`${plural(count("ambiguous"), "record")} left out: more than one file has the name of the file ${count("ambiguous") === 1 ? "it was" : "they were"} kept for, so ${them(count("ambiguous"))} may belong to one of them.`);
+  if (count("own")) notes.push(`${plural(count("own"), "record")} left out: a file now has the name of the file ${count("own") === 1 ? "it was" : "they were"} kept for and has records of its own, so Try to fix can't give ${them(count("own"))} to it, and it can't be told that ${them(count("own"))} ${count("own") === 1 ? "is" : "are"} not that file's.`);
+  if (count("unread")) notes.push(`${plural(count("unread"), "record")} left out: some records could not be read, so it can't be ruled out that ${them(count("unread"))} belong${count("unread") === 1 ? "s" : ""} to a file that is there now.`);
+  if (count("conflict")) notes.push(`${plural(count("conflict"), "record")} left out: more than one copy was set aside for the same file, and Try to fix can't choose between them. Keep the one you want, and remove the others by hand.`);
+  if (count("unattributed")) notes.push(`${plural(count("unattributed"), "set-aside file")} left out: ${count("unattributed") === 1 ? "its record is" : "their records are"} missing or can't be read, so it can't be told what ${count("unattributed") === 1 ? "it was" : "they were"} kept for.`);
   if (heldPartial) notes.push(`${plural(heldPartial, "finding")} left out: a check that ran only in part can't tell what is stale.`);
   // A check the budget kept from starting has no findings to hold back; the plan still says it is not the whole picture.
   else if (partial.size) notes.push(`${plural(partial.size, "check")} ran only in part, so what ${partial.size === 1 ? "it" : "they"} could not look at is not offered.`);
@@ -492,7 +520,7 @@ async function perform(notebook: string, action: CleanupAction, context: Context
         // A note saved since the plan may show it now (or an address in another notebook's note): looked at again, not trusted from the plan.
         const fresh = await context.images();
         if (!fresh) throw new NoLongerStale(`${action.path}: the notes could not all be read, so it can't be ruled out that one shows it; it is kept.`);
-        const key = action.path.toLowerCase();
+        const key = assetPathKey(action.path);
         if (fresh.embeds.has(key) || !fresh.unused.has(key)) throw new NoLongerStale(`${action.path} is shown by a note now; it is kept.`);
       }
       const outcome = await remove(notebook, file, version(file), recheck);
@@ -584,7 +612,7 @@ async function applyCleanup(name: string, token: string, options: CleanupOptions
     images: () => fresh ??= (async () => {
       const unused = await unreferencedMarkdownAssets(notebook);
       const embeds = await rawEmbedsInOtherNotebooks(notebook, { includeOwn: true });
-      return unused && embeds ? { unused: new Set(unused.map((asset) => asset.toLowerCase())), embeds } : null;
+      return unused && embeds ? { unused: new Set(unused.map(assetPathKey)), embeds } : null;
     })(),
   };
   // Images last, so the notes are read as late as possible; an ink folder's record after its payload.

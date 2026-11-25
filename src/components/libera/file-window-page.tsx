@@ -1,8 +1,10 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import { encodeFilePath } from "@/components/libera/api-client";
+import { subscribeOtherWindowMoves, remapMovedPath } from "@/components/libera/file-move-channel";
+import { pendingSaves } from "@/components/libera/pending-saves";
 import { ImageViewer } from "@/components/libera/image-viewer";
 import { NoteMathMarkersProvider } from "@/components/libera/note-math-context";
 import { PdfViewer } from "@/components/libera/pdf-viewer";
@@ -13,7 +15,7 @@ import type { MathMarkerSettings } from "@/lib/math-markers";
 // A PDF or image tab duplicated into its own window. The viewer is fully
 // interactive; annotation edits sync with other windows showing the same file.
 export function FileWindowPage({
-  filePath,
+  filePath: openedPath,
   fileType,
   mathMarkers,
 }: {
@@ -22,6 +24,19 @@ export function FileWindowPage({
   mathMarkers: MathMarkerSettings;
 }) {
   const t = useTranslations("fileWindowPage");
+  // The file this window shows follows it when another window moves or renames it (or its folder).
+  const [filePath, setFilePath] = useState(openedPath);
+  const pathRef = useRef(openedPath);
+  useEffect(() => subscribeOtherWindowMoves((moves) => {
+    const from = pathRef.current;
+    const to = remapMovedPath(from, moves);
+    if (to === from) return;
+    // Unsaved ink and annotations go with the file; the viewer then writes to the new path only.
+    pendingSaves.moveUnsavedMany([{ from, to }]);
+    pathRef.current = to;
+    setFilePath(to);
+    try { window.history.replaceState(window.history.state, "", `/file-window?path=${encodeURIComponent(to)}`); } catch { /* Not essential. */ }
+  }), []);
   const fileName = filePath.split("/").at(-1) ?? "";
   const src = `/api/files/raw/${encodeFilePath(filePath)}`;
 

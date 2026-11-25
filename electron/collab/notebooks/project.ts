@@ -468,6 +468,12 @@ export class SharedProject {
   /** Field changes this host made to entries until the server has them: a concurrent whole-entry write must not undo them (see manifest-intents.ts). */
   private readonly manifestIntents = new ManifestIntents();
   private intentsScheduled = false;
+  /** The disk spelling a remote respelling mark was held against: a different spelling later is a rename made on this computer, which the mark must not swallow (S-H1). Memory only; bounded by the layout. */
+  private heldSpellings?: Map<string, string>;
+  /** Made on first use, so a runtime built without its field initialisers (tests' bare projects) still scans. */
+  private spellingsHeld() { return this.heldSpellings ??= new Map<string, string>(); }
+  /** The intents' revision last copied into the state (S-M2). */
+  private intentsSaved = 0;
   readonly pdfs: PdfMarksRuntime;
 
   private constructor(ctx: ProjectContext, info: ProjectInfo, state: ProjectState) {
@@ -507,6 +513,9 @@ export class SharedProject {
       const identity = { projectId: info.projectId, manifestDocId: info.manifestDocId, ...(info.folderId ? { folderId: info.folderId } : {}) };
       project.state = await readState(info.root, project.diskGuard(), identity);
       project.state.identity = identity;
+      // Changes made offline before the restart still need their guard when the merge comes (S-M2).
+      project.manifestIntents.restore(project.state.intents);
+      project.intentsSaved = project.manifestIntents.revision;
     }
     if (project.state.externalAdoptionRequired) ctx.host.store.requireExternalAdoption(info.projectId);
     if (ctx.host.store.requiresExternalAdoption(info.projectId)) project.state.externalAdoptionRequired = true;
@@ -1128,6 +1137,45 @@ export class SharedProject {
   }
 
   /**
+   * The directories to respell for entries whose path changed only in the spelling of a folder they sit in (S-H1): `[from, to]`
+   * pairs, shallowest first. A folder is listed only when every entry the layout had below it now sits below the same new spelling
+   * (a folder holding an entry that did not follow cannot take two names), and not when an explicit folder entry already covers it.
+   */
+  private impliedRespells(previous: Record<string, LayoutRecord>, paths: ReadonlyMap<string, string>, covered: string[]): Array<{ from: string; to: string }> {
+    const explicit = new Set(covered);
+    const candidates = new Map<string, { from: string; to: string }>();
+    for (const [fileId, record] of Object.entries(previous)) {
+      const desired = paths.get(fileId);
+      if (!desired || desired === record.path) continue;
+      const oldSegments = record.path.split("/");
+      const newSegments = desired.split("/");
+      // The entry's own last segment is its name (handled by the move itself or by respellFolder for a folder entry).
+      for (let index = 0; index < Math.min(oldSegments.length, newSegments.length) - 1; index += 1) {
+        if (oldSegments[index] === newSegments[index]) continue;
+        const from = oldSegments.slice(0, index + 1).join("/");
+        const to = newSegments.slice(0, index + 1).join("/");
+        // A different name, not a respelling: the folder moved or was renamed, which the entries' own moves handle.
+        if (manifestPathKey(from) !== manifestPathKey(to)) break;
+        if (!explicit.has(from)) candidates.set(`${from}\u0000${to}`, { from, to });
+      }
+    }
+    const result: Array<{ from: string; to: string }> = [];
+    for (const candidate of candidates.values()) {
+      const prefix = `${manifestPathKey(candidate.from)}/`;
+      const depth = candidate.to.split("/").length;
+      let consistent = true;
+      for (const [fileId, record] of Object.entries(previous)) {
+        if (!manifestPathKey(record.path).startsWith(prefix)) continue;
+        const desired = paths.get(fileId);
+        // An entry that left the folder, or stayed under another spelling, is not "the folder renamed".
+        if (desired !== undefined && desired.split("/").slice(0, depth).join("/") !== candidate.to) { consistent = false; break; }
+      }
+      if (consistent) result.push(candidate);
+    }
+    return result.sort((a, b) => a.to.split("/").length - b.to.split("/").length);
+  }
+
+  /**
    * Gives a folder the spelling the manifest chose when only case or Unicode
    * form changed (H7). On a volume that treats both spellings as one name the
    * move loop cannot do it: the destination "exists" already, so the folder
@@ -1245,6 +1293,11 @@ export class SharedProject {
         for (const fileId of results.waiting) stagedWaiting.add(fileId);
         if (results.waiting.size > 0) needsRetry = true;
       }
+      // The journals could not be read, so which files have staged bytes is unknown: every file waits (nothing is placed from authority over bytes that may be mid-move) and the pass is retried (S-M4).
+      if (!results || results.unreadable) {
+        for (const fileId of layout.paths.keys()) stagedWaiting.add(fileId);
+        needsRetry = true;
+      }
     }
 
     // Removed entries: archive files (never delete user data outright).
@@ -1299,6 +1352,15 @@ export class SharedProject {
         this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: could not rename the folder ${record.path} to ${layout.paths.get(fileId)}`, error);
         // The layout stays at the spelling the disk has, so the scanner does not take it for an outside rename back (H7).
         next[fileId] = { ...record };
+        needsRetry = true;
+      }
+    }
+    // Folders no entry of their own names (a file's `_ink/<file>/`, `_assets/<note>/`, a subfolder implied by its files) take the new spelling too when every entry in them was respelled that way: on a volume that treats the spellings as one name the moved files would otherwise land back in the old folder, and the scanner would rename the manifest back to what the disk says (S-H1).
+    for (const { from, to } of this.impliedRespells(previous, layout.paths, folderRenames.map(([, record]) => record.path))) {
+      try {
+        await this.respellFolder(from, to);
+      } catch (error) {
+        this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: could not rename the folder ${from} to ${to}`, error);
         needsRetry = true;
       }
     }
@@ -1369,7 +1431,8 @@ export class SharedProject {
         const target = await resolveInside(this.info.root, desired);
         // A file whose own move failed still sits there: it is not ours to archive.
         if (occupied.has(manifestPathKey(desired))) throw new DestinationTakenError(target);
-        if (await statIfExists(target)) this.displacedPath(desired, await this.archive(desired));
+        const occupant = await statIfExists(target);
+        if (occupant) this.displacedPath(desired, await this.archive(desired), occupant.isDirectory() ? "folder" : "file");
         await movePathExclusive(staging, target, this.diskGuard());
         if (!this.info.album) await clearMoveJournal(this.info.root, path.basename(staging)).catch(() => undefined);
         next[fileId] = { ...record, path: desired };
@@ -1820,7 +1883,7 @@ export class SharedProject {
    * recorded in state.json and told to Next as a tree move under a synthetic file
    * id, which Next's follow-up moves the records along with.
    */
-  private displacedPath(relative: string, archived: string | null): void {
+  private displacedPath(relative: string, archived: string | null, kind: "file" | "folder" = "file"): void {
     if (!archived) return;
     const fileId = `displaced-${sha256(new TextEncoder().encode(archived)).slice(0, 24)}`;
     this.state.displaced = [...(this.state.displaced ?? []), { fileId, from: relative, to: archived, at: Date.now() }].slice(-100);
@@ -1828,7 +1891,7 @@ export class SharedProject {
     // Also in the durable transition log, before the tree event (as recordTransitions does): Next moves this computer's records at the claimed path to the archived file on the next drain, and a crash or a lost event does not lose it.
     if (!this.info.album) {
       try {
-        this.ctx.host.store.commitManifestPaths(this.info.projectId, { upserts: [], removals: [], transitions: [{ fileId, kind: "file", from: relative, to: archived, at: Date.now() }] });
+        this.ctx.host.store.commitManifestPaths(this.info.projectId, { upserts: [], removals: [], transitions: [{ fileId, kind, from: relative, to: archived, at: Date.now() }] });
       } catch (error) {
         this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: could not record the move of the displaced file ${relative}`, error);
       }
@@ -1937,6 +2000,7 @@ export class SharedProject {
         }
       }
     }, provenance)?.length ?? 0; });
+    this.persistIntents();
     this.entries = this.readEntries();
     if (!hub.flushDurable()) {
       // The change is applied in memory and retried by the hub on a backoff, but a crash now would lose it.
@@ -1967,18 +2031,34 @@ export class SharedProject {
   private scheduleIntents(): void {
     if (this.manifestIntents.size === 0 || this.intentsScheduled || this.stopped) return;
     this.intentsScheduled = true;
-    // Not inside the hub's own notification: the write below is a transaction of its own.
+    // Not inside the hub's own notification (the write below is a transaction of its own), and on the project's queue like every other manifest write, so it cannot interleave with a pass that reads then writes the manifest (S-M2).
     queueMicrotask(() => {
-      this.intentsScheduled = false;
-      const hub = this.manifestHub;
-      if (this.stopped || !hub || !this.canEdit || !this.manifestCaughtUp()) return;
-      const files = this.manifestDoc().getMap<unknown>(ManifestKeys.files);
-      const rewrites = this.manifestIntents.reconcile(files, hub.pendingCount === 0);
-      if (rewrites.size === 0) return;
-      void this.writeManifest((map) => {
-        for (const [fileId, record] of rewrites) if (map.has(fileId)) map.set(fileId, record);
-      }, { source: "typing" }).catch((error) => this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: could not restore a concurrent change`, error));
+      void this.enqueue(async () => {
+        this.intentsScheduled = false;
+        const hub = this.manifestHub;
+        if (this.stopped || !hub || !this.canEdit || !this.manifestCaughtUp()) return;
+        const files = this.manifestDoc().getMap<unknown>(ManifestKeys.files);
+        const rewrites = this.manifestIntents.reconcile(files, hub.pendingCount === 0);
+        this.persistIntents();
+        if (rewrites.size === 0) return;
+        await this.writeManifest((map) => {
+          for (const [fileId, record] of rewrites) if (map.has(fileId)) map.set(fileId, record);
+        }, { source: "typing" });
+      }).catch((error) => {
+        this.intentsScheduled = false;
+        this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: could not restore a concurrent change`, error);
+      });
     });
+  }
+
+  /** Copies the intents into the state when they changed, so a restart keeps them (S-M2). No timer of its own: the state's own save is coalesced. */
+  private persistIntents(): void {
+    if (this.follower || this.manifestIntents.revision === this.intentsSaved) return;
+    this.intentsSaved = this.manifestIntents.revision;
+    const exported = this.manifestIntents.export();
+    if (exported.length === 0 && !this.state.intents) return;
+    this.state.intents = exported.length > 0 ? exported : undefined;
+    this.saveSoon();
   }
 
   // ------------------------------------------------------------ albums
@@ -2872,10 +2952,12 @@ export class SharedProject {
       const to = variants?.length === 1 ? variants[0].relative : null;
       if (!to || to === record.path || !isShareablePath(to)) {
         this.respellSeen.delete(fileId);
+        this.spellingsHeld().delete(fileId);
         return;
       }
-      // A normalization-only difference (no case change) in an entry another device spelled that way: this disk or sync client keeps the other form, and renaming it back would start a rename back and forth between devices.
-      if (to.normalize("NFC") === record.path.normalize("NFC") && this.state.remoteRespells?.[fileId]?.path === record.path) {
+      // A difference of spelling only (case or Unicode form: the manifest's name rule, S-H1) in an entry another device spelled that way: this disk or sync client keeps the other form, and renaming it back would start a rename back and forth between devices.
+      if (manifestPathKey(to) === manifestPathKey(record.path) && this.state.remoteRespells?.[fileId]?.path === record.path && (this.spellingsHeld().get(fileId) ?? to) === to) {
+        this.spellingsHeld().set(fileId, to);
         if (!this.respellLogged.has(fileId)) {
           this.respellLogged.add(fileId);
           this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: ${record.path} is spelled differently on this computer's disk (Unicode form). The shared name stays as another device set it.`);
@@ -2902,7 +2984,7 @@ export class SharedProject {
           this.missingSince.delete(fileId);
           this.renameDeferrals.delete(fileId);
           this.renameDeferrals.delete(`unsettled:${fileId}`);
-          if (directories.has(record.path)) this.respellSeen.delete(fileId);
+          if (directories.has(record.path)) { this.respellSeen.delete(fileId); this.spellingsHeld().delete(fileId); }
           else noteRespelling(fileId, record, directoryByKey.get(recordKey));
         } else missing.push(fileId);
         continue;
@@ -2916,7 +2998,7 @@ export class SharedProject {
       this.missingSince.delete(fileId);
       this.renameDeferrals.delete(fileId);
       this.renameDeferrals.delete(`unsettled:${fileId}`);
-      if (exact) this.respellSeen.delete(fileId);
+      if (exact) { this.respellSeen.delete(fileId); this.spellingsHeld().delete(fileId); }
       else noteRespelling(fileId, record, fileVariants.get(recordKey) === 1 ? [seen] : undefined);
       // Finder is replacing this file: its bytes are not the new version yet.
       if (isFinderCopy(seen)) continue;
@@ -3101,6 +3183,7 @@ export class SharedProject {
       const from = record.path;
       const folder = record.kind === "folder";
       this.respellSeen.delete(fileId);
+      this.spellingsHeld().delete(fileId);
       this.ownRespells.add(fileId);
       touched.add(from).add(to);
       operations.push((map, doc) => {
@@ -3338,6 +3421,62 @@ export class SharedProject {
       this.renameDeferrals.delete(fileId);
       if (!this.canEdit || !entry) continue;
       planRename(fileId, entry, record, match);
+    }
+
+    // A folder moved with files whose bytes another file shares (an empty note, a copy): the bytes cannot say which new file is
+    // which, so the pairing above leaves them, and the folder would be split (its unique files moved, the old folder and the
+    // duplicates restored from the manifest, the moved duplicates imported as new files). The names can say: when the folder is
+    // gone and every file of it still missing reappears under one new folder at the same names below it with the same bytes, that
+    // folder moved (S-M1). Nothing is guessed: one destination only, every original absent, every file keeps what a rename keeps.
+    for (const folderId of [...missing]) {
+      const folder = this.state.layout[folderId];
+      if (!folder || folder.kind !== "folder" || !this.canEdit || held.has(folderId)) continue;
+      const prefixKey = `${manifestPathKey(folder.path)}/`;
+      const depth = folder.path.split("/").length;
+      const unpaired = Object.entries(this.state.layout).filter(([id, other]) => other.kind !== "folder" && manifestPathKey(other.path).startsWith(prefixKey) && missing.includes(id));
+      if (unpaired.length === 0 || unpaired.some(([id, other]) => !other.hash || held.has(id))) continue;
+      const tailOf = (record: LayoutRecord) => record.path.split("/").slice(depth).join("/");
+      const [, first] = unpaired[0];
+      const firstTail = manifestPathKey(tailOf(first));
+      const destinations = new Set<string>();
+      for (const candidate of fresh) {
+        const relative = candidate.entry.relative;
+        if (candidate.hash !== first.hash || !manifestPathKey(relative).endsWith(`/${firstTail}`)) continue;
+        const where = relative.slice(0, relative.length - firstTail.length - 1);
+        if (where && directories.has(where) && !`${manifestPathKey(where)}/`.startsWith(prefixKey)) destinations.add(where);
+      }
+      let chosen: { where: string; matches: Array<{ fileId: string; record: LayoutRecord; candidate: (typeof fresh)[number] }> } | null = null;
+      let ambiguous = false;
+      for (const where of destinations) {
+        const matches: Array<{ fileId: string; record: LayoutRecord; candidate: (typeof fresh)[number] }> = [];
+        for (const [id, record] of unpaired) {
+          const wantedKey = manifestPathKey(`${where}/${tailOf(record)}`);
+          const candidate = fresh.find((item) => item.hash === record.hash && manifestPathKey(item.entry.relative) === wantedKey && compatibleKind(record, item.entry.relative));
+          if (candidate) matches.push({ fileId: id, record, candidate });
+        }
+        if (matches.length !== unpaired.length) continue;
+        if (chosen) ambiguous = true;
+        chosen = { where, matches };
+      }
+      if (!chosen || ambiguous) continue;
+      const target = chosen;
+      // Files of the folder that paired in this pass must have gone to the same place.
+      const consistent = paired.every((move) => !manifestPathKey(move.from).startsWith(prefixKey)
+        || manifestPathKey(move.to) === manifestPathKey(`${target.where}/${move.from.split("/").slice(depth).join("/")}`));
+      if (!consistent) continue;
+      let allowed = true;
+      for (const { fileId, record, candidate } of target.matches) {
+        if ((await this.sourceAbsence(record)) !== "absent" || !keepsRecords(this.entries.get(fileId), record.path, candidate.entry.relative)) { allowed = false; break; }
+      }
+      if (!allowed) continue;
+      for (const { fileId, record, candidate } of target.matches) {
+        const entry = this.entries.get(fileId);
+        const [match] = fresh.splice(fresh.indexOf(candidate), 1);
+        missing.splice(missing.indexOf(fileId), 1);
+        this.missingSince.delete(fileId);
+        this.renameDeferrals.delete(fileId);
+        if (entry) planRename(fileId, entry, record, match);
+      }
     }
 
     // A rename and an edit before the scan (S40): the bytes match nothing, but
@@ -3953,7 +4092,9 @@ export class SharedProject {
     if (!this.manifestReady()) return Promise.reject(new ControlError(503, "offline", "The notebook's file list has not loaded yet."));
     const entries = this.readEntries();
     const list: FileListEntry[] = [];
-    for (const [fileId, placed] of computeLayout(entries.values()).paths) {
+    const layout = computeLayout(entries.values());
+    const awaitingServer = this.awaitingTransitions(layout);
+    for (const [fileId, placed] of layout.paths) {
       const entry = entries.get(fileId);
       if (!entry) continue;
       list.push({
@@ -3967,7 +4108,7 @@ export class SharedProject {
         updatedAt: entry.updatedAt,
       });
     }
-    return Promise.resolve({ entries: list });
+    return Promise.resolve({ entries: list, ...(awaitingServer > 0 ? { awaitingServer } : {}) });
   }
 
   /**
@@ -4219,7 +4360,16 @@ export class SharedProject {
         // change; rebuild the resolvePath index here, or a file just created
         // would not resolve (the caller's next request is often an edit to it).
         this.ctx.layoutChanged(this.info.projectId);
-        return { paths: paths.map((item) => this.liberaPath(item)), ...(resultFileId ? { fileId: resultFileId } : {}), ...(moves.length ? { moves } : {}) };
+        // Whether the server has the move or removal, so that it is in the log now. When it does not (offline, or the
+        // acknowledgement is still on its way) the caller's records stay where they are: they follow the row recorded at
+        // the acknowledgement, and a change the server rolls back leaves them where the restored manifest expects them (S-C2).
+        let acknowledged: boolean | undefined;
+        if (moves.length > 0) {
+          this.entries = this.readEntries();
+          acknowledged = this.manifestDeferred ? false : this.recordTransitions(computeLayout(this.entries.values()));
+          if (!acknowledged) this.transitionsDeferred = true;
+        }
+        return { paths: paths.map((item) => this.liberaPath(item)), ...(resultFileId ? { fileId: resultFileId } : {}), ...(moves.length ? { moves } : {}), ...(acknowledged === undefined ? {} : { acknowledged }) };
       } finally {
         for (const hash of uploaded) this.uploadedBlobs.delete(hash);
       }
@@ -4524,7 +4674,7 @@ export class SharedProject {
    * finds the transition in the log.
    */
   /**
-   * Remembers the entries a remote device renamed only in Unicode form (S39),
+   * Remembers the entries a remote device renamed only in Unicode form or case (S39, S-H1),
    * and forgets one once its path changes again or its entry leaves the
    * manifest. The marks are bounded by the manifest (MAX_REMOTE_RESPELLS is
    * only a ceiling; the oldest go first past it).
@@ -4536,7 +4686,7 @@ export class SharedProject {
       const before = this.recordedPaths.get(fileId);
       if (!before || before.path === now.path) continue;
       const own = this.ownRespells.delete(fileId);
-      if (!own && before.path.normalize("NFC") === now.path.normalize("NFC")) {
+      if (!own && manifestPathKey(before.path) === manifestPathKey(now.path)) {
         marks[fileId] = { path: now.path, at: Date.now() };
         changed = true;
       } else if (marks[fileId]) {
@@ -4555,29 +4705,59 @@ export class SharedProject {
     this.saveSoon();
   }
 
-  private recordTransitions(layout: { paths: Map<string, string>; refused: Array<{ fileId: string }> }): void {
-    if (this.info.album) return;
+  /** The manifest's paths by file ID in the form the transition log records them (an entry the layout refuses keeps its recorded place). */
+  private recordedLayoutPaths(layout: { paths: Map<string, string>; refused: Array<{ fileId: string }> }): Map<string, RecordedPath> {
+    const next = new Map<string, RecordedPath>();
+    for (const [fileId, path] of layout.paths) next.set(fileId, { path, kind: this.entries.get(fileId)?.kind === "folder" ? "folder" : "file" });
+    for (const { fileId } of layout.refused) {
+      const before = this.recordedPaths.get(fileId);
+      if (before && !next.has(fileId)) next.set(fileId, before);
+    }
+    return next;
+  }
+
+  /**
+   * How many moves and removals the manifest holds that the host's log does not
+   * (the server has not acknowledged them yet): what a record kept on this
+   * computer must not follow, because the server can still roll them back (S-C2).
+   * Zero once they are logged. Reads memory only.
+   */
+  private awaitingTransitions(layout: { paths: Map<string, string>; refused: Array<{ fileId: string }> }): number {
+    if (this.info.album || !this.transitionsDeferred) return 0;
+    return diffManifestPaths(this.recordedPaths, this.recordedLayoutPaths(layout), 0, false).transitions.length;
+  }
+
+  /**
+   * Records the manifest's moves and removals once the server has them. Returns
+   * whether they are in the log now (false: they wait for the server's
+   * acknowledgement, which runs this again). Rows recorded after having waited
+   * are announced (`transitions-recorded`): the tree event that told the windows
+   * of the move went out before the log held it, so Next must read the log again
+   * for the records to follow (S-C2).
+   */
+  private recordTransitions(layout: { paths: Map<string, string>; refused: Array<{ fileId: string }> }): boolean {
+    if (this.info.album) return true;
     // A move or removal the server has not acknowledged can still be rolled back (M23).
     if (!this.manifestAcknowledged()) {
       this.transitionsDeferred = true;
-      return;
+      return false;
     }
+    const waited = this.transitionsDeferred;
     this.transitionsDeferred = false;
     try {
-      const next = new Map<string, RecordedPath>();
-      for (const [fileId, path] of layout.paths) next.set(fileId, { path, kind: this.entries.get(fileId)?.kind === "folder" ? "folder" : "file" });
-      for (const { fileId } of layout.refused) {
-        const before = this.recordedPaths.get(fileId);
-        if (before && !next.has(fileId)) next.set(fileId, before);
-      }
+      const next = this.recordedLayoutPaths(layout);
       this.noteRemoteRespells(next);
       const diff = diffManifestPaths(this.recordedPaths, next, Date.now(), this.manifestHub?.caughtUp === true);
-      if (diff.upserts.length === 0 && diff.removals.length === 0) return;
+      if (diff.upserts.length === 0 && diff.removals.length === 0) return true;
       this.ctx.host.store.commitManifestPaths(this.info.projectId, diff);
       this.recordedPaths = next;
+      if (waited && diff.transitions.length > 0) this.ctx.emit({ t: "transitions-recorded", projectId: this.info.projectId, notebook: this.info.notebook });
+      return true;
     } catch (error) {
-      // Recorded again from the same comparison at the next pass.
+      // Recorded again from the same comparison at the next pass; until then the change is still awaited.
+      this.transitionsDeferred = true;
       this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: could not record the manifest's moves`, error);
+      return false;
     }
   }
 

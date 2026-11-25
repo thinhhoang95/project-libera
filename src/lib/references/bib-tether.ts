@@ -1110,6 +1110,20 @@ function targetInfo(notebook: string, config: TetherConfig): TetherTargetInfo {
   return config.target.kind === "absolute" ? { absolutePath: config.target.path } : { libraryPath: displayPath(notebook, config.target) };
 }
 
+/** A notebook was deleted: stop its watchers and timers, and forget it, so nothing keeps working on the folder that is gone. */
+export function stopBibTether(notebook: string) {
+  const runtime = registry.runtimes.get(notebook);
+  if (runtime) {
+    stopWatching(runtime);
+    clearTimer(runtime.libraryTimer);
+    clearTimer(runtime.retryTimer);
+    runtime.libraryTimer = null;
+    runtime.retryTimer = null;
+    registry.runtimes.delete(notebook);
+  }
+  registry.tethered.delete(notebook);
+}
+
 /** Stop every watcher and timer (tests, before the data directory changes). */
 export function resetBibTethers() {
   for (const runtime of registry.runtimes.values()) {

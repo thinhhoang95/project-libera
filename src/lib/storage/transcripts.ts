@@ -6,7 +6,7 @@ import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { StorageError } from "@/lib/storage/errors";
 import { assertSupportedFileName, getFileType } from "@/lib/storage/file-types";
-import { writeJsonForSource } from "@/lib/storage/fs-utils";
+import { withPathLocks, writeJsonForSource } from "@/lib/storage/fs-utils";
 import { assertFileSignature, readCachedFileContentHash, readFileContentHash, readFileSignature } from "@/lib/storage/file-signature";
 import { audioSidecarDirectories, audioSidecarPaths, filePathFromParts, notebookPath, splitFilePath, transcriptPath } from "@/lib/storage/paths";
 import { cleanSegments, countWords } from "@/lib/transcription/edits";
@@ -33,6 +33,11 @@ export const TRANSCRIPT_COMPANION_SUFFIX = ".transcript";
 /** "Shared/memo.m4a" → "Shared/memo.m4a.transcript". */
 export function transcriptCompanionPath(relativePath: string) {
   return `${relativePath}${TRANSCRIPT_COMPANION_SUFFIX}`;
+}
+
+/** Where the companion transcript of the recording at `pathParts` of `notebook` is on disk (whether or not the notebook is shared). */
+export function transcriptCompanionFilePath(notebook: string, pathParts: string[]) {
+  return filePathFromParts(notebook, [...pathParts.slice(0, -1), `${pathParts.at(-1) ?? ""}${TRANSCRIPT_COMPANION_SUFFIX}`]);
 }
 
 /** The recording a companion transcript belongs to, or null when the path is not one. */
@@ -450,6 +455,28 @@ function retargetPendingAudioMoves(from: string, to: string) {
 }
 
 /**
+ * Removes the pending local transcript of a shared recording that was renamed
+ * (`copy`: the copy made at its new path, which the source must still equal) or
+ * deleted (no copy), so it does not stay behind as an orphan that blocks the
+ * path (S-C1). Fails closed: nothing is removed unless a recovery copy of
+ * exactly these bytes is kept (preserveLifecycleSidecar), the bytes are still
+ * the ones judged, and (for a copy) the destination holds the same bytes.
+ */
+async function retireAudioTranscript(sidecar: string, root: string, copy?: string) {
+  try {
+    await withPathLocks([sidecar], async () => {
+      const bytes = await readFile(sidecar).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });
+      if (!bytes) return;
+      if (copy !== undefined && !bytes.equals(await readFile(copy))) return;
+      if (!await preserveLifecycleSidecar(sidecar, root)) return;
+      const again = await readFile(sidecar).catch(() => null);
+      if (!again?.equals(bytes)) return;
+      await rm(sidecar, { force: true });
+    });
+  } catch { /* Kept: a source that cannot be proven safe to retire stays where it is. */ }
+}
+
+/**
  * Copies the sidecars of one moved recording. `waiting` is true when a
  * transcript was left behind only because the recording at the destination is
  * not there yet (or not these bytes yet): a cloud folder delivers it late.
@@ -472,8 +499,12 @@ async function followOneAudioMove(from: string, to: string): Promise<{ changed: 
         const matches = await readCachedFileContentHash(targetAudio).then((hash) => hash === transcript.audio.contentHash, () => false);
         if (!matches) mismatch = true;
         return matches;
-      })) changed += 1;
-      else if (mismatch) waiting = true;
+      })) {
+        changed += 1;
+        // The transcript is at its new path now: the old copy would be an orphan no check or fix can clear (S-C1).
+        // Only when the old name has no recording any more: a copy of the recording keeps its transcript.
+        if (index === 0 && await recordingAbsent(filePathFromParts(source.notebook, source.pathParts))) await retireAudioTranscript(sidecar, notebookPath(source.notebook), next[index]);
+      } else if (mismatch) waiting = true;
     }
   } catch { /* Retain ambiguous sidecars, including occupied destinations and swaps. */ }
   return { changed, waiting };
@@ -509,6 +540,16 @@ export async function followSharedAudioChanges(moves: Array<{ from: string; to: 
       const source = splitFilePath(previous);
       for (const sidecar of audioSidecarPaths(source.notebook, source.pathParts)) await preserveLifecycleSidecar(sidecar, notebookPath(source.notebook));
     } catch { /* Keep the active source when its recovery target is unavailable. */ }
+  }
+  // A deleted recording's pending transcript is kept only in the recovery copy: a later recording of that name must not find it as a live record.
+  const moved = new Set(moves.map((move) => move.from));
+  for (const previous of _removed) {
+    try {
+      if (moved.has(previous) || getFileType(previous) !== "audio") continue;
+      const source = splitFilePath(previous);
+      if (!await recordingAbsent(filePathFromParts(source.notebook, source.pathParts))) continue;
+      await retireAudioTranscript(transcriptPath(source.notebook, source.pathParts), notebookPath(source.notebook));
+    } catch { /* Kept. */ }
   }
   let changed = await replayPendingAudioMoves();
   for (const { from, to } of moves) {

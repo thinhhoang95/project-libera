@@ -8,7 +8,7 @@ import {
   normalizeAssetFileName,
   getContentType,
 } from "@/lib/storage/file-types";
-import { copyFileIfExists, findAvailableFilePath, moveFileIfExists, moveWithoutReplacing, pathExists } from "@/lib/storage/fs-utils";
+import { copyFileIfExists, findAvailableFilePath, isCaseOnlyRename, moveFileIfExists, moveWithoutReplacing, pathExists, renameCaseAlias } from "@/lib/storage/fs-utils";
 import {
   ensureAdminRoot,
   filePathFromParts,
@@ -31,7 +31,8 @@ import { markdownImageSources, rawFileSourcePath, rewriteMarkdownImageSources } 
 import { isInkBlockRenderingName } from "@/lib/ink/block";
 import { legacyPythonSidecarPath, ownsPythonFigureSource, parsePythonFigureSource, previousPythonFigureSources, pythonFigureFolder, pythonFigureSourcePrefix, pythonSidecarPath, withPreviousPythonFigureSources } from "@/lib/python/sidecar";
 import { assertNotMigrating } from "@/lib/storage/migration-fence";
-import { libraryNotebookNames } from "@/lib/storage/library-links";
+import { libraryNotebookNames, offlineLinkedFolderNames } from "@/lib/storage/library-links";
+import { foldedFileName } from "@/lib/storage/file-names";
 
 export { markdownImageSources } from "@/lib/markdown-image-sources";
 
@@ -96,14 +97,26 @@ function referencedRawFilePaths(markdown: string) {
  * (storage/integrity.ts). `absolutePath` is null when the address can't be
  * read as a library image.
  */
+/**
+ * Where a library path a `/api/files/raw/...` address names is on the disk.
+ * A notebook's own `_assets` folder is not a user path (filePathFromParts
+ * refuses it) but its images are served by that address too.
+ */
+export function rawFileDiskPath(libraryPath: string) {
+  const [notebook, ...pathParts] = libraryPath.split("/");
+  if (pathParts[0] === MARKDOWN_ASSETS_DIR) return markdownAssetPath(notebook, pathParts.join("/")).targetPath;
+  const split = splitFilePath(libraryPath);
+  return filePathFromParts(split.notebook, split.pathParts);
+}
+
 export function markdownImageTargets(documentPath: string, markdown: string) {
   const targets: { source: string; libraryPath: string | null; absolutePath: string | null }[] = [];
   for (const source of markdownImageSources(markdown)) {
+    let raw: string | null = null;
     try {
-      const raw = rawFileSourcePath(source);
+      raw = rawFileSourcePath(source);
       if (raw) {
-        const { notebook, pathParts } = splitFilePath(raw);
-        targets.push({ source, libraryPath: raw, absolutePath: filePathFromParts(notebook, pathParts) });
+        targets.push({ source, libraryPath: raw, absolutePath: rawFileDiskPath(raw) });
         continue;
       }
       const target = markdownAssetSourceTarget(documentPath, source);
@@ -111,7 +124,8 @@ export function markdownImageTargets(documentPath: string, markdown: string) {
       const notebook = splitFilePath(target.documentPath).notebook;
       targets.push({ source, libraryPath: `${notebook}/${target.assetPath}`, absolutePath: markdownAssetPath(notebook, target.assetPath).targetPath });
     } catch {
-      targets.push({ source, libraryPath: null, absolutePath: null });
+      // A library address that names no user path (an image kept in `_assets`) is still read: the unused-image scan counts it.
+      targets.push({ source, libraryPath: raw, absolutePath: null });
     }
   }
   return targets;
@@ -127,13 +141,20 @@ export async function unreferencedMarkdownAssets(notebook: string, scan?: { docu
   const { documents, complete } = scan ?? await readMarkdownAssetDocuments(notebook);
   if (!complete) return null;
   const referenced = new Set<string>();
-  const owned: string[] = [];
+  const owned: { prefix: string }[] = [];
+  const ownName = foldedFileName(notebook);
   for (const document of documents) {
-    for (const asset of referencedMarkdownAssetPaths(document.documentPath, document.content)) referenced.add(asset.toLowerCase());
-    for (const prefix of ownedPrefixes(document.documentPath)) owned.push(`${prefix.toLowerCase()}/`);
+    for (const asset of referencedMarkdownAssetPaths(document.documentPath, document.content)) referenced.add(assetPathKey(asset));
+    // An embed by library address (`/api/files/raw/<notebook>/...`) shows the image as well: one rule with the cleanup that looks at addresses.
+    for (const raw of libraryAddressedPaths(document.documentPath, document.content)) {
+      const [owner, ...rest] = raw.split("/");
+      if (foldedFileName(owner) === ownName && rest.length) referenced.add(assetPathKey(rest.join("/")));
+    }
+    for (const prefix of ownedPrefixes(document.documentPath)) owned.push({ prefix });
   }
   const unused: string[] = [];
   const root = path.join(notebookPath(notebook), MARKDOWN_ASSETS_DIR);
+  const sameFolder = sameFolderOnDisk(notebook);
   const walk = async (directory: string, relative: string) => {
     let entries;
     try { entries = await readdir(directory, { withFileTypes: true }); } catch { return; }
@@ -141,13 +162,69 @@ export async function unreferencedMarkdownAssets(notebook: string, scan?: { docu
       const assetPath = `${relative}/${entry.name}`;
       if (entry.isDirectory()) await walk(path.join(directory, entry.name), assetPath);
       else if (entry.isFile() && !JUNK_FILES.has(entry.name)) {
-        const key = assetPath.toLowerCase();
-        if (!referenced.has(key) && !owned.some((prefix) => key.startsWith(prefix))) unused.push(`${notebook}/${assetPath}`);
+        if (!referenced.has(assetPathKey(assetPath)) && !(await isInOwnedFolder(assetPath, owned, sameFolder))) unused.push(`${notebook}/${assetPath}`);
       }
     }
   };
   await walk(root, MARKDOWN_ASSETS_DIR);
   return unused.sort();
+}
+
+/**
+ * An asset path as one name for comparing: each segment under the round's one
+ * name rule (NFC and case folding, storage/file-names.ts), so an NFD name on
+ * disk and its NFC reference are the same image.
+ */
+export function assetPathKey(assetPath: string) {
+  return assetPath.split("/").map(foldedFileName).join("/");
+}
+
+/**
+ * Whether an asset sits inside a folder a note owns (its own images, its
+ * Python code). Folded equality of the folder is enough only when it is one
+ * folder on disk: on a case-sensitive volume `Analysis.md` and `analysis.md`
+ * are two, and code left in the first after a case-only rename is nobody's.
+ * `sameFolder` asks the disk: true (the same folder), false (another), null
+ * (could not tell: kept as owned, never offered for removal on a guess).
+ */
+export async function isInOwnedFolder(
+  assetPath: string,
+  owned: { prefix: string }[],
+  sameFolder: (assetPath: string, prefix: string) => Promise<boolean | null>,
+) {
+  const key = assetPathKey(assetPath);
+  const exact = assetPath.normalize("NFC");
+  for (const { prefix } of owned) {
+    if (!key.startsWith(`${assetPathKey(prefix)}/`)) continue;
+    if (exact.startsWith(`${prefix.normalize("NFC")}/`)) return true;
+    if ((await sameFolder(assetPath, prefix)) !== false) return true;
+  }
+  return false;
+}
+
+/** Whether the first folders of an asset's path, as spelled on disk, are the folder `prefix` names: one inode, asked of the disk once per pair. */
+function sameFolderOnDisk(notebook: string) {
+  const answers = new Map<string, Promise<boolean | null>>();
+  return (assetPath: string, prefix: string) => {
+    const depth = prefix.split("/").length;
+    const actual = assetPath.split("/").slice(0, depth);
+    const id = `${prefix}\0${actual.join("/")}`;
+    if (!answers.has(id)) {
+      answers.set(id, (async () => {
+        try {
+          const [a, b] = await Promise.all([
+            stat(path.join(notebookPath(notebook), ...actual), { bigint: true }),
+            stat(path.join(notebookPath(notebook), ...prefix.split("/")), { bigint: true }),
+          ]);
+          if (!a.ino || !b.ino) return null;
+          return a.dev === b.dev && a.ino === b.ino;
+        } catch (error) {
+          return ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "") ? false : null;
+        }
+      })());
+    }
+    return answers.get(id)!;
+  };
 }
 
 const JUNK_FILES = new Set([".DS_Store", "Thumbs.db", "desktop.ini"]);
@@ -224,18 +301,21 @@ function libraryAddressedPaths(documentPath: string, markdown: string) {
 }
 
 /**
- * Library paths (lowercased) that notes of the other local notebooks embed by
- * address (see libraryAddressedPaths). `includeOwn` adds the notebook's own
+ * Library paths (as assetPathKey) that notes of the other local notebooks embed
+ * by address (see libraryAddressedPaths). `includeOwn` adds the notebook's own
  * notes, whose raw addresses its relative-path scan doesn't see. Null when one
- * of those notebooks could not be read in full.
+ * of those notebooks could not be read in full, or a linked folder that is not
+ * connected on this computer may hold such notes: it can't be searched, so it
+ * can't be said that nothing there shows the image.
  */
 export async function rawEmbedsInOtherNotebooks(notebook: string, { includeOwn = false }: { includeOwn?: boolean } = {}) {
+  if (offlineLinkedFolderNames().length) return null;
   const embeds = new Set<string>();
   for (const other of await libraryNotebookNames()) {
     if (other === notebook && !includeOwn) continue;
     const { documents, complete } = await readMarkdownAssetDocuments(other).catch(() => ({ documents: [] as MarkdownDocument[], complete: false }));
     if (!complete) return null;
-    for (const document of documents) for (const raw of libraryAddressedPaths(document.documentPath, document.content)) embeds.add(raw.toLowerCase());
+    for (const document of documents) for (const raw of libraryAddressedPaths(document.documentPath, document.content)) embeds.add(assetPathKey(raw));
   }
   return embeds;
 }
@@ -252,7 +332,7 @@ export async function cleanupMarkdownImageAssets(notebook: string, previous: Mar
   // A save can be superseded while this scan runs. Keep both the text on disk
   // and the caller's references; an older request must not prune a newer save.
   for (const document of [...documents, ...overrides]) {
-    for (const asset of referencedMarkdownAssetPaths(document.documentPath, document.content)) references.add(asset.toLowerCase());
+    for (const asset of referencedMarkdownAssetPaths(document.documentPath, document.content)) references.add(assetPathKey(asset));
   }
   const candidates = new Set<string>();
   const directories = new Set<string>();
@@ -262,7 +342,7 @@ export async function cleanupMarkdownImageAssets(notebook: string, previous: Mar
       // Sanitized note names can collide. Never bulk-prune another note's
       // uploads, including uploads that have not yet reached its saved text.
       const ambiguous = documents.some((other) => other.documentPath !== document.documentPath &&
-        [...ownedPrefixes(other.documentPath)].some((owned) => owned.toLowerCase() === prefix.toLowerCase()));
+        [...ownedPrefixes(other.documentPath)].some((owned) => assetPathKey(owned) === assetPathKey(prefix)));
       if (ambiguous) continue;
       const directory = markdownAssetPath(notebook, `${prefix}/placeholder`).targetPath;
       const assetDirectory = path.dirname(directory);
@@ -285,7 +365,7 @@ export async function cleanupMarkdownImageAssets(notebook: string, previous: Mar
   }
   const pruned: string[] = [];
   for (const candidate of candidates) {
-    if (references.has(candidate.toLowerCase())) continue;
+    if (references.has(assetPathKey(candidate))) continue;
     // ProseMirror history can refer to any prior version, regardless of its age.
     if ((parsePythonFigureSource(candidate) || isInkBlockRenderingName(path.basename(candidate))) && previous.some((document) => documents.some((saved) => saved.documentPath === document.documentPath))) continue;
     pruned.push(candidate);
@@ -300,7 +380,7 @@ export async function cleanupMarkdownImageAssets(notebook: string, previous: Mar
     embeddedElsewhere = elsewhere;
   }
   for (const candidate of pruned) {
-    if (embeddedElsewhere.has(`${notebook}/${candidate}`.toLowerCase())) continue;
+    if (embeddedElsewhere.has(assetPathKey(`${notebook}/${candidate}`))) continue;
     const asset = markdownAssetPath(notebook, candidate);
     await rm(asset.targetPath, { force: true });
     directories.add(path.dirname(asset.targetPath));
@@ -367,11 +447,18 @@ export async function movePythonSidecar(from: string, to: string, { replace = tr
   const source = pythonSidecarFile(from);
   if (!(await pathExists(source.absolutePath))) return true;
   const destination = pythonSidecarFile(to);
-  if (!replace && await pathExists(destination.absolutePath)) return false;
+  if (source.absolutePath === destination.absolutePath) return true;
   const code = await readFile(source.absolutePath, "utf8");
   const figures = (await readdir(path.dirname(source.absolutePath))).filter((name) => parsePythonFigureSource(name)).map((name) => `${pythonFigureSourcePrefix(from)}/${name}`);
   const previous = source.notebook === destination.notebook ? [...previousPythonFigureSources(code), ...figures] : [];
-  await writeFile(source.absolutePath, withPreviousPythonFigureSources(code, previous));
+  // The destination is the source under another spelling (a case-only rename on a case-insensitive disk): it is not "taken", it is respelled in place.
+  if (await isCaseOnlyRename(source.absolutePath, destination.absolutePath)) {
+    await respellPythonSidecar(source.notebook, destination.absolutePath);
+    await writeFile(destination.absolutePath, withPreviousPythonFigureSources(code, previous));
+    return true;
+  }
+  if (!replace && await pathExists(destination.absolutePath)) return false;
+  // The source is never written before the move has succeeded: a refused move leaves the code exactly as it was.
   if (exclusive) await moveWithoutReplacing(source.absolutePath, destination.absolutePath);
   else if (replace) await moveFileIfExists(source.absolutePath, destination.absolutePath);
   else {
@@ -380,8 +467,48 @@ export async function movePythonSidecar(from: string, to: string, { replace = tr
     catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") return false; throw error; }
     await rm(source.absolutePath, { force: true });
   }
+  // The moved code now carries which figures it owns; if that can't be written the code goes back unchanged, not half-moved.
+  try { await writeFile(destination.absolutePath, withPreviousPythonFigureSources(code, previous)); }
+  catch (error) {
+    await moveWithoutReplacing(destination.absolutePath, source.absolutePath).catch(() => undefined);
+    throw error;
+  }
   await removeEmptyAssetParents(source.notebook, path.dirname(source.absolutePath));
   return true;
+}
+
+/** Whether a folder holds nothing but Python code (an image or any other file of a note keeps its folder's spelling). */
+async function holdsOnlyPythonCode(directory: string): Promise<boolean> {
+  let entries;
+  try { entries = await readdir(directory, { withFileTypes: true }); } catch { return false; }
+  for (const entry of entries) {
+    if (entry.isDirectory() ? !(await holdsOnlyPythonCode(path.join(directory, entry.name))) : !entry.name.toLowerCase().endsWith(".py")) return false;
+  }
+  return true;
+}
+
+/**
+ * The code file of a case-only rename spelled as its destination, folder by folder from `_assets` down:
+ * a folder is respelled only when it holds nothing but Python code (the images of a note stay where
+ * their paths say, so their folder keeps its spelling); the file itself always is. Never replaces.
+ */
+async function respellPythonSidecar(notebook: string, destinationFile: string) {
+  const root = path.join(notebookPath(notebook), MARKDOWN_ASSETS_DIR);
+  const wanted = path.relative(root, destinationFile).split(path.sep);
+  let directory = root;
+  for (let index = 0; index < wanted.length; index += 1) {
+    const names = await readdir(directory);
+    const want = wanted[index];
+    const actual = names.includes(want) ? want : names.find((name) => name.toLowerCase() === want.toLowerCase());
+    if (actual === undefined) throw new StorageError("The Python code was not found where it was expected.", 409);
+    const last = index === wanted.length - 1;
+    let name = actual;
+    if (actual !== want && (last || await holdsOnlyPythonCode(path.join(directory, actual)))) {
+      await renameCaseAlias(path.join(directory, actual), path.join(directory, want));
+      name = want;
+    }
+    directory = path.join(directory, name);
+  }
 }
 
 export async function copyPythonSidecar(from: string, to: string) {
@@ -537,18 +664,24 @@ export async function copyMarkdownImageAssets(from: string, to: string, markdown
     for (const source of sources) {
       if (/^(?:[a-z][a-z0-9+.-]*:|#)/i.test(source)) continue;
       if (source.startsWith("/") && !source.startsWith("/api/markdown-assets/raw") && !source.startsWith("/api/files/raw/")) continue;
+      // An address that can't be decoded names no image to copy: it stays as written.
+      let rawPath: string | null;
+      try { rawPath = rawFileSourcePath(source); } catch { continue; }
+      // What the address asks of its image (`?query`, `#fragment`) is kept; an asset address keeps its own query.
+      const suffix = source.startsWith("/api/markdown-assets/raw") ? /#.*$/.exec(source)?.[0] ?? "" : /[?#].*$/.exec(source)?.[0] ?? "";
       // A notebook image moving in the same batch: follow it rather than copy it.
-      const movedImage = batch ? batch.moved.get(rawFileSourcePath(source) ?? "") : undefined;
-      if (movedImage) { imageSources[source] = rawFileUrl(movedImage); continue; }
+      const movedImage = batch ? batch.moved.get(rawPath ?? "") : undefined;
+      if (movedImage) { imageSources[source] = rawFileUrl(movedImage) + suffix; continue; }
       let asset;
       try { asset = await getMarkdownImageAssetBySource(from, source, { authoritative: true }); }
       catch (error) {
+        if (error instanceof URIError) continue;
         // An already missing image must not prevent moving the note itself.
         if ((error as NodeJS.ErrnoException).code === "ENOENT") {
           const target = markdownAssetSourceTarget(from, source);
           // Keep its original namespace so an unrelated destination image at
           // the same relative path cannot silently replace the missing image.
-          if (target) imageSources[source] = `/api/markdown-assets/raw?document=${encodeURIComponent(target.documentPath)}&asset=${encodeURIComponent(target.assetPath)}`;
+          if (target) imageSources[source] = `/api/markdown-assets/raw?document=${encodeURIComponent(target.documentPath)}&asset=${encodeURIComponent(target.assetPath)}${suffix}`;
           continue;
         }
         // A host that cannot answer (409 and up) is not a missing image: the copy waits rather than leave a stale or absent one.
@@ -561,15 +694,16 @@ export async function copyMarkdownImageAssets(from: string, to: string, markdown
       const ownFigure = ownsPythonFigureSource(from, source, previousSources);
       // A note's own Python figures are pruned with the note, so they are never shared with another note.
       const existing = copied.get(key) ?? (ownFigure ? undefined : batch?.copied.get(key));
-      if (existing) { imageSources[source] = existing; continue; }
+      if (existing) { imageSources[source] = existing + suffix; continue; }
       const directory = ownFigure ? path.dirname(pythonSidecarFile(to).absolutePath) : markdownAssetsDirectoryPathFromParts(destination.notebook, destination.pathParts);
       const sameFigure = ownFigure && await readFile(path.join(directory, asset.fileName)).then((body) => body.equals(asset.body), () => false);
       const available = sameFigure ? { path: path.join(directory, asset.fileName), name: asset.fileName }
         : await writeAvailableAsset(directory, normalizeAssetFileName(asset.fileName), asset.body);
       if (!sameFigure) { created.push(available.path); await batch?.onCreated?.(available.path); }
-      imageSources[source] = `${ownFigure ? pythonFigureSourcePrefix(to) : markdownAssetsPathPrefix(destination.pathParts)}/${available.name}`;
-      copied.set(key, imageSources[source]);
-      if (!ownFigure) batch?.copied.set(key, imageSources[source]);
+      const address = `${ownFigure ? pythonFigureSourcePrefix(to) : markdownAssetsPathPrefix(destination.pathParts)}/${available.name}`;
+      imageSources[source] = address + suffix;
+      copied.set(key, address);
+      if (!ownFigure) batch?.copied.set(key, address);
     }
     return { content: rewriteMarkdownImageSources(markdown, imageSources), imageSources, discard, created: [...created] };
   } catch (error) {

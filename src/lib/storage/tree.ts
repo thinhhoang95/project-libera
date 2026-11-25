@@ -240,6 +240,8 @@ function normalizeTreeViewOptions({
 export async function getFileNode(
   notebook: string,
   pathParts: string[] | string,
+  // The tree walk stamps its nodes itself (stampLocalFileIds), once per notebook, so it asks for none here.
+  { identity = true }: { identity?: boolean } = {},
 ): Promise<LiberaFileNode> {
   const normalizedPathParts = Array.isArray(pathParts) ? pathParts : [pathParts];
   const name = normalizedPathParts.at(-1) ?? "";
@@ -251,10 +253,11 @@ export async function getFileNode(
     throw new StorageError("Path is not a file.");
   }
 
-  return {
+  const libraryPath = relativeFilePath(notebook, normalizedPathParts);
+  const node: LiberaFileNode = {
     kind: "file",
     name,
-    path: relativeFilePath(notebook, normalizedPathParts),
+    path: libraryPath,
     notebook,
     fileType,
     createdAt: stats.birthtime.toISOString(),
@@ -267,6 +270,10 @@ export async function getFileNode(
       stats.mtime.toISOString(),
     ),
   };
+  // A file opened in a tab carries the identity the tree gives it, so a rename, move or delete from the tab
+  // is checked against the file that was opened. A shared file's id comes from the host's listing instead.
+  if (identity && !isSharedNotebookPath(libraryPath)) node.fileId = localFileIdentity(node);
+  return node;
 }
 
 /**
@@ -329,7 +336,7 @@ async function readTreeDirectory(
     }
 
     if (entry.isFile() && getFileType(entry.name)) {
-      try { children.push(await getFileNode(notebook, childParts)); }
+      try { children.push(await getFileNode(notebook, childParts, { identity: false })); }
       catch { skipped(); }
     }
   }

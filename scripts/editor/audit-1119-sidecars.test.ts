@@ -16,7 +16,7 @@ import type { InkStroke } from "../../src/lib/ink/types";
 import { readPdfAnnotations, readPdfCommentThreads, updatePdfCommentThreads, writePdfAnnotations } from "../../src/lib/storage/annotations";
 import { inkAuthor, inkLibraryPath, resetInkStorageForTests, writeInk } from "../../src/lib/storage/ink";
 import { createNotebook } from "../../src/lib/storage/notebooks";
-import { filePathFromParts, getLocalLockDir, referenceLibraryPath } from "../../src/lib/storage/paths";
+import { filePathFromParts, getLocalLockDir, orphanedSidecarsDirectoryPath, referenceLibraryPath } from "../../src/lib/storage/paths";
 import { followSharedPdfChanges, replayPendingPdfMoves } from "../../src/lib/storage/pdf-sidecars";
 import { readReferenceLibrary, updateReferenceLibrary } from "../../src/lib/storage/references";
 import { pdfAnnotationsPath } from "../../src/lib/storage/paths";
@@ -170,13 +170,18 @@ test("finding 15: after a shared removal, a new PDF at that name starts clean an
   await writePdfAnnotations("Notes/paper.pdf", note("old note"));
   await rm(filePathFromParts("Notes", ["paper.pdf"]));
   await followSharedPdfChanges([], ["Notes/paper.pdf"]);
-  // Kept in place: the host may restore these very bytes (a refused delete rolls back).
-  assert.equal(existsSync(pdfAnnotationsPath("Notes", ["paper.pdf"])), true, "a removal keeps the sidecar");
+  // S-C1: a confirmed removal sets the notes aside at once; nothing is left at the path to block a new file.
+  assert.equal(existsSync(pdfAnnotationsPath("Notes", ["paper.pdf"])), false, "a removal sets the sidecar aside");
+  const aside = path.dirname(orphanedSidecarsDirectoryPath("Notes", "annotations"));
+  const kept: string[] = [];
+  const walk = async (dir: string) => { for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) { const full = path.join(dir, entry.name); if (entry.isDirectory()) await walk(full); else kept.push(await readFile(full, "utf8")); } };
+  await walk(aside);
+  assert.ok(kept.some((text) => text.includes("old note")), "the old notes stay recoverable");
   await pdf("Notes/paper.pdf", "new paper");
   assert.deepEqual(await texts("Notes/paper.pdf"), [], "the new PDF does not show the old PDF's notes");
-  // A later removal event, with the new PDF already there, sets the old notes aside.
+  // A later removal event with the new PDF there has nothing left to retire.
   await followSharedPdfChanges([], ["Notes/paper.pdf"]);
-  assert.equal(existsSync(pdfAnnotationsPath("Notes", ["paper.pdf"])), false, "a name reused by other bytes retires the old sidecar");
+  assert.equal(existsSync(pdfAnnotationsPath("Notes", ["paper.pdf"])), false);
 }));
 
 // ---- Finding 21 ---------------------------------------------------------------

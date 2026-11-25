@@ -664,7 +664,7 @@ async function updatePdfSidecar<T>(relativePath: string, change: (sidecar: PdfSi
       let current = await readPdfSidecar(annotationsPath);
       if (!await sidecarMatchesPdf(current, sourcePath)) {
         // Notes of the PDF that used to have this name: keep them recoverable beside the sidecar, start this PDF clean.
-        const replaced = `${annotationsPath}.replaced-${createHash("sha256").update(before ?? "").digest("hex").slice(0, 12)}.json`;
+        const replaced = pdfAnnotationsBackupPath(annotationsPath, before ?? "");
         if (before !== null && !(await pathExists(replaced))) await writeFile(replaced, before, { encoding: "utf8", flag: "wx" }).catch(() => undefined);
         current = { revision: current.revision };
       }
@@ -680,6 +680,10 @@ async function updatePdfSidecar<T>(relativePath: string, change: (sidecar: PdfSi
     throw new StorageError("The PDF's notes changed on another device while saving. Retry.", 409);
   });
 }
+
+/** A copy of notes set aside beside the sidecar when the PDF under its name changed: `<name>.pdf.json.replaced-<12 hex of the content hash>.json`. It is a backup, not the sidecar of any file. */
+export const pdfAnnotationsBackupPath = (annotationsPath: string, content: string) => `${annotationsPath}.replaced-${createHash("sha256").update(content).digest("hex").slice(0, 12)}.json`;
+export const isPdfAnnotationsBackupName = (name: string) => /\.pdf\.json\.replaced-[0-9a-f]{12}\.json$/i.test(name);
 
 /** Records the PDF's identity in an existing side-car written before side-cars kept it. */
 export async function recordPdfAnnotationsSource(relativePath: string) {

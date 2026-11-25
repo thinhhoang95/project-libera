@@ -7,7 +7,7 @@
 
 export type LatexPathKind = "latex-include" | "latex-graphics" | "latex-pdf" | "latex-listing" | "latex-bibliography" | "latex-bibresource";
 
-export type LatexPathOccurrence = { kind: LatexPathKind; written: string; start: number; end: number };
+export type LatexPathOccurrence = { kind: LatexPathKind; written: string; start: number; end: number; /** The command that names it (`include`, `input`, ...), when it matters to how TeX opens the file. */ command?: string };
 
 /** Comments replaced by spaces, so offsets stay the source's (stripLatexComments, latex/project.ts, removes them). */
 export function blankLatexComments(source: string) {
@@ -38,7 +38,7 @@ export function latexPathOccurrences(source: string): LatexPathOccurrence[] {
     for (const match of text.matchAll(pattern)) {
       // The argument is the last braced group of the match.
       const occurrence = trimmed(kind, match[1], match.index! + match[0].length - 1 - match[1].length);
-      if (occurrence) found.push(occurrence);
+      if (occurrence) found.push(kind === "latex-include" ? { ...occurrence, command: /^\\(\w+)/.exec(match[0])?.[1] } : occurrence);
     }
   }
   for (const match of text.matchAll(/\\bibliography\s*\{([^}]+)\}/g)) {

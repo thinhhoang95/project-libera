@@ -2,6 +2,7 @@
 
 import { useTranslations } from "next-intl";
 import { createContext, createRef, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { reviewsMovedAffect, trackLeavingWrite } from "./reviews-moved";
 import { syncReview, commentRange, paragraphRange, plainParagraphRange, ReviewDraftTracker, REVIEWS_MOVED_EVENT, type ReviewDocument, type ReviewRange } from "@/lib/markdown-review";
 import type { ChatContext } from "@/lib/document-chat";
 import type { OpenTab } from "./types";
@@ -95,6 +96,8 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
   const busyRef = useRef(false);
   // Writes storing a tab that was just left; a load waits for them.
   const leaving = useRef(new Set<Promise<unknown>>());
+  // A file operation rewrote this review on the server (a refused leave sync is then not a conflict), and the notice of a refused leave sync made for another reason.
+  const rewrittenByMove = useRef(false), leaveNotice = useRef("");
   useSessionEndRevisions();
   const lastTab = useRef<{ id: string; key: string; doc: ReviewDocument | null } | null>(null);
   const key = activeTab?.file.fileType === "markdown" || activeTab?.file.fileType === "latex" || activeTab?.file.fileType === "text" ? (activeTab.standaloneSaveId ? `standalone:${activeTab.standaloneSaveId}` : activeTab.untitled ? `draft:${activeTab.id}` : activeTab.file.path) : null;
@@ -149,7 +152,9 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
       if (disposed) return;
       if (loaded.schemaVersion !== 1 || !Array.isArray(loaded.threads) || !Array.isArray(loaded.undo)) throw new Error(tRef.current("loadMetadataError"));
       publish(loaded);
+      rewrittenByMove.current = false;
       lastTab.current = { id: tabId!, key: key!, doc: loaded };
+      if (leaveNotice.current) { setError(leaveNotice.current); leaveNotice.current = ""; }
       // Never automatically overwrite disk/user content with a recovered buffer.
       setRecovery(loaded.snapshot !== text && !!loaded.undo.length && loaded.undo.at(-1)?.after === loaded.snapshot);
     }
@@ -361,7 +366,7 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
   }, [key, publish, snapshot, localStore, tabState]);
   // Try to fix moved an older review to this path (in place of the empty one opening it made): show it.
   useEffect(() => {
-    const onMoved = (event: Event) => { if (key && (event as CustomEvent<{ paths?: string[] }>).detail?.paths?.includes(key)) void reload(); };
+    const onMoved = (event: Event) => { if (key && reviewsMovedAffect((event as CustomEvent<{ paths?: string[] }>).detail?.paths, key)) { rewrittenByMove.current = true; void reload(); } };
     window.addEventListener(REVIEWS_MOVED_EVENT, onMoved);
     return () => window.removeEventListener(REVIEWS_MOVED_EVENT, onMoved);
   }, [key, reload]);
@@ -417,7 +422,7 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
       let base = result ?? await store.read(stored.id);
       if (base.snapshot === text) return;
       for (let attempt = 0; ; attempt++) {
-        if (base.snapshot !== (result?.snapshot ?? stored.snapshot)) throw new Error(tRef.current("textChangedInAnotherWindow"));
+        if (base.snapshot !== (result?.snapshot ?? stored.snapshot)) throw Object.assign(new Error(tRef.current("textChangedInAnotherWindow")), { movedFile: base.key !== stored.key || rewrittenByMove.current });
         try {
           base = await store.mutate("sync", { edits: base.snapshot === stored.snapshot ? edits : tracker.edits(base, text) }, { doc: base, snapshot: text });
           break;
@@ -453,8 +458,11 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
   useEffect(() => () => {
     const write = flushTab();
     if (!write) return;
-    leaving.current.add(write);
-    void write.finally(() => leaving.current.delete(write)).catch(() => undefined);
+    // The next load never waits on the write's failure; a refusal that is not the file's own move is shown once that load is done.
+    trackLeavingWrite(leaving.current, write, (cause) => {
+      if (cause && (cause as { movedFile?: boolean }).movedFile) return;
+      leaveNotice.current = cause instanceof Error ? cause.message : tRef.current("syncFailed");
+    });
   }, [flushTab]);
   // Sync/reload only persist/read metadata. Toggling contenteditable for them
   // drops browser focus and can leave an IME composition stranded.

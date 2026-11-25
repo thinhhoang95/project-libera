@@ -13,9 +13,9 @@ const MAX_FILE_CHARACTERS = 1_000_000;
 
 /** Files a LaTeX source includes, as written (without resolving). */
 export function readLatexIncludes(source: string) {
-  const references: { path: string; relativeToFile: boolean }[] = [];
+  const references: { path: string; relativeToFile: boolean; command?: string }[] = [];
   const text = stripLatexComments(source);
-  for (const match of text.matchAll(/\\(?:input|include|subfile)\s*\{([^}]+)\}/g)) references.push({ path: match[1].trim(), relativeToFile: false });
+  for (const match of text.matchAll(/\\(input|include|subfile)\s*\{([^}]+)\}/g)) references.push({ path: match[2].trim(), relativeToFile: false, command: match[1] });
   // \import{dir}{file} and \subimport{dir}{file} (import package).
   for (const match of text.matchAll(/\\(sub)?import\*?\s*\{([^}]*)\}\s*\{([^}]+)\}/g)) {
     references.push({ path: `${match[2].trim().replace(/\/?$/, "/")}${match[3].trim()}`, relativeToFile: Boolean(match[1]) });

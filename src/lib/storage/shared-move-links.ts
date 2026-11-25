@@ -1,8 +1,11 @@
-import { canEditSharedContent, listSharedEntries, readSharedEntryBytes, readSharedText, writeSharedText } from "@/lib/collab/shared-writes";
+import { readdir, readFile } from "node:fs/promises";
+import path from "node:path";
+import { canEditSharedContent, listSharedEntries, readSharedBlob, readSharedEntryBytes, readSharedText, saveSharedFileText, SharedWriteError, writeSharedText } from "@/lib/collab/shared-writes";
 import type { FileListEntry } from "@/lib/collab/local-api";
 import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { applyPathEdits, movedPathEdits, type MovedPathRewrite } from "@/lib/move-rewrites";
-import { MARKDOWN_ASSETS_DIR, MARKDOWN_EXTENSIONS } from "@/lib/storage/constants";
+import { ARCHIVE_DIR, MARKDOWN_ASSETS_DIR, MARKDOWN_EXTENSIONS } from "@/lib/storage/constants";
+import { filePathFromParts, notebookPath, relativeFilePath } from "@/lib/storage/paths";
 import {
   applyMovedLinks,
   diskLinkSource,
@@ -11,12 +14,12 @@ import {
   planMovedLinks,
   replanMovedNote,
   type AppliedLinkRewrite,
+  type LinkExistence,
   type LinkSource,
   type PathMove,
   type PlannedLinkRewrite,
 } from "@/lib/storage/move-links";
 import { getFileType } from "@/lib/storage/file-types";
-import { readNotebookLinkIndex } from "@/lib/storage/library-links";
 import type { LiberaLinkRewrites, LiberaLinkSkipReason } from "@/lib/types";
 
 // Links follow a move inside a shared notebook as they follow a local one
@@ -36,8 +39,38 @@ const READS_AT_ONCE = 8;
 const notebookOf = (libraryPath: string) => libraryPath.split("/")[0];
 const sharedIn = (libraryPath: string) => isSharedNotebookPath(libraryPath);
 
-/** The disk for local notebooks, the host's manifest and live text for shared ones. */
-function sharedLinkSource(): LinkSource {
+/** The Markdown notes under a shared notebook's local `_archive/`, read from disk and kept when `keep` says they can name a moved item. */
+async function readArchivedNotes(notebook: string, keep: (libraryPath: string, content: string) => boolean) {
+  const documents: { documentPath: string; content: string }[] = [];
+  let complete = true;
+  let remaining = 20_000;
+  async function visit(parts: string[]) {
+    let names;
+    try { names = await readdir(path.join(notebookPath(notebook), ...parts), { withFileTypes: true }); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") complete = false; return; }
+    for (const entry of names) {
+      if (--remaining < 0) { complete = false; return; }
+      if (entry.name.startsWith(".") || HIDDEN_FOLDERS.has(entry.name)) continue;
+      const next = [...parts, entry.name];
+      if (entry.isDirectory()) await visit(next);
+      else if (entry.isFile() && MARKDOWN_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) {
+        try {
+          const content = await readFile(filePathFromParts(notebook, next), "utf8");
+          const documentPath = relativeFilePath(notebook, next);
+          if (keep(documentPath, content)) documents.push({ documentPath, content });
+        } catch { complete = false; }
+      }
+    }
+  }
+  await visit([ARCHIVE_DIR]);
+  return { documents, complete };
+}
+
+/**
+ * The disk for local notebooks, the host's manifest and live text for shared ones.
+ * `localOnly`: the shared notebooks' own notes are not read (a collaborator's move, whose shared notes the mover followed): only local notes are planned.
+ */
+function sharedLinkSource(localOnly = false): LinkSource {
   const disk = diskLinkSource();
   const listings = new Map<string, Promise<FileListEntry[]>>();
   const entriesOf = (notebook: string) => {
@@ -45,17 +78,18 @@ function sharedLinkSource(): LinkSource {
     return listings.get(notebook)!;
   };
   const files = new Map<string, Set<string>>();
-  const existence: LinkSource["existence"] = {
+  // Judged by the path itself: a shared notebook's `_archive/` is local and lives on disk, not in the manifest.
+  const existence: LinkExistence = {
     async check(libraryPaths) {
       const local: string[] = [];
       for (const libraryPath of libraryPaths) {
+        if (!sharedIn(libraryPath)) { local.push(libraryPath); continue; }
         const notebook = notebookOf(libraryPath);
-        if (!sharedIn(notebook)) { local.push(libraryPath); continue; }
         if (!files.has(notebook)) files.set(notebook, new Set((await entriesOf(notebook)).filter((entry) => entry.kind !== "folder").map((entry) => entry.path)));
       }
       await disk.existence.check(local);
     },
-    exists: (libraryPath) => sharedIn(notebookOf(libraryPath)) ? files.get(notebookOf(libraryPath))?.has(libraryPath) ?? false : disk.existence.exists(libraryPath),
+    exists: (libraryPath) => sharedIn(libraryPath) ? files.get(notebookOf(libraryPath))?.has(libraryPath) ?? false : disk.existence.exists(libraryPath),
   };
   const textOf = async (entry: FileListEntry) => {
     if (entry.kind === "doc") return (await readSharedText(entry.path)).text;
@@ -69,28 +103,29 @@ function sharedLinkSource(): LinkSource {
     existence,
     async documents(notebook, hint) {
       if (!sharedIn(notebook)) return disk.documents(notebook, hint);
-      // Candidates first, from the notebook's link index (no note is read for it): a note is fetched from the host only when it moved, is not indexed yet,
-      // or lists a destination that names a moved item (or could spell one). Chart data files are not in the index: moving one reads every note.
-      const index = await readNotebookLinkIndex(notebook);
-      const charts = hint.names.some((name) => /\.(csv|tsv)$/i.test(name));
-      const candidate = (file: string) => {
-        if (hint.was(file) !== file || charts) return true;
-        const destinations = index[file];
-        return !destinations || destinations.some((href) => /[%&\\]/.test(href) || hint.names.some((name) => href.includes(name)));
-      };
+      // The notebook's link index lags the live text (and never lists `/api/files/raw/` embeds, HTML anchors or chart data), so it does not narrow the
+      // search. Every Markdown note the host lists is read (a few at a time) and kept only when its own text can name a moved item: it moved, it
+      // holds a moved or arriving name, or a `%`, `&` or `\` that could spell one (the test the plan applies too).
+      const candidate = (file: string, content: string) => hint.was(file) !== file || hint.names.some((name) => content.includes(name)) || /[%&\\]/.test(content);
       const entries = (await entriesOf(notebook)).filter((entry) =>
-        candidate(entry.path) &&
-        entry.kind !== "folder"
+        !localOnly
+        && entry.kind !== "folder"
         && MARKDOWN_EXTENSIONS.has(entry.path.slice(entry.path.lastIndexOf(".")).toLowerCase())
         && !entry.path.split("/").slice(1).some((part) => part.startsWith(".") || HIDDEN_FOLDERS.has(part)));
       const documents: { documentPath: string; content: string }[] = [];
       let complete = true;
       for (let index = 0; index < entries.length; index += READS_AT_ONCE) {
         await Promise.all(entries.slice(index, index + READS_AT_ONCE).map(async (entry) => {
-          try { documents.push({ documentPath: entry.path, content: await textOf(entry) }); }
-          catch (error) { console.error(`[shared-move-links] Could not read ${entry.path}:`, error); complete = false; }
+          try {
+            const content = await textOf(entry);
+            if (candidate(entry.path, content)) documents.push({ documentPath: entry.path, content });
+          } catch (error) { console.error(`[shared-move-links] Could not read ${entry.path}:`, error); complete = false; }
         }));
       }
+      // The shared notebook's local notes (`_archive/`) are on disk only, never in the manifest.
+      const archived = await readArchivedNotes(notebook, candidate);
+      documents.push(...archived.documents);
+      if (!archived.complete) complete = false;
       return { documents, complete };
     },
     async files(notebook) {
@@ -108,6 +143,46 @@ function sharedLinkSource(): LinkSource {
 const skipsOf = (note: PlannedLinkRewrite, reason: LiberaLinkSkipReason): Skip[] =>
   Object.values(note.rewrite).flatMap((map) => Object.keys(map ?? {})).map((written) => ({ path: note.path, written, reason }));
 
+type SharedNote = { text: string; editable: boolean; write: (next: string) => Promise<{ conflict: boolean; applied: boolean }> };
+
+/**
+ * One shared note as it is now at the host: a document through its live text, or a text file the notebook holds
+ * as a blob (too large, or added as a file) through a replacement bound to the blob version just read.
+ */
+async function openSharedNote(notePath: string): Promise<SharedNote> {
+  try {
+    const { doc, text } = await readSharedText(notePath);
+    return {
+      text,
+      editable: canEditSharedContent(doc),
+      write: async (next) => {
+        const result = await writeSharedText(notePath, next, { source: "system" }, { doc, expectedBefore: text });
+        return { conflict: result.conflict, applied: result.applied };
+      },
+    };
+  } catch (error) {
+    if (!(error instanceof SharedWriteError) || error.code !== "not-shared-document") throw error;
+  }
+  const blob = await readSharedBlob(notePath);
+  if (blob.contentBase64 === null || !blob.fileId || !blob.blobHash) throw new Error(`${notePath} could not be read.`);
+  const bytes = Buffer.from(blob.contentBase64, "base64");
+  const text = bytes.toString("utf8");
+  if (!Buffer.from(text, "utf8").equals(bytes)) throw new Error(`${notePath} is not UTF-8 text.`);
+  const { fileId, blobHash } = blob;
+  return {
+    text,
+    editable: true,
+    write: async (next) => {
+      try { await saveSharedFileText(notePath, next, { expectedFileId: fileId, expectedBlobHash: blobHash }); }
+      catch (error) {
+        if (error instanceof SharedWriteError && error.status === 409) return { conflict: true, applied: false };
+        throw error;
+      }
+      return { conflict: false, applied: true };
+    },
+  };
+}
+
 /**
  * Writes each planned shared note through the host: its text read now, the
  * rewrite (planned afresh when the text is not what was planned) applied to
@@ -121,8 +196,9 @@ async function applySharedNotes(notes: readonly PlannedLinkRewrite[], replan: (t
     const from = note.from ? { from: note.from } : {};
     try {
       for (let attempt = 0; ; attempt += 1) {
-        const { doc, text } = await readSharedText(note.path);
-        if (!canEditSharedContent(doc)) { skipped.push(...skipsOf(note, "read-only")); break; }
+        const current = await openSharedNote(note.path);
+        const { text } = current;
+        if (!current.editable) { skipped.push(...skipsOf(note, "read-only")); break; }
         const hash = hashText(text);
         // Already at the rewritten text (a collaborator, or an earlier run of this step): nothing to write.
         if (hash === note.after) break;
@@ -130,7 +206,7 @@ async function applySharedNotes(notes: readonly PlannedLinkRewrite[], replan: (t
         const edits = movedPathEdits(text, note.path, rewrite);
         if (!edits.length) break;
         const next = applyPathEdits(text, edits);
-        const result = await writeSharedText(note.path, next, { source: "system" }, { doc, expectedBefore: text });
+        const result = await current.write(next);
         if (result.conflict) {
           if (attempt >= 1) skipped.push(...skipsOf({ ...note, rewrite }, "edited"));
           else continue;
@@ -140,6 +216,7 @@ async function applySharedNotes(notes: readonly PlannedLinkRewrite[], replan: (t
         break;
       }
     } catch (error) {
+      if (error instanceof SharedWriteError && error.status === 403) { skipped.push(...skipsOf(note, "read-only")); continue; }
       console.error(`[shared-move-links] Could not update the links of ${note.path}:`, error);
       skipped.push(...skipsOf(note, "unreadable"));
     }
@@ -155,14 +232,14 @@ async function applySharedNotes(notes: readonly PlannedLinkRewrite[], replan: (t
  * `links` is the report a local move returns, and `unfinished` has one plain
  * sentence for each step that stayed behind.
  */
-export async function followSharedMovedLinks(moves: readonly PathMove[]): Promise<{ links: LiberaLinkRewrites; unfinished: string[] }> {
+export async function followSharedMovedLinks(moves: readonly PathMove[], { localOnly = false }: { localOnly?: boolean } = {}): Promise<{ links: LiberaLinkRewrites; unfinished: string[] }> {
   const real = moves.filter((move) => move.from !== move.to);
   if (!real.length) return { links: { rewritten: [], skipped: [], unchecked: [] }, unfinished: [] };
   try {
-    const plan = await planMovedLinks(real, { source: sharedLinkSource() });
+    const plan = await planMovedLinks(real, { source: sharedLinkSource(localOnly) });
     const replan = replanMovedNote(plan.layout);
     const local = await applyMovedLinks(plan.notes.filter((note) => !sharedIn(note.path)), replan);
-    const shared = await applySharedNotes(plan.notes.filter((note) => sharedIn(note.path)), replan);
+    const shared = localOnly ? { applied: [], skipped: [] } : await applySharedNotes(plan.notes.filter((note) => sharedIn(note.path)), replan);
     const applied = [...local.applied, ...shared.applied];
     const failures = await followLinkRewrites(applied, { history: (filePath) => !sharedIn(filePath) });
     const skipped = [...plan.skipped, ...local.failed, ...shared.skipped];

@@ -1,4 +1,5 @@
 import { ARCHIVE_DIR } from "@/lib/storage/constants";
+import { localFileIdentity } from "@/lib/storage/file-identity";
 import type { OpenTab, OpenTabViewState } from "@/components/libera/types";
 import { mapCanvasLayoutTabIds, type CanvasLayout } from "@/lib/canvas-layout";
 import type { LiberaNotebookGroup, LiberaNotebookViewOptions, LiberaTree, LiberaTreeNode } from "@/lib/types";
@@ -13,7 +14,8 @@ export type WorkspaceScope = { mode: "all" | "include" | "exclude"; paths: strin
  */
 export type WorkspaceFileChange = {
   paths?: string[];
-  moved?: { from: string; to: string } | { from: string; to: string }[];
+  /** `fileId`: the file known to have moved; a saved tab known to be another file at `from` stays where it is (judged per saved workspace). */
+  moved?: { from: string; to: string; fileId?: string } | { from: string; to: string; fileId?: string }[];
   rewrite?: (path: string, text: string) => string;
   removed?: string[];
   notebookGroup?: { notebook: string; groupId: string | null };
@@ -294,9 +296,50 @@ export function remapWorkspacePaths(library: WorkspaceLibrary, from: string, to:
   return remapWorkspacePathsMany(library, [{ from, to }]);
 }
 
-/** Many moves in one pass over the library: an exact path's move wins, else the longest moved folder holding it. */
-export function remapWorkspacePathsMany(library: WorkspaceLibrary, moves: { from: string; to: string }[], rewrite?: (path: string, text: string) => string): WorkspaceLibrary {
+/**
+ * The file record after its text was rewritten: the byte size of the text, and a
+ * local file identity (created + size) that follows the size. Shared ids keep theirs.
+ */
+function afterTextRewrite(tab: OpenTab, saved: string): OpenTab["file"] {
+  if (!["markdown", "latex", "text"].includes(tab.file.fileType)) return tab.file;
+  const size = new TextEncoder().encode(saved).length;
+  return { ...tab.file, size, ...(tab.file.fileId?.startsWith("local:") ? { fileId: localFileIdentity({ createdAt: tab.file.createdAt, size }) } : {}) };
+}
+
+/** A tab's rewritten text and the record that goes with it; a conflict that now equals the baseline is gone. */
+function rewriteTab(tab: OpenTab, path: string, rewrite: (path: string, text: string) => string): OpenTab {
+  const saved = rewrite(path, tab.saved);
+  const draft = rewrite(path, tab.draft);
+  const conflictText = tab.diskConflict?.text;
+  const conflict = typeof conflictText === "string" ? rewrite(path, conflictText) : conflictText;
+  if (saved === tab.saved && draft === tab.draft && conflict === conflictText) return tab;
+  const { diskConflict: previous, ...rest } = tab;
+  return { ...rest, saved, draft, file: saved === tab.saved ? tab.file : afterTextRewrite(tab, saved),
+    ...(previous && conflict !== saved ? { diskConflict: { text: conflict ?? null } } : {}) };
+}
+
+/** One tab per id: of tabs landing on one path, a tab with unsaved work wins, then the first. */
+function dedupeTabs(tabs: OpenTab[]): OpenTab[] {
+  const chosen = new Map<string, OpenTab>();
+  for (const tab of tabs) {
+    const other = chosen.get(tab.id);
+    if (!other || (other.draft === other.saved && tab.draft !== tab.saved)) chosen.set(tab.id, tab);
+  }
+  return tabs.filter((tab) => chosen.get(tab.id) === tab);
+}
+
+/**
+ * Many moves in one pass over the library: an exact path's move wins, else the longest moved folder holding it.
+ * A move that names a `fileId` leaves a saved tab alone when that tab is known to be another file at `from`,
+ * judged for each saved workspace's own tabs (the other workspaces still follow the move).
+ */
+export function remapWorkspacePathsMany(library: WorkspaceLibrary, moves: { from: string; to: string; fileId?: string }[], rewrite?: (path: string, text: string) => string): WorkspaceLibrary {
   const exact = new Map(moves.map((move) => [move.from, move.to]));
+  const identities = new Map(moves.flatMap((move) => move.fileId ? [[move.from, move.fileId] as const] : []));
+  const otherFile = (tab: OpenTab) => {
+    const id = identities.get(tab.file.path);
+    return id !== undefined && tab.file.fileId !== undefined && tab.file.fileId !== id;
+  };
   const folders = [...moves].sort((a, b) => b.from.length - a.from.length);
   const remap = (value: string) => {
     const direct = exact.get(value);
@@ -304,25 +347,24 @@ export function remapWorkspacePathsMany(library: WorkspaceLibrary, moves: { from
     const folder = folders.find((move) => withinPath(value, move.from));
     return folder ? `${folder.to}${value.slice(folder.from.length)}` : value;
   };
-  const session = (value: WorkspaceSession): WorkspaceSession => ({
-    ...value, activeTabId: remap(value.activeTabId), selectedNotebookName: remap(value.selectedNotebookName),
-    expandedPaths: value.expandedPaths.map(remap),
-    ...(value.canvasLayout ? { canvasLayout: mapCanvasLayoutTabIds(value.canvasLayout, remap) } : {}),
-    ...(value.closedViewStates ? { closedViewStates: remapClosedViewStates(readClosedViewStates(value.closedViewStates), remap) } : {}),
-    tabs: value.tabs.map((tab) => {
-      if (tab.gallery || tab.page) return tab; // Gallery photos and app pages live outside notebooks.
-      const path = remap(tab.file.path);
-      if (path === tab.file.path) {
+  const session = (value: WorkspaceSession): WorkspaceSession => {
+    const stays = new Set(value.tabs.filter((tab) => !tab.gallery && !tab.page && otherFile(tab)).map((tab) => tab.id));
+    const remapTabId = (id: string) => stays.has(id) ? id : remap(id);
+    return {
+      ...value, activeTabId: remapTabId(value.activeTabId), selectedNotebookName: remap(value.selectedNotebookName),
+      expandedPaths: value.expandedPaths.map(remap),
+      ...(value.canvasLayout ? { canvasLayout: mapCanvasLayoutTabIds(value.canvasLayout, remapTabId) } : {}),
+      ...(value.closedViewStates ? { closedViewStates: remapClosedViewStates(readClosedViewStates(value.closedViewStates), remap) } : {}),
+      tabs: dedupeTabs(value.tabs.map((tab) => {
+        if (tab.gallery || tab.page) return tab; // Gallery photos and app pages live outside notebooks.
+        const path = otherFile(tab) ? tab.file.path : remap(tab.file.path);
         // A file that stayed may have had its text rewritten too (links that followed a move).
-        if (!rewrite) return tab;
-        const saved = rewrite(path, tab.saved);
-        const draft = rewrite(path, tab.draft);
-        return saved === tab.saved && draft === tab.draft ? tab : { ...tab, saved, draft };
-      }
-      const text = rewrite ? { saved: rewrite(path, tab.saved), draft: rewrite(path, tab.draft) } : {};
-      return { ...tab, ...text, id: remap(tab.id), file: { ...tab.file, path, name: path.split("/").at(-1)!, notebook: path.split("/")[0] }, rawUrl: `/api/files/raw/${path.split("/").map(encodeURIComponent).join("/")}` };
-    }),
-  });
+        if (path === tab.file.path) return rewrite ? rewriteTab(tab, path, rewrite) : tab;
+        const text = rewrite ? rewriteTab(tab, path, rewrite) : tab;
+        return { ...text, id: remap(tab.id), file: { ...text.file, path, name: path.split("/").at(-1)!, notebook: path.split("/")[0] }, rawUrl: `/api/files/raw/${path.split("/").map(encodeURIComponent).join("/")}` };
+      })),
+    };
+  };
   return { ...library, updatedAt: Math.max(Date.now(), library.updatedAt + 1), librarySession: library.librarySession ? session(library.librarySession) : null,
     workspaces: library.workspaces.map((workspace) => ({ ...workspace,
       ...(workspace.view ? { view: { ...workspace.view,

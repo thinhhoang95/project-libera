@@ -1,10 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/api";
 import { toStorageError } from "@/lib/storage";
-import { verifyNotebook, type IntegrityStreamLine } from "@/lib/storage/integrity";
+import { verifyNotebook, type IntegrityReport, type IntegrityStreamLine } from "@/lib/storage/integrity";
+import { forgetNotebookLinkReads } from "@/lib/storage/notebook-links";
 import { settleSharedRecordsBeforeCheck } from "@/lib/storage/shared-record-follow";
 
 export const runtime = "nodejs";
+
+/**
+ * The check reads only. When it found the link index behind the notes, the next refresh must read the notes again instead of reusing
+ * what this process read before (a change that kept a note's size and times is how the index fell behind): that is told here.
+ */
+function afterCheck(notebook: string, report: IntegrityReport) {
+  if (report.findings.some((finding) => finding.code === "linkIndexOutOfDate")) forgetNotebookLinkReads(notebook);
+  return report;
+}
 
 /**
  * The notebook check (storage/integrity.ts): reads only, on request. With
@@ -21,7 +31,7 @@ export async function GET(request: NextRequest) {
 
   if (request.nextUrl.searchParams.get("stream") !== "1") {
     try {
-      return NextResponse.json(await verifyNotebook(notebook, { signal: request.signal }));
+      return NextResponse.json(afterCheck(notebook, await verifyNotebook(notebook, { signal: request.signal })));
     } catch (error) {
       const storageError = toStorageError(error);
       return NextResponse.json({ error: storageError.message }, { status: storageError.status });
@@ -42,7 +52,7 @@ export async function GET(request: NextRequest) {
       };
       try {
         const report = await verifyNotebook(notebook, { signal: stop.signal, onProgress: (progress) => send({ type: "progress", ...progress }) });
-        send({ type: "report", report });
+        send({ type: "report", report: afterCheck(notebook, report) });
       } catch (error) {
         send({ type: "error", error: toStorageError(error).message });
       } finally {

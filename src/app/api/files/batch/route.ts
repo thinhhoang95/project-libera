@@ -9,12 +9,14 @@ import {
   BatchRefusedError,
   deleteFiles,
   moveFilesToDirectory,
+  normalizeBatchPath,
   preflightSharedMove,
   sameNotebook,
   type BatchDomain,
   type BatchItem,
 } from "@/lib/storage/batch-files";
 import { splitDirectoryPath, splitFilePath } from "@/lib/storage/paths";
+import { followSharedMovedLinks } from "@/lib/storage/shared-move-links";
 import { toStorageError } from "@/lib/storage";
 
 export const runtime = "nodejs";
@@ -45,14 +47,15 @@ export async function POST(request: NextRequest) {
   try {
     const body = (await request.json()) as { action?: string; items?: { path?: unknown; fileId?: unknown }[]; destinationDirectory?: string };
     const items: BatchItem[] = (Array.isArray(body.items) ? body.items : []).map((item) => ({
-      path: typeof item.path === "string" ? item.path : "",
+      // One spelling per path (duplicate or leading slashes dropped) before anything is classified by it.
+      path: typeof item.path === "string" ? normalizeBatchPath(item.path) : "",
       fileId: typeof item.fileId === "string" && item.fileId ? item.fileId : undefined,
     }));
     if (!items.length) throw new StorageError("Choose at least one file.", 400);
     // Parsed up front: a malformed path is the caller's error, before anything is touched.
     for (const item of items) splitFilePath(item.path);
     if (!sameNotebook(items.map((item) => item.path))) throw new StorageError("A batch is files of one notebook.", 400);
-    const destinationDirectory = body.destinationDirectory ?? "";
+    const destinationDirectory = normalizeBatchPath(body.destinationDirectory ?? "");
     const move = body.action === "move";
     if (body.action === "delete") assertOneStorageDomain(items, null, domainOf);
     const shared = domainOf(items[0].path) === "shared";
@@ -75,7 +78,12 @@ export async function POST(request: NextRequest) {
       if (shared) {
         return NextResponse.json(await moveFilesToDirectory(items, destinationDirectory, {
           preflight: (batch, directory) => preflightSharedMove(batch, directory, () => listSharedEntries(destination)),
-          move: async (item, directory) => moveSharedFile(item.path, directory, undefined, { expectedFileId: await resolveSharedActionFileId(item.path, item.fileId, "moved", listSharedEntries) }),
+          // Links follow once after the last file (the shared notes through the host), not once per file.
+          move: async (item, directory) => moveSharedFile(item.path, directory, undefined, { expectedFileId: await resolveSharedActionFileId(item.path, item.fileId, "moved", listSharedEntries), deferLinks: true }),
+          followLinks: async (moves) => {
+            const followed = await followSharedMovedLinks(moves);
+            return { links: followed.links, ...(followed.unfinished.length ? { unfinished: { step: "links" as const, status: "failed" as const, message: followed.unfinished.join("; ") } } : {}) };
+          },
         }));
       }
       return NextResponse.json(await moveFilesToDirectory(items, destinationDirectory));

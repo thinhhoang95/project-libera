@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { transformReviewBaselines } from "@/lib/agent/review-store";
 import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
-import { latexCandidates, latexDependencies, graphicsPaths, needsExpansion, type LatexCandidateKind } from "@/lib/latex/dependencies";
+import { latexCandidates, latexDependencies, latexOpenable, graphicsPaths, needsExpansion, type LatexCandidateKind } from "@/lib/latex/dependencies";
 import { latexPathOccurrences, type LatexPathKind } from "@/lib/latex/path-occurrences";
 import { getRelativePath, isLikelyWorkspaceMarkdownLink } from "@/lib/markdown-file-links";
 import { rawFileSourcePath } from "@/lib/markdown-image-sources";
@@ -235,11 +235,16 @@ const LATEX_KINDS: Record<LatexPathKind, LatexCandidateKind> = {
 };
 
 /** `written` again, at `next` (a library path) from `base`'s folder; without the extension when the source left it to TeX. */
-function latexSpellings(written: string, base: string, next: string) {
-  const relative = getRelativePath(parentOf(base), next);
+function latexSpellings(written: string, base: string, next: string, kind: LatexCandidateKind) {
   const extension = path.extname(next);
   const omitted = extension && path.extname(written).toLowerCase() !== extension.toLowerCase();
-  return omitted ? [relative.slice(0, -extension.length), relative] : [relative];
+  const from = (folder: string) => {
+    const relative = getRelativePath(folder, next);
+    return omitted ? [relative.slice(0, -extension.length), relative] : [relative];
+  };
+  // A bibliography is also found from the notebook folder (BIBINPUTS, latex/build.ts), where `../` is not needed.
+  const searched = (kind === "bibliography" || kind === "bibresource") && notebookOf(next) === notebookOf(base) ? from(notebookOf(next)) : [];
+  return [...new Set([...from(parentOf(base)), ...searched])];
 }
 
 /**
@@ -273,7 +278,10 @@ async function planLatex(notebook: string, layout: Layout, source: LinkSource) {
     if (text === undefined) continue;
     const rewrite: MovedPathRewrite = {};
     const decided = new Set<string>();
-    for (const occurrence of latexPathOccurrences(text)) {
+    const occurrences = latexPathOccurrences(text);
+    // A name written to `\include` anywhere in the file also has to survive the mirror's skipped folders.
+    const includes = new Set(occurrences.filter((occurrence) => occurrence.command === "include").map((occurrence) => occurrence.written));
+    for (const occurrence of occurrences) {
       const key = `${occurrence.kind}\0${occurrence.written}`;
       if (decided.has(key) || needsExpansion(occurrence.written)) continue;
       decided.add(key);
@@ -291,8 +299,10 @@ async function planLatex(notebook: string, layout: Layout, source: LinkSource) {
       }
       if (keeps) continue;
       let next: string | null = null;
-      for (const spelling of latexSpellings(occurrence.written, builds[0].main, builds[0].target)) {
-        if (!writeLatexPath(spelling)) continue;
+      // Only a spelling the build can open: `../x` and `_folder/x` for \include are refused by the compiler (latexOpenable).
+      const viaInclude = includes.has(occurrence.written);
+      for (const spelling of latexSpellings(occurrence.written, builds[0].main, builds[0].target, kind)) {
+        if (!writeLatexPath(spelling, occurrence.kind) || !latexOpenable(spelling, { include: viaInclude })) continue;
         let all = true;
         for (const build of builds) {
           const main = layout.backward(build.main) ?? build.main;
@@ -317,6 +327,18 @@ async function blockedFrom(filePath: string, ownMigration: boolean, throughHost:
   if (!throughHost && isSharedNotebookPath(filePath)) return "shared-notebook";
   if (!ownMigration && await isPathMigrating(filePath)) return "migrating";
   return null;
+}
+
+/**
+ * Whether a note's text may write a moved name, so it is worth parsing: it
+ * has the name, or a character that can spell it otherwise (`%`, `&`, `\`;
+ * a single-quoted chart value writes `'` as `''`), or a chart block (whose
+ * value may be folded over lines or written with a YAML escape).
+ */
+function mayNameMoved(content: string, names: readonly string[]) {
+  if (/[%&\\]/.test(content)) return true;
+  if (names.some((name) => content.includes(name) || (name.includes("'") && content.includes(name.replace(/'/g, "''"))))) return true;
+  return /^ {0,3}(?:`{3,}|~{3,})\s*chart\b/m.test(content);
 }
 
 /**
@@ -349,7 +371,7 @@ export async function planMovedLinks(moves: readonly PathMove[], { ownMigration 
     if (!complete) unchecked.push(notebook);
     for (const { documentPath, content } of documents) {
       const was = layout.backward(documentPath) ?? documentPath;
-      if (was === documentPath && !layout.names.some((name) => content.includes(name)) && !/[%&\\]/.test(content)) continue;
+      if (was === documentPath && !mayNameMoved(content, layout.names)) continue;
       const plan = await planMarkdown(content, documentPath, was, layout);
       skipped.push(...plan.skipped.map((skip) => ({ path: documentPath, ...skip })));
       await add(documentPath, was === documentPath ? undefined : was, content, plan.rewrite);
@@ -433,13 +455,18 @@ export async function applyMovedLinks(planned: readonly PlannedLinkRewrite[], re
  * over), the link and citation indexes and Global Search. Each is tried;
  * returns what failed.
  */
-export async function followLinkRewrites(applied: readonly AppliedLinkRewrite[], { history = () => true }: { history?: (filePath: string) => boolean } = {}) {
+export async function followLinkRewrites(applied: readonly AppliedLinkRewrite[], { history = () => true, replan }: { history?: (filePath: string) => boolean; replan?: (text: string, note: PlannedLinkRewrite) => Promise<MovedPathRewrite> } = {}) {
   const failures: string[] = [];
   if (!applied.length) return failures;
   const attempt = async (what: string, run: () => Promise<unknown>) => {
     try { await run(); } catch (error) { failures.push(`${what}: ${error instanceof Error ? error.message : String(error)}`); }
   };
-  const transform = (note: AppliedLinkRewrite) => (text: string) => rewriteMovedPaths(text, note.path, note.rewrite);
+  // A baseline or an undo original is another text than the note's now: with `replan`, what it still writes is planned from itself (a link the agent changed or removed is still there to follow); without it the note's own rewrite applies.
+  const transform = (note: AppliedLinkRewrite) => async (text: string) => {
+    let rewrite = note.rewrite;
+    if (replan) { try { rewrite = await replan(text, { ...note, ...(note.from ? { from: note.from } : {}) }); } catch { /* the note's own rewrite applies */ } }
+    return rewriteMovedPaths(text, note.path, rewrite);
+  };
   await attempt("pending agent reviews", () => transformReviewBaselines(new Map(applied.map((note) => [note.path, transform(note)]))));
   await attempt("review comments", () => rewriteReviewSnapshots(applied.flatMap((note) => note.textBefore !== undefined && note.edits ? [{ path: note.path, before: note.textBefore, edits: note.edits }] : [])));
   const kept = applied.filter((note) => history(note.path));
@@ -469,7 +496,7 @@ export async function followMovedLinks(moves: readonly PathMove[]): Promise<{ li
   try {
     const plan = await planMovedLinks(moves);
     const { applied, failed } = await applyMovedLinks(plan.notes, replanMovedNote(plan.layout));
-    const failures = await followLinkRewrites(applied);
+    const failures = await followLinkRewrites(applied, { replan: replanMovedNote(plan.layout) });
     const links: LiberaLinkRewrites = { rewritten: applied.map((note) => ({ path: note.path, rewrite: note.rewrite })), skipped: [...plan.skipped, ...failed], unchecked: plan.unchecked };
     const problems = [...(failed.length ? [`${new Set(failed.map((skip) => skip.path)).size} notes could not be updated`] : []), ...failures];
     return { links, ...(problems.length ? { unfinished: { step: "links", status: "failed", message: problems.join("; ") } } : {}) };

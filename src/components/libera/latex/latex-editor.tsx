@@ -14,6 +14,7 @@ import {
 import { useTranslations } from "next-intl";
 import { visualTranslator } from "@/lib/latex/codemirror/visual/labels";
 import { lazy, startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type MutableRefObject } from "react";
+import { forgetPublished, onTextReplaced } from "../link-rewrite-echo";
 import {
   convertSelectionCommand, insertLatexAt, insertPlainAt, isViewAlive, latexMarkdownPaste, latexPasteContextAt, markdownPasteKeymap, pasteFromClipboard, pasteMarkdownCommand,
   pasteStaysLiteral, preambleInsertPoint, revertPasteToPlain, trackRange, type InsertedLatex, type MarkdownPasteConfig, type MarkdownPasteRequest, type TrackedRange,
@@ -750,6 +751,9 @@ export function LatexEditor({
     window.addEventListener("pagehide", publishDraft);
     return () => { unregister?.(); window.removeEventListener("pagehide", publishDraft); };
   }, [onRegisterDraft, publishDraft, shared]);
+
+  // A link rewrite is an outside change even when it returns the text to a draft published before.
+  useEffect(() => onTextReplaced((text) => forgetPublished(publishedRef.current, text)), []);
 
   // Adopt outside changes to the draft (for example a reload), ignoring the
   // echoes of drafts this editor published itself.

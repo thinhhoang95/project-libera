@@ -28,6 +28,7 @@ import { getSharedDocRegistry } from "@/lib/collab/client/registry";
 import { useHorizontalWheelScroll } from "../use-horizontal-wheel-scroll";
 import { inkPower } from "../ink/ink-power";
 import { autoCompileDelayMs } from "./latex-auto-compile-delay";
+import { onPathsMoved } from "../path-follow";
 import { latexPdfUrl, latexRequestErrorText, requestLatexCompile, useLatexBuild } from "./latex-build-store";
 import { LatexCacheDialog } from "./latex-cache-dialog";
 import { latexCompileMenuItems, type LatexCompileTarget } from "./latex-compile-menu";
@@ -89,6 +90,17 @@ function fileKind(file: LiberaFileNode): LatexProjectFile["kind"] {
 
 const bibCache = new Map<string, { key: string; entries: BibEntrySummary[] }>();/** Main files found for chapter files, so reopening a chapter needs no lookup. */
 const discoveredRoots = new Map<string, string | null>();
+/** Files that moved: a chapter's remembered main file follows it, and so does a main file that moved. */
+export function followDiscoveredRootPaths(remap: (path: string) => string) {
+  for (const [path, root] of [...discoveredRoots]) {
+    const moved = remap(path);
+    const movedRoot = root === null ? null : remap(root);
+    if (moved === path && movedRoot === root) continue;
+    discoveredRoots.delete(path);
+    discoveredRoots.set(moved, movedRoot);
+  }
+}
+onPathsMoved(followDiscoveredRootPaths);
 /** Each notebook's Auto Compile choice, so reopening a file starts with it. */
 const notebookAutoCompile = new Map<string, boolean>();
 

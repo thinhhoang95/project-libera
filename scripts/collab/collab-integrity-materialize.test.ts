@@ -209,7 +209,7 @@ test("S54: a manifest change SQLite refused is not reported as saved, and disk w
   const hub = new DocHub({ docId: "m1", kind: "manifest", store, logger: quietLogger, clock });
   const project = bare({
     info: { album: false, follower: false }, ctx: {}, manifestHub: hub, manifestIntents: new ManifestIntents(),
-    caughtUp: new Map(), entries: new Map(), durableWaiting: false,
+    caughtUp: new Map(), entries: new Map(), durableWaiting: false, state: { layout: {}, reconciliations: [] }, intentsSaved: 0, saveSoon: () => {},
   });
   const real = store.appendLocal.bind(store);
   let failing = true;
@@ -244,7 +244,7 @@ test("S54: an automatic import (scan) is not failed by an undurable change but h
   hub.handleOpened(opened("m1", "manifest"));
   const project = bare({
     info: { album: false, follower: false }, ctx: {}, manifestHub: hub, manifestIntents: new ManifestIntents(),
-    caughtUp: new Map(), entries: new Map(), durableWaiting: false,
+    caughtUp: new Map(), entries: new Map(), durableWaiting: false, state: { layout: {}, reconciliations: [] }, intentsSaved: 0, saveSoon: () => {},
   });
   const real = store.appendLocal.bind(store);
   store.appendLocal = () => { throw new Error("SQLITE_BUSY"); };

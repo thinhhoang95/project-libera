@@ -6,7 +6,7 @@ import { attachSharedFileIdTo, resolveSharedActionFileId, sharedPathOfFileId } f
 import { isSharedOperationUnfinished } from "@/lib/collab/shared-outcomes";
 import { StorageError } from "@/lib/storage/errors";
 import { assertSafeSegment, splitDirectoryPath, splitFilePath } from "@/lib/storage/paths";
-import { assertLocalFileIdentity, MoveCommittedError } from "@/lib/storage/files";
+import { MoveCommittedError } from "@/lib/storage/files";
 import {
   archiveFile,
   copyFileToDirectory,
@@ -24,7 +24,7 @@ export const runtime = "nodejs";
 function handleError(error: unknown) {
   // The host committed a shared change but a step after it did not finish: say what it did, so the caller retargets and reports what stayed behind.
   if (isSharedOperationUnfinished(error)) {
-    return NextResponse.json({ error: error.message, committed: error.committed, unfinished: error.unfinished }, { status: error.status });
+    return NextResponse.json({ error: error.message, committed: error.committed, unfinished: error.unfinished, ...(error.links ? { links: error.links } : {}) }, { status: error.status });
   }
   const storageError = toStorageError(error);
   // A move that happened but whose result could not be built: say where the file is, so the caller can still retarget.
@@ -203,9 +203,8 @@ export async function DELETE(request: NextRequest) {
       const sharedId = await resolveSharedActionFileId(filePath, fileId, "deleted", listSharedEntries);
       return NextResponse.json(await deleteSharedFile(filePath, { expectedFileId: sharedId }));
     }
-    // A local file: the one the person chose, not another that took its path (deleteFile's own records are not touched here).
-    if (fileId) await assertLocalFileIdentity(filePath, fileId);
-    return NextResponse.json(await deleteFile(filePath));
+    // A local file: the one the person chose, not another that took its path (checked by deleteFile under the file's lock).
+    return NextResponse.json(await deleteFile(filePath, { expectedFileId: fileId }));
   } catch (error) {
     return handleError(error);
   }

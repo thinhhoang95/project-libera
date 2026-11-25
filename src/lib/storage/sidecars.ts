@@ -4,12 +4,12 @@ import path from "node:path";
 import { DEFINITIONS_FILE_TYPES, parseDefinitionsFile } from "@/lib/definitions";
 import { parseInkFileName } from "@/lib/ink/authors";
 import { parsePdfOutlineFile } from "@/lib/pdf-outline";
-import { inspectImageSidecar, inspectLegacyAnnotations, inspectPdfSidecar } from "@/lib/storage/annotations";
+import { inspectImageSidecar, inspectLegacyAnnotations, inspectPdfSidecar, isPdfAnnotationsBackupName } from "@/lib/storage/annotations";
 import { inspectPdfTextCache } from "@/lib/storage/pdf-text-cache";
-import { parseTranscript } from "@/lib/storage/transcripts";
+import { parseTranscript, transcriptCompanionFilePath, TRANSCRIPT_COMPANION_SUFFIX } from "@/lib/storage/transcripts";
 import { inspectAudioPeaksCache } from "@/lib/transcription/peaks";
 import { pythonSidecarPath } from "@/lib/python/sidecar";
-import { INK_DIR } from "@/lib/storage/constants";
+import { INK_DIR, MARKDOWN_ASSETS_DIR } from "@/lib/storage/constants";
 import { getFileType } from "@/lib/storage/file-types";
 import { foldedFileName } from "@/lib/storage/file-names";
 import { fileExistence } from "@/lib/storage/library-links";
@@ -57,6 +57,14 @@ export type SidecarKind = {
   directoryPath: (notebook: string, folderParts: string[]) => string;
   /** `json`: one `<name>.json` per file. `folder`: one folder per file (ink). */
   layout: "json" | "folder";
+  /**
+   * A file kept beside the recording itself, not under .libera (a transcript companion, which a shared notebook
+   * shares and a takedown leaves behind). It moves, is removed and is checked with its recording like any
+   * sidecar, but has no folder of its own: `directoryPath` is a place nothing is ever written to, so a folder
+   * operation finds nothing to do (the companion travels inside the folder), and listSidecars finds these only
+   * when asked (`companions`).
+   */
+  companion?: boolean;
   /** A derived cache: failing to move it never fails the operation, and it is dropped instead. */
   cache?: boolean;
   /** The owner's reading of a saved `json` side file, for the notebook check: null (or a throw) when it is not one the owner reads. */
@@ -104,6 +112,9 @@ export const SIDECAR_KINDS: readonly SidecarKind[] = [
   { id: "image-annotations", appliesTo: is("image"), filePath: imageAnnotationsPath, directoryPath: imageAnnotationsDirectoryPath, layout: "json", inspect: inspectImageSidecar },
   { id: "transcript", appliesTo: is("audio"), filePath: transcriptPath, directoryPath: (notebook, parts) => audioSidecarDirectories(notebook, parts)[0], layout: "json",
     inspect: parsed(parseTranscript, "transcript segments", (value) => value.segments, (file) => file.segments.length, (file) => file.audio.size ? { size: file.audio.size, contentHash: file.audio.contentHash ?? null } : null) },
+  { id: "transcript-companion", appliesTo: is("audio"), filePath: transcriptCompanionFilePath, companion: true, layout: "json",
+    directoryPath: (notebook, parts) => path.join(notebookPath(notebook), ".libera", "transcript-companions-none", ...parts),
+    inspect: parsed(parseTranscript, "transcript segments", (value) => value.segments, (file) => file.segments.length, (file) => file.audio.size ? { size: file.audio.size, contentHash: file.audio.contentHash ?? null } : null) },
   { id: "audio-peaks", appliesTo: is("audio"), filePath: audioPeaksPath, directoryPath: (notebook, parts) => audioSidecarDirectories(notebook, parts)[1], layout: "json", cache: true, inspect: inspectAudioPeaksCache },
   { id: "definitions", appliesTo: is(...DEFINITIONS_FILE_TYPES), filePath: definitionsPath, directoryPath: definitionsDirectoryPath, layout: "json",
     inspect: parsed(parseDefinitionsFile, "definitions", (value) => value.entries, (file) => file.entries.length, (file) => file.source) },
@@ -116,7 +127,7 @@ export const SIDECAR_KINDS: readonly SidecarKind[] = [
  * transcripts are manifest entries), the PDF reconciliation (a PDF's notes), or nothing (a waveform cache is made again).
  * Next never moves, removes or writes these on disk itself.
  */
-export const HOST_OWNED_SIDECARS: ReadonlySet<string> = new Set(["ink", "transcript", "audio-peaks", "pdf-annotations", "pdf-outline", "pdf-text"]);
+export const HOST_OWNED_SIDECARS: ReadonlySet<string> = new Set(["ink", "transcript", "transcript-companion", "audio-peaks", "pdf-annotations", "pdf-outline", "pdf-text"]);
 
 export const SIDECAR_PATH_HELPERS = ["pdfAnnotationsPath", "pdfOutlinePath", "pdfTextCachePath", "imageAnnotationsPath", "transcriptPath", "audioPeaksPath", "definitionsPath"] as const;
 
@@ -337,17 +348,47 @@ async function entries(directory: string, unreadable?: string[]): Promise<Dirent
   }
 }
 
+/** Folders a companion walk does not enter: the notebook's own records and generated folders, never a place a person keeps recordings. */
+const COMPANION_WALK_SKIPS = new Set([INK_DIR, MARKDOWN_ASSETS_DIR, "node_modules"]);
+
+/**
+ * The companion files (`<recording>.transcript`) of a notebook, one folder listing per folder (no stat, no read).
+ * Found by name, so a companion whose recording is gone is found too.
+ */
+async function listCompanions(notebook: string, kind: SidecarKind, listed: ListedSidecar[], unreadable: string[]) {
+  const walk = async (directory: string, parts: string[]) => {
+    for (const child of await entries(directory, unreadable)) {
+      const target = path.join(directory, child.name);
+      if (child.isDirectory()) {
+        if (!child.name.startsWith(".") && !COMPANION_WALK_SKIPS.has(child.name)) await walk(target, [...parts, child.name]);
+      } else if (child.isFile() && child.name.endsWith(TRANSCRIPT_COMPANION_SUFFIX) && getFileType(child.name.slice(0, -TRANSCRIPT_COMPANION_SUFFIX.length)) === "audio") {
+        const fileParts = [...parts, child.name.slice(0, -TRANSCRIPT_COMPANION_SUFFIX.length)];
+        listed.push({ kind: kind.id, kindInfo: kind, path: target, filePath: `${notebook}/${fileParts.join("/")}`, fileParts });
+      }
+    }
+  };
+  await walk(notebookPath(notebook), []);
+}
+
 /**
  * Every per-file sidecar on disk in a notebook (SIDECAR_KINDS), with the
  * file path it belongs to. Read only; the orphan report and the notebook
  * check (storage/integrity.ts) build on it.
  */
-export async function listSidecars(notebook: string): Promise<{ sidecars: ListedSidecar[]; unreadable: string[] }> {
+export async function listSidecars(notebook: string, options: { companions?: boolean; /** The notebook check counts each folder against its budget and stops the walk when this says no. */ onEntry?: () => boolean } = {}): Promise<{ sidecars: ListedSidecar[]; unreadable: string[]; /** `onEntry` said stop: the list is not complete. */ truncated?: boolean }> {
+  const onEntry = options.onEntry;
   const listed: ListedSidecar[] = [];
   const unreadable: string[] = [];
+  let truncated = false;
   for (const kind of SIDECAR_KINDS) {
+    if (kind.companion) {
+      if (options.companions) await listCompanions(notebook, kind, listed, unreadable);
+      continue;
+    }
     const root = kind.directoryPath(notebook, []);
     const walk = async (directory: string, parts: string[]) => {
+      // The notebook check counts each folder against its budget (`onEntry`) and stops the walk when it is used up.
+      if (truncated || (onEntry && !onEntry())) { truncated = true; return; }
       const children = await entries(directory, unreadable);
       // A file's ink folder holds ink files the reader accepts (as listInkFolders
       // does). Stray files (a sync conflict copy, system files) don't make a
@@ -359,7 +400,8 @@ export async function listSidecars(notebook: string): Promise<{ sidecars: Listed
       for (const child of children) {
         const target = path.join(directory, child.name);
         if (child.isDirectory()) await walk(target, [...parts, child.name]);
-        else if (kind.layout === "json" && child.isFile() && child.name.endsWith(".json")) {
+        // `<name>.pdf.json.replaced-<hash>.json` is a backup of notes a sidecar replaced, not the sidecar of a file called that.
+        else if (kind.layout === "json" && child.isFile() && child.name.endsWith(".json") && !isPdfAnnotationsBackupName(child.name)) {
           const fileParts = [...parts, child.name.slice(0, -".json".length)];
           listed.push({ kind: kind.id, kindInfo: kind, path: target, filePath: `${notebook}/${fileParts.join("/")}`, fileParts });
         }
@@ -367,7 +409,7 @@ export async function listSidecars(notebook: string): Promise<{ sidecars: Listed
     };
     await walk(root, []);
   }
-  return { sidecars: listed, unreadable };
+  return { sidecars: listed, unreadable, ...(truncated ? { truncated } : {}) };
 }
 
 /**

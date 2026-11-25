@@ -8,33 +8,36 @@ import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { latexDependencies } from "@/lib/latex/dependencies";
 import { isLatexCitingPath } from "@/lib/references/latex-cite-syntax";
 import { slideChartBlocks, isSlideChartDataFile, parseSlideChartSpec, resolveDeckRelativePath } from "@/lib/slide-charts";
+import { decideInkSource, foldedAliasOf } from "@/lib/storage/ink";
 import { readTetherTarget } from "@/lib/references/bib-tether";
-import { ARCHIVE_DIR, MARKDOWN_ASSETS_DIR, MARKDOWN_EXTENSIONS, ORPHANED_SIDECARS_DIR } from "@/lib/storage/constants";
+import { ARCHIVE_DIR, MARKDOWN_EXTENSIONS, ORPHANED_SIDECARS_DIR } from "@/lib/storage/constants";
 import { planBibMirror } from "@/lib/references/bib-mirror";
 import type { ReferenceLibrary } from "@/lib/references/types";
 import { readIndexedLibraryRows } from "@/lib/search/database";
 import { latexBuildProductFilter } from "@/lib/search/latex-products";
 import { getSearchPreferences, searchIndexFile } from "@/lib/search/settings";
 import { readFileSignature } from "@/lib/storage/file-signature";
-import { citationIndexPath, readCitationIndex } from "@/lib/storage/reference-citations";
+import { citationIndexPath, isArchivedCitingPath, readCitationIndex } from "@/lib/storage/reference-citations";
 import { fileExistence, libraryNotebookNames, linkCandidates, resolveLinkTargetWith } from "@/lib/storage/library-links";
 import { decodeMarkdownHeadingHash, findMarkdownHeadingAnchorIndex, markdownHeadingAnchors, type MarkdownHeadingAnchor } from "@/lib/markdown-heading-anchors";
 import { markdownHtmlAnchors } from "@/lib/markdown-link-occurrences";
 import { listLegacyAnnotations, savedAnnotationIds, type SavedAnnotationIds } from "@/lib/storage/annotations";
-import { parseTranscript } from "@/lib/storage/transcripts";
-import { markdownImageTargets, unreferencedMarkdownAssets } from "@/lib/storage/markdown-assets";
-import { extractNotebookLinkDestinations, forgetNotebookLinkReads, linkIndexPath, readLinkIndex } from "@/lib/storage/notebook-links";
+import { parseTranscript, transcriptCompanionFilePath } from "@/lib/storage/transcripts";
+import { markdownImageTargets, rawFileDiskPath, unreferencedMarkdownAssets } from "@/lib/storage/markdown-assets";
+import { markdownPathOccurrences } from "@/lib/move-rewrites";
+import { rawFileSourcePath } from "@/lib/markdown-image-sources";
+import { linkIndexPath, readLinkIndex } from "@/lib/storage/notebook-links";
 import { assertSafeSegment, audioPeaksPath, getLinkedFolder, withReadOnlyStorage, getStateRoot, notebookMetadataPath, notebookPath, notebookSystemDirectoryPath, orphanedSidecarsDirectoryPath, relativeFilePath, filePathFromParts, splitFilePath, transcriptPath } from "@/lib/storage/paths";
 import { inspectReferenceLibrary } from "@/lib/storage/references";
 import { inspectLegacyReviewKeys, inspectReviewDocumentProblems, inspectReviewKeys } from "@/lib/storage/review-files";
 import { listSidecars, findOrphanedSidecars, SIDECAR_KINDS, type SidecarInspection } from "@/lib/storage/sidecars";
-import { matchByIdentity, mayBeBack, readOrphans, slotTakenBy, upkeepReattachesByContent } from "@/lib/storage/pdf-sidecars";
-import { hostOwnsSideFile, livePdfMarkIds, mayBeArriving, readManifestView, readSharedSync } from "@/lib/storage/shared-manifest-view";
-import { isGeneratedPath, isShareablePath } from "../../../electron/collab/notebooks/fs-ops";
+import { matchByIdentity, mayBeBack, pdfSpellingOf, readOrphans, slotTakenBy, upkeepReattachesByContent } from "@/lib/storage/pdf-sidecars";
+import { hostOwnsSideFile, livePdfMarkIds, manifestFile, manifestHasFile, mayBeArriving, parseHostRecords, readManifestView, readSharedSync, type ManifestView } from "@/lib/storage/shared-manifest-view";
+import { isGeneratedPath, isShareablePath, STATE_DIRECTORY } from "../../../electron/collab/notebooks/fs-ops";
 import { getFileType } from "@/lib/storage/file-types";
 import { pythonSidecarDocumentPath, pythonSidecarPath } from "@/lib/python/sidecar";
 import { foldedFileName } from "@/lib/storage/file-names";
-import { listVisibleNotebookFiles } from "@/lib/storage/tree";
+import { isVisibleTreeEntry, listVisibleNotebookFiles } from "@/lib/storage/tree";
 import { inspectWorkspaceMetadata } from "@/lib/storage/workspace-metadata";
 import { StorageError } from "@/lib/storage/errors";
 
@@ -94,9 +97,10 @@ export type IntegrityFinding = {
  * is still gone right before removing anything.
  */
 export type CleanupAction = (
-  | { type: "side-file"; kind: string; filePath: string }
+  /** `identified`: the side file records the bytes of the file it was made for and no file in the notebook has them (never set in a shared notebook, where owners are not looked for by content). */
+  | { type: "side-file"; kind: string; filePath: string; identified?: true }
   | { type: "ink-files"; filePath: string; names: string[] }
-  | { type: "set-aside"; file: string }
+  | { type: "set-aside"; file: string; identified?: true }
   | { type: "asset"; path: string }
   | { type: "star"; path: string }
   | { type: "tags"; path: string }
@@ -257,13 +261,17 @@ function clock(seconds: number) {
  * measured, so the position of a link can't be judged; null and not stale:
  * nothing saved.
  */
+const readTranscriptLength = (value: unknown) => { const transcript = parseTranscript(value); return transcript && { duration: transcript.audio.duration, size: transcript.audio.size }; };
+
 async function recordingDuration(libraryPath: string): Promise<{ duration: number | null; stale: boolean }> {
   const [notebook, ...parts] = libraryPath.split("/");
   let size: number;
   try { size = (await stat(filePathFromParts(notebook, parts))).size; } catch { return { duration: null, stale: true }; }
   let stale = false;
   for (const [file, read] of [
-    [transcriptPath(notebook, parts), (value: unknown) => { const transcript = parseTranscript(value); return transcript && { duration: transcript.audio.duration, size: transcript.audio.size }; }],
+    [transcriptPath(notebook, parts), readTranscriptLength],
+    // A shared recording's transcript (or one a takedown left beside it) is the companion file next to it.
+    [transcriptCompanionFilePath(notebook, parts), readTranscriptLength],
     [audioPeaksPath(notebook, parts), (value: unknown) => { const peaks = value as { key?: unknown; duration?: unknown } | null; return { duration: peaks?.duration, size: typeof peaks?.key === "string" ? Number(peaks.key.split(":")[0]) : NaN }; }],
   ] as const) {
     try {
@@ -411,12 +419,18 @@ async function recordsLeftAt(files: { label: string; libraryPath: string }[], le
       for (const entry of Object.values(inspected.library?.entries ?? {})) for (const attachment of entry.attachments) if (attachment.kind !== "url") found(attachment.path, "reference attachment");
     }
   });
-  for (const notebook of new Set(files.map((file) => file.libraryPath.split("/")[0]))) {
+  // Every notebook's tether, not only those of the notebooks the files are in: a library in another notebook may be tethered to a .bib here.
+  const owners = new Set(files.map((file) => file.libraryPath.split("/")[0]));
+  const tethered = new Set(owners);
+  await guarded("notebooks with a .bib tether", async () => { for (const library of await libraryNotebookNames()) tethered.add(library); });
+  for (const notebook of tethered) {
     await guarded(`.bib tether of ${notebook}`, async () => {
       const tether = await readTetherTarget(notebook);
+      // A tether that can't be read is unverified only where it could name these files: in a notebook they are in, or any other (it may point here).
       if (tether && "damaged" in tether) return unchecked(`.bib tether of ${notebook}`, tether.damaged);
       if (tether && "libraryPath" in tether) found(tether.libraryPath, ".bib tether");
     });
+    if (!owners.has(notebook)) continue;
     await guarded(`side files set aside in ${notebook}`, async () => {
       for (const { record } of await readOrphans(notebook)) found(record.originalPath, "set-aside side file");
     });
@@ -429,9 +443,15 @@ async function recordsLeftAt(files: { label: string; libraryPath: string }[], le
  * marks, Python code, images and files of the notebook) and never a record judged only by the version of a file that may still be arriving.
  */
 export function sharedMayClear(action: CleanupAction, notebook: string): boolean {
+  // A record of a path the manifest does not govern (the notebook's local `_archive`, another notebook's file) is this computer's whatever its kind: the disk decides it, as in a local notebook.
+  const subject = action.gone ?? (action.type === "side-file" || action.type === "ink-files" ? action.filePath : "path" in action ? action.path : null);
+  if (subject && action.type !== "asset" && !isSharedNotebookPath(subject)) return true;
   switch (action.type) {
-    case "star": case "tags": case "review": case "attachment": case "set-aside": case "citations": return true;
-    case "side-file": return !hostOwnsSideFile(action.kind, notebook) && (Boolean(action.gone) || action.kind === "pdf-text" || action.kind === "audio-peaks");
+    case "star": case "tags": case "review": case "attachment": case "citations": case "tether": return true;
+    // What Try to fix refuses as the host's (live PDF marks, ink) is not offered for removal either: one rule.
+    case "set-aside": return !hostOwnsSideFile(action.file.startsWith("ink/") ? "ink" : action.file.startsWith("annotations/") ? "pdf-annotations" : "", notebook);
+    // A live PDF's marks sidecar left at a path the manifest no longer lists (an earlier build's) is reported, so it is clearable once the manifest confirms the path is gone (`staleness` holds it when listed or arriving); Try to fix still refuses it as the host's.
+    case "side-file": return (!hostOwnsSideFile(action.kind, notebook) && (Boolean(action.gone) || action.kind === "pdf-text" || action.kind === "audio-peaks")) || (action.kind === "pdf-annotations" && Boolean(action.gone));
     default: return false;
   }
 }
@@ -455,13 +475,23 @@ async function readNotes(notebook: string, budget: IntegrityBudget, byteLimit: n
   let byteLimited = false;
   let spent = false;
   let bytes = 0;
+  const linked = Boolean(getLinkedFolder(notebook));
   const visit = async (parts: string[]) => {
     let entries;
     try { entries = await readdir(path.join(notebookPath(notebook), ...parts), { withFileTypes: true }); }
     catch { complete = false; return; }
     for (const entry of entries) {
       if (--remaining < 0) { complete = false; return; }
-      if (entry.name.startsWith(".") || [MARKDOWN_ASSETS_DIR, "node_modules", "__pycache__", "bower_components"].includes(entry.name)) continue;
+      // The tree's own visibility rule: node_modules and the like are skipped only in a linked folder, as the tree skips them. A symlink is neither a file nor a folder to the tree, nor here.
+      if (!isVisibleTreeEntry(entry.name, linked)) continue;
+      // Every entry the walk looks at is counted against the budget, not only the notes.
+      if (!budget.allows()) {
+        spent = true;
+        if (entry.isDirectory()) complete = false;
+        else if (entry.isFile() && MARKDOWN_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) leftOut += 1;
+        continue;
+      }
+      budget.visit();
       const next = [...parts, entry.name];
       if (entry.isDirectory()) {
         // A folder not entered may hold notes that are not even counted: the notes are not complete.
@@ -481,7 +511,6 @@ async function readNotes(notebook: string, budget: IntegrityBudget, byteLimit: n
       catch { complete = false; continue; }
       if (bytes + raw.length > byteLimit) { spent = true; byteLimited = true; leftOut += 1; continue; }
       bytes += raw.length;
-      budget.visit();
       budget.read(raw.length);
       documents.push({ documentPath: relativeFilePath(notebook, next), content: raw.toString("utf8") });
     }
@@ -519,7 +548,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
   const checks: IntegrityCheckResult[] = [];
   const disk = fileExistence();
   /** The shared notebook lists this file (so one the disk lacks is still arriving, not gone). */
-  const listed = (libraryPath: string) => manifestBefore?.state === "ok" && manifestBefore.files.has(libraryPath);
+  const listed = (libraryPath: string) => manifestBefore?.state === "ok" && isSharedNotebookPath(libraryPath) && manifestHasFile(manifestBefore, libraryPath);
   /** Files the manifest lists that this computer does not have yet. */
   let undeliveredFiles: Promise<string[]> | null = null;
   const undelivered = () => undeliveredFiles ??= (async () => {
@@ -632,11 +661,16 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
   });
 
   await run("sidecars", async (add) => {
-    const { sidecars, unreadable } = await listSidecars(notebook);
+    // Each folder of the walk is counted against the budget; one that is used up ends it (the check is then partial: `stoppedAt`).
+    const { sidecars, unreadable } = await listSidecars(notebook, { companions: true, onEntry: () => { budget.visit(); return budget.allows(); } });
     counts.sidecars = sidecars.length;
     // A shared notebook's files are the manifest's: a side file is orphaned when the host's list has no file at its path (a listed file not yet on the disk is arriving; a retired copy still on the disk is gone). Without the list nothing is judged.
+    // Decided per path: the notebook's local `_archive` is not in the manifest, so its files are judged on the disk.
     const orphans = manifestBefore
-      ? manifestBefore.state === "ok" ? sidecars.filter((sidecar) => !manifestBefore.files.has(sidecar.filePath)).map(({ kind, path, filePath }) => ({ kind, path, filePath })) : []
+      ? [
+        ...manifestBefore.state === "ok" ? sidecars.filter((sidecar) => isSharedNotebookPath(sidecar.filePath) && !manifestHasFile(manifestBefore, sidecar.filePath)).map(({ kind, path, filePath }) => ({ kind, path, filePath })) : [],
+        ...await findOrphanedSidecars(notebook, sidecars.filter((sidecar) => !isSharedNotebookPath(sidecar.filePath))),
+      ]
       : await findOrphanedSidecars(notebook, sidecars);
     const orphaned = new Set(orphans.map((orphan) => orphan.path));
     /** The file each side file was made for (size and content hash), as it recorded it. */
@@ -687,16 +721,20 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
       const sources: NonNullable<SidecarInspection["source"]>[] = [];
       /** Ink: each author file's recorded source, by file name. */
       let inkSources: { name: string; size: number; contentHash: string | null }[] = [];
+      /** Ink: the folder holds author files drawn on different bytes, which the upkeep takes whole to no file (ink.ts decideInkSource). */
+      let inkConflict = false;
       if (kind.layout === "folder") {
         if (!kind.inspectFolder) continue;
         let ink;
         try { ink = await kind.inspectFolder(sidecar.path, getFileType(sidecar.fileParts.at(-1) ?? "") ?? ""); } catch { unreadSidecars += 1; unread.add(sidecar.path); continue; }
         budget.read(ink.bytes);
+        if (ink.unreadable.length && orphaned.has(sidecar.path)) unread.add(sidecar.path);
         if (ink.unreadable.length) add({ severity: "error", path: sidecar.filePath, message: `${plural(ink.unreadable.length, "ink file")} of ${sidecar.filePath} can't be read, so ${ink.unreadable.length === 1 ? "its" : "their"} ink is not shown (${ink.unreadable.slice(0, 3).join(", ")}).`, fix: "Restore them from your sync service's version history.", ...say("inkUnreadable", { count: ink.unreadable.length, path: sidecar.filePath, names: ink.unreadable.slice(0, 3).join(", ") }, "inkUnreadableFix") });
         if (ink.misplaced.length) add({ severity: "info", path: sidecar.filePath, message: `${plural(ink.misplaced.length, "ink file")} of ${sidecar.filePath} ${ink.misplaced.length === 1 ? "belongs" : "belong"} to a page or block this kind of file doesn't have, so ${ink.misplaced.length === 1 ? "it is" : "they are"} never shown.`, clear: [{ type: "ink-files", filePath: sidecar.filePath, names: ink.misplaced }], ...say("inkMisplaced", { count: ink.misplaced.length, path: sidecar.filePath }) });
         if (ink.droppedStrokes) add({ severity: "warning", path: sidecar.filePath, message: `${plural(ink.droppedStrokes, "stroke")} in the ink of ${sidecar.filePath} can't be read and ${ink.droppedStrokes === 1 ? "is" : "are"} not shown.`, fix: "Restore the ink folder from your sync service's version history before drawing on that page again.", ...say("strokesUnreadable", { count: ink.droppedStrokes, path: sidecar.filePath }, "strokesUnreadableFix") });
         sources.push(...ink.sources.map((source) => ({ size: source.size, contentHash: source.sha256 })));
         inkSources = ink.sourceFiles.map(({ name, source }) => ({ name, size: source.size, contentHash: source.sha256 || null }));
+        inkConflict = decideInkSource(ink.sources) === "conflict";
       } else {
         const bytes = await readWithin(budget, sidecar.path);
         // The budget, not the file, is why nothing more is read: the check says where it stopped.
@@ -710,11 +748,14 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
           if (!valid || (inspection?.source && !orphaned.has(sidecar.path) && await sizeOf(sidecar.fileParts) !== inspection.source.size)) outdatedCaches.set(kind.id, [...outdatedCaches.get(kind.id) ?? [], { type: "side-file", kind: kind.id, filePath: sidecar.filePath }]);
           continue;
         }
-        if (!valid) { add({ severity: "error", path: sidecar.filePath, message: `The saved ${name(sidecar.kind)} of ${sidecar.filePath} can't be read.`, fix: "Restore it from a backup or your sync service's version history.", ...say("sideFileUnreadable", { kind: sidecar.kind, path: sidecar.filePath }, "sideFileUnreadableFix") }); continue; }
+        // What a damaged side file says about its file is unknown: if its file is gone it is not offered for removal (it may be the only copy of an identity that finds the file).
+        if (!valid) { if (orphaned.has(sidecar.path)) unread.add(sidecar.path); add({ severity: "error", path: sidecar.filePath, message: `The saved ${name(sidecar.kind)} of ${sidecar.filePath} can't be read.`, fix: "Restore it from a backup or your sync service's version history.", ...say("sideFileUnreadable", { kind: sidecar.kind, path: sidecar.filePath }, "sideFileUnreadableFix") }); continue; }
         if (inspection?.dropped) add({ severity: "warning", path: sidecar.filePath, message: `${inspection.dropped} ${inspection.records} in the saved ${name(sidecar.kind)} of ${sidecar.filePath} can't be read: they are not shown, and are lost the next time it is saved.`, fix: "Restore the side file from your sync service's version history before changing it.", ...say("sideFileDropped", { dropped: inspection.dropped, records: inspection.records, kind: sidecar.kind, path: sidecar.filePath }, "sideFileDroppedFix") });
         if (inspection?.source) sources.push(inspection.source);
       }
-      const identity = sources.find((source) => source.contentHash);
+      // One rule with the upkeep: a folder of several versions names no one file, so none is promised it and its ink is not offered for removal.
+      if (inkConflict) unread.add(sidecar.path);
+      const identity = inkConflict ? undefined : sources.find((source) => source.contentHash);
       if (identity?.contentHash) identities.set(sidecar.path, { size: identity.size, contentHash: identity.contentHash });
       if (!sources.length || orphaned.has(sidecar.path)) continue;
       const size = await sizeOf(sidecar.fileParts);
@@ -801,12 +842,16 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
       if (!budget.allows()) break;
       const what = `Saved ${name(orphan.kind)} of ${orphan.filePath}, which is not in the notebook`;
       // The upkeep reattaches by content only where upkeepReattachesByContent says so: never promised in a shared notebook, where it does not.
-      const moved = upkeepReattachesByContent(notebook) ? await owner(orphan.kind, getFileType(orphan.filePath), identities.get(orphan.path)) : null;
+      let moved = upkeepReattachesByContent(notebook) ? await owner(orphan.kind, getFileType(orphan.filePath), identities.get(orphan.path)) : null;
+      // Ink follows its file renamed only in case or Unicode normalization (ink.ts reconcileInkFolders, by the name rule), with or without recorded bytes.
+      if (moved === null && orphan.kind === "ink" && upkeepReattachesByContent(notebook)) moved = await foldedAliasOf(orphan.filePath);
+      // A PDF's notes follow it renamed only in case or normalization too (pdf-sidecars.ts reconcilePdfSidecars, pdfSpellingOf): the same rule the upkeep applies.
+      if (moved === null && orphan.kind !== "ink" && upkeepReattachesByContent(notebook) && follows(orphan.kind, getFileType(orphan.filePath))) moved = pdfSpellingOf(orphan.filePath, await filesOfType("pdf"));
       // Offered for removal only when every input is known: a side file that could not be read, a listing that was cut, a candidate that could not be hashed may each hide the file it follows.
       const decided = moved === null && !unread.has(orphan.path) && (shared || (!inventoryCut && !candidatesCut));
       add(moved !== null && moved !== "unknown"
         ? { severity: "info", path: orphan.filePath, message: `${what}, belong to ${moved}: the same file, moved outside the app. They go to it the next time the notebook is opened.`, ...say("orphanSideFileMoved", { kind: orphan.kind, path: orphan.filePath, moved }) }
-        : { severity: "warning", path: orphan.filePath, message: `${what}.`, fix: "Put the file back where it was and it is found again. If it is gone for good, the side file can be removed from the notebook's .libera folder; keep a copy if unsure.", ...(decided ? { clear: [{ type: "side-file", kind: orphan.kind, filePath: orphan.filePath, gone: orphan.filePath }] } : {}), ...say("orphanSideFile", { kind: orphan.kind, path: orphan.filePath }, shared ? "orphanSideFileSharedFix" : "orphanSideFileFix") });
+        : { severity: "warning", path: orphan.filePath, message: `${what}.`, fix: "Put the file back where it was and it is found again. If it is gone for good, the side file can be removed from the notebook's .libera folder; keep a copy if unsure.", ...(decided ? { clear: [{ type: "side-file", kind: orphan.kind, filePath: orphan.filePath, gone: orphan.filePath, ...(identities.has(orphan.path) && upkeepReattachesByContent(notebook) ? { identified: true as const } : {}) }] } : {}), ...say("orphanSideFile", { kind: orphan.kind, path: orphan.filePath }, shared ? "orphanSideFileSharedFix" : "orphanSideFileFix") });
     }
     // Notes still in an older layout, keyed by file name alone: read without
     // upgrading them (annotations.ts listLegacyAnnotations). The migrator gives
@@ -836,7 +881,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
         if (kind === "ink" || !identity || (await disk.isFile(originalPath)) !== true || await slotTaken(kind)(originalPath)) return null;
         // The host records each blob's hash: it is compared, and the file is never read (an online-only placeholder would be downloaded).
         if (manifestBefore?.state !== "ok") return "unknown";
-        const recorded = manifestBefore.files.get(originalPath)?.blobHash;
+        const recorded = manifestFile(manifestBefore, originalPath)?.blobHash;
         return !recorded ? "unknown" : recorded.toLowerCase() === identity.contentHash.toLowerCase() ? originalPath : null;
       }
       return identity ? owner(kind, fileType, identity) : (await disk.isFile(originalPath)) === true && !(await slotTaken(kind)(originalPath)) ? originalPath : null;
@@ -848,46 +893,71 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
      */
     const mayReturn = async (kind: string, fileType: string | null, originalPath: string, identity: { size: number; contentHash: string } | null) => {
       // A shared notebook's owner may be back when the host lists its old path (or cannot say), or the disk has it.
-      if (shared) return manifestBefore?.state !== "ok" || manifestBefore.files.has(originalPath) || (await disk.isFile(originalPath)) !== false;
+      if (shared && isSharedNotebookPath(originalPath)) return manifestBefore?.state !== "ok" || manifestHasFile(manifestBefore, originalPath) || (await disk.isFile(originalPath)) !== false;
+      // The notebook's local `_archive` is not the manifest's: the disk decides there.
+      if (shared) return (await disk.isFile(originalPath)) !== false;
       const candidates = identity && follows(kind, fileType) ? (kind === "ink" ? [...await filesOfType("pdf"), ...await filesOfType("image")] : await filesOfType(fileType!)) : [];
       if (identity) await hashSameSize(candidates.filter((candidate) => candidate.size === identity.size));
       return mayBeBack({ originalPath, source: identity }, candidates, hashes, (libraryPath) => disk.isFile(libraryPath));
     };
-    /** Set-aside records whose fate is unknown (a candidate could not be hashed): kept, never offered for removal. */
+    /** Set-aside records whose fate is unknown (a candidate could not be hashed, the budget ran out): kept, never offered for removal. */
     const unsettled: string[] = [];
     const returning: string[] = [];
+    /** Records read, judged and not coming back: what each covers (a record file, or an ink folder), and whether it names the bytes it was kept for. */
+    const settled = new Map<string, { identified: boolean }>();
+    /** Ink folders that have their record but no ink (a move that failed halfway left them): nothing is kept in them. */
+    const leaked: string[] = [];
     const kinds = { annotations: "pdf-annotations", outline: "pdf-outline", definitions: "definitions" } as const;
+    const byContent = upkeepReattachesByContent(notebook);
     for (const { file, record } of await readOrphans(notebook)) {
-      if (!budget.allows()) break;
+      if (!budget.allows()) { unsettled.push(file); continue; }
       const moved = await comesBack(kinds[record.kind], "pdf", record.originalPath, record.source ?? null);
       if (moved === "unknown" || (moved === null && await mayReturn(kinds[record.kind], "pdf", record.originalPath, record.source ?? null))) unsettled.push(file);
       else if (moved) { returning.push(file); add({ severity: "info", path: moved, message: `Saved ${name(kinds[record.kind])} set aside when ${record.originalPath} left the notebook belong to ${moved}${record.source ? ", the same file" : ""}. They go to it the next time the notebook is opened.`, ...say("sideSetAside", { kind: kinds[record.kind], originalPath: record.originalPath, path: moved, sameFile: record.source ? "yes" : "no" }) }); }
+      else settled.set(file, { identified: byContent && !!record.source });
     }
     const setAsideInk = orphanedSidecarsDirectoryPath(notebook, "ink");
     for (const entry of await readdir(setAsideInk, { withFileTypes: true }).catch(() => [])) {
-      if (!entry.isDirectory() || !budget.allows()) continue;
+      if (!entry.isDirectory()) continue;
       const directory = path.join(setAsideInk, entry.name);
+      if (!budget.allows()) { unsettled.push(directory); continue; }
       let record: { originalPath?: unknown; source?: { size?: unknown; sha256?: unknown } | null } | null = null;
-      try { record = JSON.parse(await readFile(path.join(directory, "record.json"), "utf8")); } catch { /* Not a set-aside record the owner reads. */ }
+      try { record = JSON.parse(await readFile(path.join(directory, "record.json"), "utf8")); } catch { /* Not a set-aside record the owner reads: not judged below, and so never offered. */ }
       if (typeof record?.originalPath !== "string") continue;
+      // A record with no ink beside it promises nothing to anyone: it is not a file that may come back, nor one kept for it.
+      const holdsInk = (await lstat(path.join(directory, "ink")).catch(() => null))?.isDirectory() === true;
+      if (!holdsInk) { leaked.push(directory); continue; }
       const source = record.source && typeof record.source.size === "number" && typeof record.source.sha256 === "string" ? { size: record.source.size, contentHash: record.source.sha256 } : null;
       const moved = await comesBack("ink", getFileType(record.originalPath), record.originalPath, source);
       if (moved === "unknown" || (moved === null && await mayReturn("ink", getFileType(record.originalPath), record.originalPath, source))) unsettled.push(directory);
       else if (moved) { returning.push(directory); add({ severity: "info", path: moved, message: `Ink set aside when ${record.originalPath} left the notebook belongs to ${moved}. It goes to it the next time the notebook is opened.`, ...say("inkSetAside", { originalPath: record.originalPath, path: moved }) }); }
+      else settled.set(directory, { identified: byContent && !!source });
     }
     returning.push(...unsettled);
-    const isReturning = (file: string) => returning.some((kept) => file === kept || file.startsWith(`${kept}${path.sep}`));
+    const under = (file: string, root: string) => file === root || file.startsWith(`${root}${path.sep}`);
+    const isReturning = (file: string) => returning.some((kept) => under(file, kept));
     const setAside = path.join(notebookSystemDirectoryPath(notebook), ORPHANED_SIDECARS_DIR);
     const kept: CleanupAction[] = [];
+    /** Files whose record could not be read or does not say whose they are: what they were kept for is unknown, so they are never offered. */
+    const unattributed: string[] = [];
     const walk = async (directory: string) => {
       for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
+        // The set-aside folder is walked within the budget as well.
+        if (!budget.allows()) return;
+        budget.visit();
         const file = path.join(directory, entry.name);
         if (entry.isDirectory()) await walk(file);
-        else if (entry.isFile() && !isReturning(file)) kept.push({ type: "set-aside", file: path.relative(setAside, file).split(path.sep).join("/") });
+        else if (entry.isFile() && !isReturning(file) && !leaked.some((folder) => under(file, folder))) {
+          const owner = [...settled].find(([root]) => under(file, root));
+          if (owner) kept.push({ type: "set-aside", file: path.relative(setAside, file).split(path.sep).join("/"), ...(owner[1].identified ? { identified: true as const } : {}) });
+          else unattributed.push(path.relative(setAside, file).split(path.sep).join("/"));
+        }
       }
     };
     await walk(setAside);
     if (kept.length) add({ severity: "info", path: notebook, message: `${kept.length} side ${kept.length === 1 ? "file is" : "files are"} kept for files that left the notebook outside the app, in case they come back.`, ...(!inventoryCut && !candidatesCut && !budget.reached ? { clear: kept } : {}), ...say("sideFilesKept", { count: kept.length }) });
+    if (unattributed.length) add({ severity: "warning", path: notebook, message: unattributed.length === 1 ? "1 set-aside side file can't be matched to the file it was kept for (its record is missing or damaged), so it is left alone." : `${unattributed.length} set-aside side files can't be matched to the files they were kept for (their records are missing or damaged), so they are left alone.`, fix: "Look in the notebook's .libera/orphaned-sidecars folder; remove what you no longer need by hand.", ...say("sideFilesUnattributed", { count: unattributed.length }, "sideFilesUnattributedFix") });
+    if (leaked.length) add({ severity: "info", path: notebook, message: leaked.length === 1 ? "1 set-aside ink folder has a record but no ink (a move that did not finish left it): nothing is kept in it, and nothing comes back from it." : `${leaked.length} set-aside ink folders have a record but no ink (a move that did not finish left them): nothing is kept in them, and nothing comes back from them.`, fix: "They can be removed by hand from the notebook's .libera/orphaned-sidecars/ink folder.", ...say("setAsideInkEmpty", { count: leaked.length }, "setAsideInkEmptyFix") });
     const partial: Said[] = [];
     if (unreadable.length || unreadSidecars) partial.push(said("sideFilesUnreadable", `${unreadable.length + unreadSidecars} side ${unreadable.length + unreadSidecars === 1 ? "file or folder" : "files or folders"} could not be read.`, { count: unreadable.length + unreadSidecars }));
     // A file the budget no longer covered was not compared with what its side files were made for: it is not passed.
@@ -906,9 +976,12 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     // embed's image, left behind when the note moved: it is kept for the
     // embed to be pointed at again, never offered to Acknowledge.
     const embedded = new Set<string>();
+    // An image address that can't be read may be any image: with one, no image is offered for removal.
+    let addressUnread = false;
     if (unused.some((asset) => !asset.toLowerCase().endsWith(".py"))) {
       for (const note of readable) {
         for (const target of markdownImageTargets(note.documentPath, note.content)) {
+          if (!target.absolutePath && !target.libraryPath) addressUnread = true;
           if (target.absolutePath && await probeFileOnce(target.absolutePath) !== "present") embedded.add(foldedFileName(path.basename(target.absolutePath)));
         }
       }
@@ -942,7 +1015,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
           : { severity: "warning", path: asset, message: "Python code of a note that is not in the notebook.", fix: "Move the note back and it is found again; remove the code only once you no longer need it.", ...(ownersCut ? {} : { clear: [{ type: "asset", path: asset, ...(pythonSidecarDocumentPath(asset) ? { gone: pythonSidecarDocumentPath(asset)! } : {}) }] }), ...say("pythonCodeOrphan", undefined, "pythonCodeOrphanFix") }
         : wanted
           ? { severity: "info", path: asset, message: "An image no note shows, but a note shows a missing image of this name: probably this one, left behind when the note moved.", fix: "Point the note's image at this file, or insert it again.", ...say("imageLeftBehind", undefined, "imageLeftBehindFix") }
-          : { severity: "info", path: asset, message: "An image no note shows (an open, unsaved note may still use it).", fix: "It can be removed once no note needs it.", clear: [{ type: "asset", path: asset }], ...say("imageUnused", undefined, "imageUnusedFix") });
+          : { severity: "info", path: asset, message: "An image no note shows (an open, unsaved note may still use it).", fix: "It can be removed once no note needs it.", ...(addressUnread ? {} : { clear: [{ type: "asset", path: asset }] }), ...say("imageUnused", undefined, "imageUnusedFix") });
     }
     // A shared notebook's notes (or images) not yet on this computer may be the ones that use this code or these images.
     const waiting = shared && (manifestBefore?.state !== "ok" || (await undelivered()).length) ? [manifestUnavailable ?? said("sharedFilesNotHere", "Some of the shared notebook's files are not on this computer yet, so images and code that only they use can't be told apart.")] : [];
@@ -974,6 +1047,7 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     // read once (headings from the notes already read, annotation ids and
     // a recording's length from their side files).
     const byPath = new Map(readable.map((note) => [note.documentPath, note]));
+    const otherNotes = new Map<string, Promise<NoteDocument | null>>();
     const headings = new Map<string, MarkdownHeadingAnchor[]>();
     const htmlAnchors = new Map<string, Set<string>>();
     const hasHeading = (note: { documentPath: string; content: string }, fragment: string) => {
@@ -1009,7 +1083,21 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
         else if (!disk.exists(target) && listed(target)) uncheckedLinks += 1;
         else if (!disk.exists(target)) add({ severity: "warning", path: note.documentPath, message: `The chart at line ${block.line} reads its data from "${data}", which is missing.`, fix: "Put the file back, or point the chart at its current place.", ...say("chartDataMissing", { line: block.line, data }, "chartDataMissingFix") });
       }
-      for (const href of extractNotebookLinkDestinations(note.content)) {
+      // The links a move rewrites are the links checked (markdownPathOccurrences): Markdown links, and HTML `<a href>`.
+      const hrefs = [...new Set(markdownPathOccurrences(note.content).filter((occurrence) => occurrence.kind === "link" || occurrence.kind === "html-link").map((occurrence) => occurrence.value))];
+      for (const href of hrefs) {
+        // An address of a file the app serves names its file as a link does.
+        if (href.startsWith("/api/files/raw/")) {
+          let target: { libraryPath: string; absolutePath: string } | null = null;
+          try { const libraryPath = rawFileSourcePath(href); if (libraryPath) target = { libraryPath, absolutePath: rawFileDiskPath(libraryPath) }; } catch { /* an address that can't be read names no file */ }
+          if (!target) { add({ severity: "warning", path: note.documentPath, message: `The link "${href}" finds no file.`, fix: "Point the link at the file's current place.", ...say("linkNoFile", { href }, "linkNoFileFix") }); continue; }
+          budget.probe();
+          const state = await probeFileOnce(target.absolutePath);
+          if (state === "unknown") uncheckedLinks += 1;
+          else if (state === "absent" && listed(target.libraryPath)) uncheckedLinks += 1;
+          else if (state === "absent") add({ severity: "warning", path: note.documentPath, message: `The link "${href}" finds no file.`, fix: "Point the link at the file's current place.", ...say("linkNoFile", { href }, "linkNoFileFix") });
+          continue;
+        }
         if (href.startsWith("#")) {
           if (href.length > 1 && !hasHeading(note, href)) add({ severity: "warning", path: note.documentPath, message: `The link "${href}" finds no heading in this note.`, fix: "Point it at a heading's current title.", ...say("linkNoHeading", { href }, "linkNoHeadingFix") });
           continue;
@@ -1025,7 +1113,13 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
         }
         if (target.unreadablePosition) add({ severity: "warning", path: note.documentPath, message: `The link "${href}" keeps a place in ${target.path} that can't be read; ${opensAtStart}`, fix: "Link to the place again.", ...say("linkPositionUnreadable", { href, path: target.path }, "linkPositionFix") });
         if (target.headingFragment && getFileType(target.path) === "markdown") {
-          const linked = byPath.get(target.path);
+          let linked = byPath.get(target.path);
+          // A note of another notebook was not read with this one's notes: it is read once, within the byte budget, for its headings.
+          if (!linked && !under(target.path, notebook)) {
+            if (!otherNotes.has(target.path)) otherNotes.set(target.path, readWithin(budget, absoluteOf(target.path)).then((bytes) => bytes ? { documentPath: target.path, content: bytes.toString("utf8") } : null));
+            linked = await otherNotes.get(target.path) ?? undefined;
+            if (!linked) uncheckedLinks += 1;
+          }
           if (linked && !hasHeading(linked, target.headingFragment)) add({ severity: "warning", path: note.documentPath, message: `The link "${href}" finds no heading "${decodeMarkdownHeadingHash(target.headingFragment)}" in ${target.path}; ${opensAtStart}`, fix: "Point it at a heading's current title.", ...say("linkHeadingMissingInFile", { href, heading: decodeMarkdownHeadingHash(target.headingFragment), path: target.path }, "linkHeadingMissingInFileFix") });
         }
         const view = target.metadata?.viewState;
@@ -1059,16 +1153,17 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
       if (!budget.allows()) break;
       for (const reference of written) {
         await disk.check(reference.candidates);
-        if (reference.candidates.some(disk.exists)) continue;
+        // A spelling the build cannot open (`../x` under openin_any=p, `_folder/x` for \include: latexOpenable) is not found whatever is on disk.
+        if (!reference.uncompilable && reference.candidates.some(disk.exists)) continue;
         // A file the tree does not list (.sty, .cls, an image type it does not show) may still be on disk; TeX needs a readable file, so a folder or a dangling link is not one.
         let state: "present" | "absent" | "unknown" = "absent";
-        for (const candidate of reference.candidates) {
+        for (const candidate of reference.uncompilable ? [] : reference.candidates) {
           const [owner, ...parts] = candidate.split("/");
           const found = await probeFileOnce(path.join(notebookPath(owner), ...parts));
           if (found === "present") { state = "present"; break; }
           if (found === "unknown") state = "unknown";
         }
-        if (state === "absent" && reference.candidates.some(listed)) state = "unknown";
+        if (state === "absent" && !reference.uncompilable && reference.candidates.some(listed)) state = "unknown";
         if (state === "unknown") unchecked += 1;
         if (state === "absent" && reference.main === file) add({ severity: "error", path: file, message: `${what[reference.kind]} "${reference.written}", which is not found.`, fix: "Add the file, or correct the path (paths are read from the main file's folder).", ...say("latexMissing", { kind: reference.kind, written: reference.written }, "latexMissingFix") });
         // A chapter is built from its main file: the one that loses the file is named.
@@ -1092,11 +1187,14 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     const unknownPaths = new Set<string>();
     const missing = async (libraryPath: string) => {
       // A shared notebook's file is there when the host lists it (a listed file the disk lacks is arriving), gone when it does not. Without the list a missing file is not judged.
-      if (manifestBefore?.state === "ok") return !manifestBefore.files.has(libraryPath);
+      // Decided by the path, not the notebook: the notebook's local `_archive` and other notebooks' files are the disk's.
+      const byManifest = manifestBefore !== null && isSharedNotebookPath(libraryPath);
+      if (byManifest && manifestBefore.state === "ok") return !manifestHasFile(manifestBefore, libraryPath);
       await disk.check([libraryPath]);
-      if (disk.unknown(libraryPath) || (manifestBefore && !disk.exists(libraryPath))) { unknownPaths.add(libraryPath); return false; }
+      if (disk.unknown(libraryPath) || (byManifest && !disk.exists(libraryPath))) { unknownPaths.add(libraryPath); return false; }
       return !disk.exists(libraryPath);
     };
+    // Stars and tags are given to files only (notebook-panel.tsx, file-tags-dialog.tsx): a folder at the path does not keep them.
     for (const starred of metadata.starredFilePaths) {
       if (under(starred, notebook) && await missing(starred)) add({ severity: "warning", path: starred, message: "Starred, but the file is missing.", fix: "Unstar it, or put the file back.", clear: [{ type: "star", path: starred, gone: starred }], ...say("starredFileMissing", undefined, "starredFileMissingFix") });
     }
@@ -1194,8 +1292,8 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
           if (disk.unknown(attachment.path)) unchecked += 1;
           // A shared notebook's attachment is missing when the host does not list it; without the list it is not judged.
           let gone: boolean;
-          if (manifestBefore && under(attachment.path, notebook)) {
-            if (manifestBefore.state === "ok") gone = !manifestBefore.files.has(attachment.path);
+          if (manifestBefore && under(attachment.path, notebook) && isSharedNotebookPath(attachment.path)) {
+            if (manifestBefore.state === "ok") gone = !manifestHasFile(manifestBefore, attachment.path);
             else { gone = false; if (!disk.exists(attachment.path) && !disk.unknown(attachment.path)) unchecked += 1; }
           } else gone = !disk.exists(attachment.path) && !disk.unknown(attachment.path);
           if (gone) {
@@ -1210,7 +1308,13 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     } else if (tether && "libraryPath" in tether) {
       await disk.check([tether.libraryPath]);
       if (disk.unknown(tether.libraryPath)) unchecked += 1;
-      if (!disk.exists(tether.libraryPath) && !disk.unknown(tether.libraryPath)) add({ severity: "warning", path: tether.libraryPath, message: "The library is tethered to this .bib file, which is missing.", fix: "Put the file back, or choose the tethered file again in References.", clear: [{ type: "tether", target: tether.libraryPath, gone: tether.libraryPath }], ...say("tetherFileMissing", undefined, "tetherFileMissingFix") });
+      // A tether to a shared file: the host's list decides (a listed file the disk lacks is arriving; one it no longer lists is gone, a retired copy still on the disk or not). Without the list it is not judged.
+      let tetherGone = !disk.exists(tether.libraryPath) && !disk.unknown(tether.libraryPath);
+      if (manifestBefore && under(tether.libraryPath, notebook) && isSharedNotebookPath(tether.libraryPath)) {
+        if (manifestBefore.state === "ok") tetherGone = !manifestHasFile(manifestBefore, tether.libraryPath);
+        else { tetherGone = false; if (!disk.exists(tether.libraryPath)) unchecked += 1; }
+      }
+      if (tetherGone) add({ severity: "warning", path: tether.libraryPath, message: "The library is tethered to this .bib file, which is missing.", fix: "Put the file back, or choose the tethered file again in References.", clear: [{ type: "tether", target: tether.libraryPath, gone: tether.libraryPath }], ...say("tetherFileMissing", undefined, "tetherFileMissingFix") });
     } else if (tether) {
       const state = await probe(tether.absolutePath);
       // A folder that is gone too may be a drive that is unplugged: not for Acknowledge to forget.
@@ -1264,15 +1368,22 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
         if (!disk.exists(file) && !disk.unknown(file)) count += 1;
       }
       // A note not indexed yet (the archive is indexed only when shown).
-      for (const file of hashes.keys()) if (!(file in files) && file.split("/")[1] !== ARCHIVE_DIR) count += 1;
+      for (const file of hashes.keys()) if (!(file in files) && !isArchivedCitingPath(file)) count += 1;
       return count;
     };
+    // An index that is there but is not JSON (a sync conflict, a partial write) is reported whatever the notebook holds: the readers treat it as empty, which on an empty notebook looks the same as a good index.
+    for (const [index, file] of [["link index", linkIndexPath(notebook)], ["citation index", citationIndexPath(notebook)]] as const) {
+      if (await probe(file) !== "present" || !budget.allows()) continue;
+      const bytes = await readWithin(budget, file);
+      if (!bytes) continue;
+      let damaged = false;
+      try { const value = JSON.parse(bytes.toString("utf8")); damaged = value === null || typeof value !== "object" || Array.isArray(value); } catch { damaged = true; }
+      if (damaged) add({ severity: "info", path: notebook, message: `The ${index} can't be read; it is built again from the notes the next time it is needed.`, ...say("indexCorrupt", { index }) });
+    }
     // An index not built yet is not out of date: it is built when first needed.
     if (await probe(linkIndexPath(notebook)) === "present") {
       const count = await outdated((await readLinkIndex(linkIndexPath(notebook))).files, hashes);
-      // The next refresh must read the notes again, not reuse what this process read before
-      // (a change that kept a note's size and times is how the index fell behind).
-      if (count) forgetNotebookLinkReads(notebook);
+      // The check only reads: the verify route tells the link reader to read the notes again when this is reported (a change that kept a note's size and times is how the index fell behind).
       if (count) add({ severity: "info", path: notebook, message: `The link index is out of date for ${plural(count, "note")}, so links to a file and related notebooks may be off until the notebook is next opened.`, ...say("linkIndexOutOfDate", { count }) });
     }
     if (await probe(citationIndexPath(notebook)) === "present") {
@@ -1357,7 +1468,9 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     if (before.state !== "ok") { manifestStable = false; return manifestUnavailable!; }
     // One more listing, to see that the host's view did not change during the check; if it did, nothing is concluded and nothing is retried.
     const after = await readManifestView(notebook);
-    if (after.state !== "ok" || after.stamp !== before.stamp) {
+    // The listing's own stamp leaves out sizes; they are compared too, since a blob replaced by one of another size is a change during the check.
+    const sizes = (view: ManifestView) => view.state === "ok" ? JSON.stringify([...view.files.values()].map((item) => [item.path, item.size ?? ""]).sort()) : "";
+    if (after.state !== "ok" || after.stamp !== before.stamp || sizes(after) !== sizes(before)) {
       manifestStable = false;
       return said("sharedManifestChanged", "The shared notebook's file list changed while it was being checked, so this computer was not compared with it. Check again in a moment.");
     }
@@ -1366,24 +1479,59 @@ async function checkNotebook(name: string, options: VerifyOptions): Promise<Inte
     let unchecked = 0;
     const files = [...before.files.values()].sort((a, b) => a.path.localeCompare(b.path));
     await disk.check(files.map((entry) => entry.path));
+    // What the host recorded of the bytes it last wrote (its state file, read once within the budget): a recorded hash, size and time stand in for hashing the files, which are never read (a placeholder would be downloaded).
+    const stateFile = path.join(notebookPath(notebook), ...STATE_DIRECTORY, "state.json");
+    const records = budget.allows() ? parseHostRecords((await readWithin(budget, stateFile))?.toString("utf8") ?? null, foldedFileName) : null;
+    const SLACK_MS = 2000;
+    const now = Date.now();
     for (const entry of files) {
       if (!budget.allows()) break;
       budget.visit();
       if (disk.unknown(entry.path)) { unchecked += 1; continue; }
-      let problem: "missing" | "differs" | null = null;
+      let problem: "missing" | "differs" | "empty" | "replaced" | null = null;
+      let diskChangedAt: number | undefined;
       if (!disk.exists(entry.path)) problem = "missing";
-      else if (entry.kind === "blob" && entry.size !== undefined) {
-        // Size only, from a stat: a file is never read (or downloaded) for this.
+      else if (entry.kind === "blob" || entry.kind === "doc") {
+        // From a stat, never a read.
         budget.probe();
         const stats = await lstat(absoluteOf(entry.path)).catch(() => null);
-        if (stats?.isFile() && stats.size !== entry.size) problem = "differs";
+        if (stats?.isFile()) {
+          const record = records?.layout.get(entry.fileId);
+          const moved = record?.mtimeMs !== undefined && Math.abs(stats.mtimeMs - record.mtimeMs) > SLACK_MS;
+          if (moved) diskChangedAt = stats.mtimeMs;
+          if (entry.kind === "blob") {
+            if (entry.size !== undefined && stats.size !== entry.size) problem = "differs";
+            // Same size: the recorded hash says which version the host wrote, and a changed time says the bytes were replaced since.
+            else if (record?.hash && entry.blobHash && record.hash !== entry.blobHash) problem = "replaced";
+            else if (record?.hash && entry.blobHash && record.hash === entry.blobHash && moved) problem = "replaced";
+          } else if (record) {
+            // A document: the manifest records no size, the host's record says what it wrote. An empty working copy of text the host wrote, or an older copy put back, is damage; an edit is the host's to take.
+            if (stats.size === 0 && (record.size ?? 0) > 0) problem = "empty";
+            else if (record.size !== undefined && stats.size !== record.size && record.mtimeMs !== undefined && stats.mtimeMs < record.mtimeMs - SLACK_MS) problem = "differs";
+          }
+        }
       }
       if (!problem) continue;
-      const arriving = mayBeArriving(entry, sync);
+      const arriving = mayBeArriving(entry, sync, now, records ? { reconciling: records.reconciling.has(foldedFileName(entry.path)), ...(diskChangedAt !== undefined ? { diskChangedAt } : {}) } : undefined);
       if (arriving === "unknown") syncUnknown = true;
       if (arriving === true) add({ severity: "info", path: entry.path, message: "Sync is still bringing this file to this computer.", ...say("sharedFileArriving") });
       else if (problem === "missing") add({ severity: "warning", path: entry.path, message: "The shared notebook has this file, but it is not on this computer, and sync is not behind.", fix: "Check again once sync has finished.", ...say("sharedFileMissingHere", undefined, "sharedFileMissingHereFix") });
+      else if (problem === "empty") add({ severity: "warning", path: entry.path, message: "This computer's copy of this shared document is empty, though the host wrote text to it, and sync is not behind.", fix: "Check again once sync has finished.", ...say("sharedFileEmpty", undefined, "sharedFileMissingHereFix") });
+      else if (problem === "replaced") add({ severity: "warning", path: entry.path, message: "This computer has another version of this file than the shared notebook (same size, other content), and sync is not behind.", fix: "Check again once sync has finished.", ...say("sharedFileReplaced", undefined, "sharedFileMissingHereFix") });
       else add({ severity: "warning", path: entry.path, message: "This computer has another version of this file than the shared notebook (its size differs), and sync is not behind.", fix: "Check again once sync has finished.", ...say("sharedFileDiffers", undefined, "sharedFileMissingHereFix") });
+    }
+    // Folders the manifest lists (an empty folder has no file to show it).
+    for (const folder of [...before.folders].sort()) {
+      if (!budget.allows()) break;
+      budget.visit();
+      budget.probe();
+      const state = await probe(absoluteOf(folder));
+      if (state === "unknown") { unchecked += 1; continue; }
+      if (state === "present") continue;
+      const arriving = mayBeArriving({ updatedAt: 0 }, sync, now, records ? { reconciling: false } : undefined);
+      if (arriving === "unknown") syncUnknown = true;
+      if (arriving === true) add({ severity: "info", path: folder, message: "Sync is still bringing this file to this computer.", ...say("sharedFileArriving") });
+      else add({ severity: "warning", path: folder, message: "The shared notebook has this folder, but it is not on this computer, and sync is not behind.", fix: "Check again once sync has finished.", ...say("sharedFolderMissingHere", undefined, "sharedFileMissingHereFix") });
     }
     for (const file of visible.files) {
       const relative = file.split("/").slice(1).join("/");

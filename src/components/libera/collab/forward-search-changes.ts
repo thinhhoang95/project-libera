@@ -85,6 +85,12 @@ export function useForwardSharedFileChanges(): void {
       });
     };
     const stop = subscribeHostEvents((event) => {
+      // Moves this user made that waited for the server are in the log now: read it again (S-C2).
+      if (event.t === "transitions-recorded") {
+        nudged.add(event.notebook);
+        nudgeTimer ??= setTimeout(flushNudges, FORWARD_DELAY_MS);
+        return;
+      }
       if (event.t !== "files-changed" && event.t !== "tree-changed") return;
       // Every record kept for a moved or removed file follows through the host's durable log: the event only says Next should read it, once per burst.
       if (event.t === "tree-changed" && (event.moves.length || event.removed.length)) {

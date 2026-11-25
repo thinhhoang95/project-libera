@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useSyncExternalStore } from "react";
+import { onPathsMoved } from "@/components/libera/path-follow";
 import { apiRequest } from "@/components/libera/api-client";
 import type { PdfCommentAnchor, PdfCommentsPayload, PdfCommentThread } from "@/lib/types";
 import { subscribeHostEvents } from "@/lib/collab/ui/bridge";
@@ -111,6 +112,21 @@ export async function changePdfComments(path: string, change: PdfCommentChange):
     set(path, { busy: "" });
   }
 }
+
+/** PDFs that moved: what was loaded under the old path is dropped, so the new path reads its own comments (and a new file at the old path never shows them). */
+export function followPdfCommentPaths(remap: (path: string) => string) {
+  for (const path of [...states.keys()]) {
+    const moved = remap(path);
+    if (moved === path) continue;
+    states.delete(path);
+    loads.delete(path);
+    loadedUnder.delete(path);
+    states.delete(moved);
+    for (const listener of [...(listeners.get(path) ?? [])]) listener();
+  }
+}
+
+onPathsMoved(followPdfCommentPaths);
 
 export function selectPdfComment(path: string, threadId: string | null) {
   if (pdfCommentsState(path).selectedId !== threadId) set(path, { selectedId: threadId });

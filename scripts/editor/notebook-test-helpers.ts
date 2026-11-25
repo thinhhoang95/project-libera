@@ -8,6 +8,7 @@ import { inkFolderPath } from "../../src/lib/storage/ink";
 import { verifyNotebook, type IntegrityFinding, type IntegritySeverity } from "../../src/lib/storage/integrity";
 import { writeMarkdownImageAsset } from "../../src/lib/storage/markdown-assets";
 import { setMigrationFaultForTests } from "../../src/lib/storage/migration";
+import { settleSharedRecordsBeforeCheck } from "../../src/lib/storage/shared-record-follow";
 import { emptyReferenceLibrary } from "../../src/lib/references/library-ops";
 import { DEFINITIONS_VERSION } from "../../src/lib/definitions";
 import { emptyInkAuthorFile } from "../../src/lib/ink/codec";
@@ -139,18 +140,35 @@ export async function seedNotebook(notebook: string) {
   await writeLibraryFile(`${notebook}/notes/data.unknownext`, "unknown");
 }
 
-const describe = (finding: IntegrityFinding) => `${finding.severity} ${finding.check}: ${finding.path}: ${finding.message}`;
+/** A finding as text: severity, check, path, message, then its code in brackets (`allow` may name the code or any part of the text). */
+const describe = (finding: IntegrityFinding) => `${finding.severity} ${finding.check}: ${finding.path}: ${finding.message}${finding.code ? ` [${finding.code}]` : ""}`;
+
+/**
+ * The "info" findings that mean an operation left something behind (a record for a file that is gone, an image no note shows, a file the
+ * shared notebook does not list, an index row for something that moved). They fail `assertNotebookSound` whatever `severities` says; a test
+ * that expects one names it in `allow` (by its code, e.g. `reviewFileMissing`).
+ */
+// The link and citation indexes are brought up to date lazily by design (when the notebook is next opened, when
+// citations are next listed), so being out of date right after a move is not something it left behind.
+export const LEFTOVER_INFO_CODES: ReadonlySet<string> = new Set([
+  "reviewFileMissing", "agentRunFileMissing", "imageLeftBehind", "imageUnused", "sharedFileNotListed",
+  "indexCorrupt", "globalSearchStale", "globalSearchChanged",
+]);
 
 /**
  * The notebook check finds nothing wrong (errors and warnings by default;
- * pass `severities` to include notes). `allow` names findings a test expects,
- * as text that a finding's description contains.
+ * pass `severities` to include notes), and no leftover of a move
+ * (`LEFTOVER_INFO_CODES`) even among the notes. `allow` names findings a test
+ * expects, as text that a finding's description contains (its code in
+ * brackets is part of it). A shared notebook's pending record moves are
+ * settled first, as the verify route does.
  */
 export async function assertNotebookSound(notebook: string, { allow = [], severities = ["error", "warning"], partial = false }: { allow?: string[]; severities?: IntegritySeverity[]; /** A check that could only partly run is allowed: it can't say the notebook is sound. */ partial?: boolean } = {}) {
+  await settleSharedRecordsBeforeCheck(notebook);
   const report = await verifyNotebook(notebook);
   const unexpected = [
     ...report.checks.filter((check) => check.status === "failed" || (!partial && check.status === "incomplete")).map((check) => `check ${check.status} ${check.id}: ${check.note}`),
-    ...report.findings.filter((finding) => severities.includes(finding.severity)).map(describe).filter((text) => !allow.some((expected) => text.includes(expected))),
+    ...report.findings.filter((finding) => severities.includes(finding.severity) || (finding.severity === "info" && LEFTOVER_INFO_CODES.has(finding.code ?? ""))).map(describe).filter((text) => !allow.some((expected) => text.includes(expected))),
   ];
   assert.deepEqual(unexpected, [], `${notebook} is not sound`);
   return report;

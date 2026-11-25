@@ -1,6 +1,7 @@
 import { collabHostConfig, getHostStatus, listProjectEntries, livePdfSnapshot, resolveSharedPdf } from "@/lib/collab/host-client";
 import type { FileListEntry } from "@/lib/collab/local-api";
 import { notebookHasLivePdfs, sharedNotebookMarker } from "@/lib/collab/shared-notebook";
+import { foldedFileName } from "@/lib/storage/file-names";
 
 // What Check Notebook, Try to fix and Acknowledge ask the collaboration host
 // about a shared notebook, read only: the manifest (the authoritative file
@@ -20,6 +21,40 @@ export type ManifestView =
   }
   | { state: "unavailable"; reason: string };
 
+type OkView = Extract<ManifestView, { state: "ok" }>;
+type FoldedIndex = { files: Map<string, FileListEntry>; folders: Set<string> };
+const foldedIndexes = new WeakMap<OkView, FoldedIndex>();
+
+/** A library path under the round's one name rule (NFC plus case folding, per segment). */
+const foldedPath = (libraryPath: string) => libraryPath.split("/").map(foldedFileName).join("/");
+
+function foldedIndex(view: OkView): FoldedIndex {
+  let index = foldedIndexes.get(view);
+  if (!index) {
+    index = { files: new Map(), folders: new Set() };
+    for (const [libraryPath, entry] of view.files) {
+      const folded = foldedPath(libraryPath);
+      if (!index.files.has(folded)) index.files.set(folded, entry);
+      // A folder holding a listed file is listed too.
+      const parts = folded.split("/");
+      for (let length = 2; length < parts.length; length += 1) index.folders.add(parts.slice(0, length).join("/"));
+    }
+    for (const folder of view.folders) index.folders.add(foldedPath(folder));
+    foldedIndexes.set(view, index);
+  }
+  return index;
+}
+
+/** The manifest's entry for a file: the exact path, else the one that is the same name under the name rule (an OS alias of it). */
+export function manifestFile(view: OkView, libraryPath: string): FileListEntry | undefined {
+  return view.files.get(libraryPath) ?? foldedIndex(view).files.get(foldedPath(libraryPath));
+}
+
+export const manifestHasFile = (view: OkView, libraryPath: string) => manifestFile(view, libraryPath) !== undefined;
+
+/** Whether the manifest lists a folder (a listed file under it makes it one), under the name rule. */
+export const manifestHasFolder = (view: OkView, libraryPath: string) => view.folders.has(libraryPath) || foldedIndex(view).folders.has(foldedPath(libraryPath));
+
 /** The host's own word on whether this computer keeps up. Null when it can't be read. */
 export type SharedSync = { connected: boolean; reconcilePending: number; revoked: boolean; role: string } | null;
 
@@ -38,6 +73,10 @@ export async function readManifestView(notebook: string): Promise<ManifestView> 
     const result = await listProjectEntries(marker.projectId, config);
     if (!result || !Array.isArray(result.entries)) return { state: "unavailable", reason: "The host did not return the shared notebook's file list." };
     entries = result.entries;
+    // A move or removal made here that the server has not acknowledged yet: the records kept on this computer follow it
+    // once it is, so they are still where the list before it had them, and judging them against the list now would call
+    // them leftovers. Not judged, so nothing is offered for removal on its account (S-C2).
+    if (result.awaitingServer) return { state: "unavailable", reason: "A change to this shared notebook's files is waiting for the server to confirm it, so the records kept for those files can't be judged yet. Check again once it has." };
   } catch (error) {
     return { state: "unavailable", reason: error instanceof Error ? error.message : String(error) };
   }
@@ -71,10 +110,49 @@ export async function readSharedSync(notebook: string): Promise<SharedSync> {
  * connected, it holds files to reconcile, or the entry is new. `unknown` when
  * the host could not be asked, so it can't be told from a real gap.
  */
-export function mayBeArriving(entry: Pick<FileListEntry, "updatedAt">, sync: SharedSync, now = Date.now()): boolean | "unknown" {
+export function mayBeArriving(entry: Pick<FileListEntry, "updatedAt">, sync: SharedSync, now = Date.now(), held?: FileHold): boolean | "unknown" {
   if (!sync) return "unknown";
-  if (!sync.connected || sync.reconcilePending > 0) return true;
+  if (!sync.connected) return true;
+  // Open reconciliations are per file: with the host's records for this notebook, only the files they name are held (one unrelated reconciliation does not excuse every gap). Without them, any pending one may concern this file.
+  if (sync.reconcilePending > 0 && (!held || held.reconciling)) return true;
+  // The disk copy changed a moment ago: the host has not taken that change yet.
+  if (held?.diskChangedAt !== undefined && now - held.diskChangedAt < RECENT_ENTRY_MS) return true;
   return now - entry.updatedAt < RECENT_ENTRY_MS;
+}
+
+/** What is known about one file besides the manifest: whether an open reconciliation names it, and when its disk copy last changed. */
+export type FileHold = { reconciling?: boolean; diskChangedAt?: number };
+
+/** What the host recorded of the bytes it last wrote for a file (state.json's layout), and the files it holds in an open reconciliation. */
+export type HostRecords = {
+  layout: Map<string, { hash?: string; size?: number; mtimeMs?: number }>;
+  /** Folded library paths (`Notebook/sub/file.md`, as the host's `liberaPath` writes them) of the files in an open reconciliation. */
+  reconciling: Set<string>;
+};
+
+/**
+ * The host's own bookkeeping (`.libera/collab/state.json` of the notebook), parsed read only from text the caller read within its
+ * budget. Null when it is not usable: the caller then judges with the manifest alone and keeps the notebook-wide reading of
+ * `reconcilePending`.
+ */
+export function parseHostRecords(text: string | null, fold: (name: string) => string): HostRecords | null {
+  if (!text) return null;
+  let value: unknown;
+  try { value = JSON.parse(text); } catch { return null; }
+  const state = value as { version?: unknown; layout?: Record<string, { hash?: unknown; size?: unknown; mtimeMs?: unknown }>; reconciliations?: Array<{ path?: unknown }> } | null;
+  if (!state || state.version !== 1 || !state.layout || typeof state.layout !== "object" || !Array.isArray(state.reconciliations)) return null;
+  const layout: HostRecords["layout"] = new Map();
+  for (const [fileId, record] of Object.entries(state.layout)) {
+    if (!record || typeof record !== "object") continue;
+    layout.set(fileId, {
+      ...(typeof record.hash === "string" ? { hash: record.hash } : {}),
+      ...(typeof record.size === "number" ? { size: record.size } : {}),
+      ...(typeof record.mtimeMs === "number" ? { mtimeMs: record.mtimeMs } : {}),
+    });
+  }
+  const reconciling = new Set<string>();
+  for (const item of state.reconciliations) if (typeof item?.path === "string") reconciling.add(fold(item.path.replace(/^\/+/, "")));
+  return { layout, reconciling };
 }
 
 /**
@@ -98,5 +176,5 @@ export async function livePdfMarkIds(libraryPath: string): Promise<{ state: "ids
 
 /** Side files the host owns in a shared notebook: manifest companions (ink, transcripts) and a live PDF's marks. Everything else is this computer's. */
 export function hostOwnsSideFile(kind: string, notebook: string): boolean {
-  return kind === "ink" || kind === "transcript" || (kind === "pdf-annotations" && notebookHasLivePdfs(notebook));
+  return kind === "ink" || kind === "transcript" || kind === "transcript-companion" || (kind === "pdf-annotations" && notebookHasLivePdfs(notebook));
 }

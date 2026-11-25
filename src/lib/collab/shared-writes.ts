@@ -53,6 +53,7 @@ import {
 } from "@/lib/storage/paths";
 import { MARKDOWN_ASSETS_DIR } from "@/lib/storage/constants";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
+import { hostOwnsSideFile } from "@/lib/storage/shared-manifest-view";
 import { copyReviewPath } from "@/lib/storage/markdown-reviews";
 import { getFileNode, getTree } from "@/lib/storage/tree";
 import { assertCopyKeepsType, assertNoLeftoverFolderRecords, assertNoLeftoverRecords, assertTypeChangeLosesNothing, readLiberaFile, textVersion } from "@/lib/storage/files";
@@ -106,6 +107,8 @@ export interface SharedIdentityOptions extends SharedWriteOptions {
    * Without it the host acts on the file at the path.
    */
   expectedFileId?: string;
+  /** A batch move: links follow once for the whole batch afterwards (batch-files.ts), not per file. */
+  deferLinks?: boolean;
   /**
    * Delete only: a batch deletes many files and does its own one wait and one
    * refresh at the end, so the call returns right after its own cleanup, null
@@ -655,6 +658,12 @@ async function sharedEntryKnown(liberaPath: string, options: SharedWriteOptions,
   }
 }
 
+/** A batch move's destination folder: on disk, or known to the manifest before the disk has it (as moveSharedFile checks it). */
+export async function assertSharedDestinationFolder(destinationDirectory: string, options: SharedWriteOptions = {}) {
+  const destination = splitDirectoryPath(destinationDirectory);
+  await assertSharedDirectoryExists(itemPath(destination.notebook, destination.pathParts), relativeFilePath(destination.notebook, destination.pathParts), "Destination folder was not found.", options);
+}
+
 /** assertDirectoryExists, except that a folder the manifest knows but the disk has not received yet exists. */
 async function assertSharedDirectoryExists(directory: string, liberaPath: string, message: string, options: SharedWriteOptions) {
   try {
@@ -740,7 +749,7 @@ export async function moveSharedFile(relativePath: string, destinationDirectory:
     throw new StorageError("Destination file already exists.", 409);
   }
   // A slot free in the manifest can still hold records of an earlier file on this computer: refused before the host moves anything, as a local move is.
-  if (sourcePath !== nextPath && !own) await assertNoLeftoverRecords(destination.notebook, nextParts, assertSupportedFileName(safeName));
+  if (sourcePath !== nextPath && !own) await assertNoLeftoverRecords(destination.notebook, nextParts, assertSupportedFileName(safeName), false, undefined, "move", (kind) => hostOwnsSideFile(kind, destination.notebook));
   // A change of file type never drops a record kept on this computer (annotations, definitions, reviews, pending agent changes): refused before the host moves anything.
   // What the host owns (ink, transcripts, a PDF's notes) is checked by the host and by the live PDF's reconciliation.
   if (sourcePath !== nextPath) await assertTypeChangeLosesNothing(current.notebook, current.pathParts, sourcePath, assertSupportedFileName(current.name), assertSupportedFileName(safeName), HOST_OWNED_SIDECARS);
@@ -753,10 +762,12 @@ export async function moveSharedFile(relativePath: string, destinationDirectory:
   // The records kept on this computer follow through the host's log of manifest moves (src/lib/storage/shared-record-follow.ts): a response lost after this point, or an exit, is applied by the next drain.
   const followed = sourcePath === nextPath ? { unfinished: [] as string[] } : await followCommittedChange(current.notebook, committed, { config });
   // Links and asset paths that opened the file, or that it wrote, follow it (shared notes through the host).
-  const linked = sourcePath === nextPath ? null : await (await import("@/lib/storage/shared-move-links")).followSharedMovedLinks([{ from: sourcePath, to: nextPath }]);
+  // A batch (`deferLinks`) follows links once for all its files afterwards, so files moving together are not rewritten back and forth.
+  const linked = sourcePath === nextPath || options.deferLinks ? null : await (await import("@/lib/storage/shared-move-links")).followSharedMovedLinks([{ from: sourcePath, to: nextPath }]);
   const unfinished = [...followed.unfinished, ...(linked?.unfinished ?? [])];
   if (unfinished.length) {
-    throw new SharedOperationUnfinishedError(`The file was moved, but these records could not be moved with it and stay at the old path: ${unfinished.join("; ")}. Run Check Notebook to settle them.`, committed, unfinished);
+    // The rewrites that were applied still ride on the error, so the other open tabs can be told (R-M3).
+    throw new SharedOperationUnfinishedError(`The file was moved, but these records could not be moved with it and stay at the old path: ${unfinished.join("; ")}. Run Check Notebook to settle them.`, committed, unfinished, linked?.links);
   }
   const saved = await savedFile(nextPath, moving.size, () => readSharedText(nextPath, options).then((result) => result.text, () => undefined));
   return { ...saved, ...(linked && (linked.links.rewritten.length || linked.links.skipped.length || linked.links.unchecked.length) ? { links: linked.links } : {}) };
@@ -848,10 +859,12 @@ export async function renameSharedFolder(relativePath: string, name: string, opt
     throw new StorageError("Destination folder already exists.", 409);
   }
   // A name free in the manifest can still hold records of earlier files on this computer: refused before the host renames, as a local rename is.
-  if (sourcePath !== nextPath) await assertNoLeftoverFolderRecords(current.notebook, parts);
   // The files under the folder, as the manifest has them before the rename: their records move with them below.
   const listed = sourcePath === nextPath ? [] : await listSharedEntries(current.notebook, options);
   const reviewed = listed.filter((entry) => manifestPathBelow(entry.path, sourcePath) !== null);
+  // The paths the folder's notes will take, whose Python code may already be there (as the local rename passes them).
+  const incomingNotes = reviewed.filter((entry) => entry.kind !== "folder" && getFileType(entry.path.split("/").at(-1) ?? "") === "markdown").map((entry) => `${nextPath}/${manifestPathBelow(entry.path, sourcePath)}`);
+  if (sourcePath !== nextPath) await assertNoLeftoverFolderRecords(current.notebook, parts, false, incomingNotes);
   const config = hostConfig(sourcePath, options);
   // The host renames the folder only if it still holds exactly the entries listed here.
   const result = await host(sourcePath, () => fileOp(source.projectId, { op: "rename", path: source.path, to: parts.join("/"), ...(sourcePath === nextPath ? {} : { expectedDescendantIds: reviewed.map((entry) => entry.fileId) }) }, config));
@@ -863,7 +876,7 @@ export async function renameSharedFolder(relativePath: string, name: string, opt
   const linked = sourcePath === nextPath ? null : await (await import("@/lib/storage/shared-move-links")).followSharedMovedLinks([{ from: sourcePath, to: nextPath, folder: true }]);
   const unfinished = [...followed.unfinished, ...(linked?.unfinished ?? [])];
   if (unfinished.length) {
-    throw new SharedOperationUnfinishedError(`The folder was renamed, but these records could not be moved with it and stay at the old path: ${unfinished.join("; ")}. Run Check Notebook to settle them.`, committed, unfinished);
+    throw new SharedOperationUnfinishedError(`The folder was renamed, but these records could not be moved with it and stay at the old path: ${unfinished.join("; ")}. Run Check Notebook to settle them.`, committed, unfinished, linked?.links);
   }
   return { ...await getTree(), ...(linked && (linked.links.rewritten.length || linked.links.skipped.length || linked.links.unchecked.length) ? { links: linked.links } : {}) };
 }
@@ -895,7 +908,7 @@ export async function deleteSharedFolder(relativePath: string, options: SharedWr
  * a note's Python code, a recording's transcript) of a file that was there
  * before. The disk side is assertNoLeftoverRecords; a follower's disk can lag.
  */
-function manifestCompanionRecords(entryPaths: string[], notebook: string, parts: string[], fileType: string): string[] {
+export function manifestCompanionRecords(entryPaths: string[], notebook: string, parts: string[], fileType: string): string[] {
   const lower = entryPaths.map(manifestPathKey);
   const relative = relativeFilePath(notebook, parts);
   const kept: string[] = [];
@@ -912,7 +925,7 @@ function manifestCompanionRecords(entryPaths: string[], notebook: string, parts:
  * the notebook is an error: the check cannot be made.
  */
 async function assertSharedPathFree(notebook: string, parts: string[], fileType: string, options: SharedWriteOptions, again: string) {
-  await assertNoLeftoverRecords(notebook, parts, fileType, false, undefined, again);
+  await assertNoLeftoverRecords(notebook, parts, fileType, false, undefined, again, (kind) => hostOwnsSideFile(kind, notebook));
   const kept = manifestCompanionRecords((await listSharedEntries(notebook, options)).map((entry) => entry.path), notebook, parts, fileType);
   if (!kept.length) return;
   const list = kept.length > 1 ? `${kept.slice(0, -1).join(", ")} and ${kept.at(-1)}` : kept[0];

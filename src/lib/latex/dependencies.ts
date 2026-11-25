@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { readLatexIncludes } from "@/lib/latex/root";
-import { hasDocumentClass, readLatexBibliographyReferences, resolveLatexRootPath, resolveRelativeNotebookPath, stripLatexComments } from "@/lib/latex/project";
+import { hasDocumentClass, readLatexBibliographyReferences, resolveLatexRootPath, resolveRelativeNotebookPath, stripLatexComments, subfilesRootPath } from "@/lib/latex/project";
 import { isLatexCitingPath } from "@/lib/references/latex-cite-syntax";
 import { filePathFromParts, splitFilePath } from "@/lib/storage/paths";
 
@@ -23,6 +23,8 @@ export type LatexReference = {
   written: string;
   /** Library paths TeX would try, in order; the reference is satisfied by any one that exists. */
   candidates: string[];
+  /** The build cannot open this spelling whatever is on disk (latexOpenable): the check reports it, a move never writes one. */
+  uncompilable?: boolean;
 };
 
 /** A reference as one main file's build resolves it: the same chapter can name a different file in each. */
@@ -31,6 +33,23 @@ export type LatexBuildReference = LatexReference & { main: string };
 const GRAPHICS_EXTENSIONS = [".pdf", ".png", ".jpg", ".jpeg", ".eps"];
 const INCLUDE_EXTENSIONS = [".tex"];
 const PDF_EXTENSIONS = [".pdf"];
+
+/**
+ * Whether the build (latex/build.ts) can open `written` as a name read from
+ * the main file's folder. `openin_any=p` refuses a name that climbs out of the
+ * folder (`../x`) or is absolute; and `\include` writes `<folder>/x.aux` into
+ * a work folder whose mirror skips folders starting with `_` or `.`
+ * (mirrorSourceFolders), so `\include{_archive/one}` stops the run. One rule
+ * for the check (latexDependencies) and for a move's rewrite (storage/move-links.ts).
+ */
+export function latexOpenable(written: string, options: { include?: boolean } = {}) {
+  const name = written.replace(/\\/g, "/");
+  if (/^(\/|[a-z]:)/i.test(name)) return false;
+  const segments = name.split("/");
+  if (segments.includes("..")) return false;
+  if (options.include && segments.slice(0, -1).some((segment) => segment !== "." && (segment.startsWith("_") || segment.startsWith(".")))) return false;
+  return true;
+}
 
 /** A name that depends on a macro (`#1` in a definition, `\figdir`): TeX would only know it after expanding. */
 export const needsExpansion = (reference: string) => /[#\\]/.test(reference);
@@ -125,17 +144,18 @@ export async function latexDependencies(notebook: string, files: readonly string
     references.set(file, written);
     const built = builds.get(file) ?? [];
     builds.set(file, built);
-    const note = (kind: LatexReference["kind"], reference: string, candidates: string[]) => {
+    const note = (kind: LatexReference["kind"], reference: string, candidates: string[], include = false) => {
       if (!candidates.length) return;
       if (needsExpansion(reference)) { unresolved.add(`${file}\0${reference}`); return; }
-      if (!written.some((item) => item.kind === kind && item.written === reference)) written.push({ kind, written: reference, candidates });
-      if (!built.some((item) => item.main === root && item.kind === kind && item.written === reference)) built.push({ kind, written: reference, candidates, main: root });
+      const flag = latexOpenable(reference, { include }) ? {} : { uncompilable: true };
+      if (!written.some((item) => item.kind === kind && item.written === reference)) written.push({ kind, written: reference, candidates, ...flag });
+      if (!built.some((item) => item.main === root && item.kind === kind && item.written === reference)) built.push({ kind, written: reference, candidates, main: root, ...flag });
       for (const candidate of candidates) if (visible.has(candidate)) needs.add(candidate);
     };
     for (const include of readLatexIncludes(text)) {
       if (needsExpansion(include.path)) { unresolved.add(`${file}\0${include.path}`); continue; }
       const targets = latexCandidates(notebook, include.relativeToFile ? file : root, "include", include.path);
-      note("include", include.path, targets);
+      note("include", include.path, targets, include.command === "include");
       for (const target of targets) if (texts.has(target)) visit(root, target, prefixes, seen);
     }
     // Names come with `.bib` added where `\bibliography` adds it, so each is taken as written.
@@ -156,7 +176,7 @@ export async function latexDependencies(notebook: string, files: readonly string
     }
   };
   const known = new Set(texts.keys());
-  const roots = [...texts].filter(([file, text]) => hasDocumentClass(text) && resolveLatexRootPath(file, text, known) === file).map(([file]) => file);
+  const roots = [...texts].filter(([file, text]) => hasDocumentClass(text) && resolveLatexRootPath(file, text, known) === file && !subfilesRootPath(file, text, known)).map(([file]) => file);
   for (const root of roots) visit(root, root, graphicsPaths(texts.get(root)!), new Set());
   // Sources no main file includes are read on their own.
   for (const file of texts.keys()) if (!mainFiles.has(file)) visit(file, file, [], new Set());

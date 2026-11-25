@@ -17,7 +17,7 @@ export const runtime = "nodejs";
 function handleError(error: unknown) {
   // The host committed a shared folder change but a step after it did not finish: say what it did, so the caller treats it as done and reports what stayed behind.
   if (isSharedOperationUnfinished(error)) {
-    return NextResponse.json({ error: error.message, committed: error.committed, unfinished: error.unfinished }, { status: error.status });
+    return NextResponse.json({ error: error.message, committed: error.committed, unfinished: error.unfinished, ...(error.links ? { links: error.links } : {}) }, { status: error.status });
   }
   const storageError = toStorageError(error);
   return NextResponse.json({ error: storageError.message }, { status: storageError.status });

@@ -63,6 +63,20 @@ function selectionPaths(nodes: LiberaTreeNode[], selected: ReadonlySet<string>):
   });
 }
 
+/**
+ * The paths a request sends, and so the paths the unsaved-tab check and Save all must cover.
+ * From Move… exactly the files chosen (hidden `_archive` ones included: the file list does not
+ * show them, but the preset names them); otherwise a folder whose files are all checked stands for itself.
+ */
+export function requestPaths(preset: MigrationPreset | null | undefined, sourceChildren: LiberaTreeNode[], selection: ReadonlySet<string>): string[] {
+  return preset ? [...selection].sort() : selectionPaths(sourceChildren, selection);
+}
+
+/** A preset prepared for a notebook the dialog cannot migrate from (shared, unavailable): never substitute another one. */
+export function presetSourceRefused(preset: MigrationPreset | null | undefined, initialSource: string, localNames: readonly string[]) {
+  return Boolean(preset) && !localNames.includes(initialSource);
+}
+
 function folderOptions(nodes: LiberaTreeNode[], depth = 0): { path: string; label: string }[] {
   return nodes.flatMap((node) => node.kind === "folder" && !(depth === 0 && node.name === ARCHIVE)
     ? [{ path: node.path.split("/").slice(1).join("/"), label: `${"  ".repeat(depth)}${node.name}` }, ...folderOptions(node.children, depth + 1)]
@@ -91,7 +105,10 @@ function MigrationDialogBody({ initialSource, preset, tree, groups, unsavedTabsU
     () => tree.notebooks.filter((notebook) => !notebook.folder?.missing && !collab?.projectForNotebook(notebook.name)),
     [tree.notebooks, collab],
   );
-  const [source, setSource] = useState(() => localNotebooks.some((notebook) => notebook.name === initialSource) ? initialSource : localNotebooks[0]?.name ?? "");
+  // From Move… or a drop, the source is the notebook of the paths. When it can't be migrated from
+  // (a shared notebook), it stays that notebook and the dialog refuses; no other notebook stands in.
+  const sourceRefused = presetSourceRefused(preset, initialSource, localNotebooks.map((notebook) => notebook.name));
+  const [source, setSource] = useState(() => sourceRefused ? initialSource : localNotebooks.some((notebook) => notebook.name === initialSource) ? initialSource : localNotebooks[0]?.name ?? "");
   const [selected, setSelected] = useState<Set<string>>(() => new Set(preset?.paths ?? []));
   const [query, setQuery] = useState("");
   const [destination, setDestination] = useState(() => preset && localNotebooks.some((notebook) => notebook.name === preset.destination && notebook.name !== initialSource) ? preset.destination : "");
@@ -109,15 +126,15 @@ function MigrationDialogBody({ initialSource, preset, tree, groups, unsavedTabsU
   const [discoveryError, setDiscoveryError] = useState("");
   const [busy, setBusy] = useState(false);
   // Opened from Move… into a notebook that can't take a migration (shared, unknown): say so from the start.
-  const [error, setError] = useState(() => preset && !destination ? t("notLocalNotebook", { destination: preset.destination }) : "");
+  const [error, setError] = useState(() => sourceRefused ? t("sharedNotMigratable") : preset && !destination ? t("notLocalNotebook", { destination: preset.destination }) : "");
 
   const sourceNode = localNotebooks.find((notebook) => notebook.name === source);
   const sourceChildren = useMemo(() => visibleChildren(sourceNode?.children ?? []), [sourceNode]);
   const destinations = localNotebooks.filter((notebook) => notebook.name !== source);
   const destinationNode = destinations.find((notebook) => notebook.name === destination);
   const destinationName = newNotebook ? newNotebook.name.trim() : destinationNode?.name ?? "";
-  const paths = useMemo(() => selectionPaths(sourceChildren, selected), [sourceChildren, selected]);
-  const selectedFiles = useMemo(() => filesUnder(sourceChildren).filter((file) => selected.has(file.path)), [sourceChildren, selected]);
+  const paths = useMemo(() => requestPaths(preset, sourceChildren, selected), [preset, sourceChildren, selected]);
+  const selectedFiles = useMemo(() => preset ? paths : filesUnder(sourceChildren).filter((file) => selected.has(file.path)), [preset, paths, sourceChildren, selected]);
   const unsaved = unsavedTabsUnder(paths);
 
   // Earlier migrations: interrupted ones to resume, finished ones the app has not applied, unreadable journals.
@@ -154,7 +171,7 @@ function MigrationDialogBody({ initialSource, preset, tree, groups, unsavedTabsU
   const request = (selection: ReadonlySet<string> = selected): MigrationRequest => ({
     source,
     // From Move…, exactly the files chosen: a folder whose files happen to be all selected is not the folder itself.
-    paths: preset ? [...selection].sort() : selectionPaths(sourceChildren, selection),
+    paths: requestPaths(preset, sourceChildren, selection),
     destination: {
       ...(newNotebook
         ? { notebook: destinationName, create: { color: newNotebook.color, emoji: newNotebook.emoji, groupId: newNotebook.groupId || null } }
@@ -166,6 +183,7 @@ function MigrationDialogBody({ initialSource, preset, tree, groups, unsavedTabsU
 
   /** `extra`: files the review suggested adding; the run sends the same selection. */
   async function review(extra: string[] = []) {
+    if (sourceRefused) return;
     setBusy(true);
     setError("");
     try {
@@ -182,7 +200,7 @@ function MigrationDialogBody({ initialSource, preset, tree, groups, unsavedTabsU
   }
 
   // Opened from Move…: go straight to the review.
-  const reviewOnOpen = useRef(Boolean(preset && destination));
+  const reviewOnOpen = useRef(Boolean(preset && destination) && !sourceRefused);
   useEffect(() => {
     if (!reviewOnOpen.current) return;
     reviewOnOpen.current = false;
@@ -251,7 +269,7 @@ function MigrationDialogBody({ initialSource, preset, tree, groups, unsavedTabsU
 
   const running = step === "running";
   const close = () => { if (!running) onClose(); };
-  const canReview = Boolean(source && paths.length && destinationName) && !busy;
+  const canReview = Boolean(source && paths.length && destinationName) && !busy && !sourceRefused;
   const blocked = Boolean(plan?.blockers.length) || unsaved.length > 0;
 
   const footer = step === "select" ? <>
@@ -294,7 +312,7 @@ function MigrationDialogBody({ initialSource, preset, tree, groups, unsavedTabsU
 
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="block text-sm font-medium">{t("fromLabel")}
-            <select className={`${field} mt-1`} value={source} onChange={(event) => { setSource(event.target.value); setSelected(new Set()); if (destination === event.target.value) setDestination(""); }}>
+            <select className={`${field} mt-1`} value={source} disabled={sourceRefused} onChange={(event) => { setSource(event.target.value); setSelected(new Set()); if (destination === event.target.value) setDestination(""); }}>
               {localNotebooks.map((notebook) => <option key={notebook.name} value={notebook.name}>{notebook.emoji} {notebook.name}</option>)}
             </select>
           </label>

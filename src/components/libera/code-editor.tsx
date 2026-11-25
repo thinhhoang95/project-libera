@@ -10,6 +10,7 @@ import {
   highlightSpecialChars, keymap, lineNumbers, rectangularSelection,
 } from "@codemirror/view";
 import { startTransition, useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { forgetPublished, onTextReplaced } from "./link-rewrite-echo";
 import { createPortal } from "react-dom";
 import { useTranslations } from "next-intl";
 import { ClipboardPaste, Copy, Scissors, Volume2 } from "lucide-react";
@@ -275,6 +276,9 @@ export function CodeEditor({
     window.addEventListener("pagehide", publishDraft);
     return () => { unregister?.(); window.removeEventListener("pagehide", publishDraft); };
   }, [onRegisterDraft, publishDraft, shared]);
+
+  // A link rewrite is an outside change even when it returns the text to a draft published before.
+  useEffect(() => onTextReplaced((text) => forgetPublished(publishedRef.current, text)), []);
 
   // Adopt outside changes to the draft (for example a reload), ignoring the
   // echoes of drafts this editor published itself.

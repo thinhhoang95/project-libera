@@ -10,6 +10,8 @@ import { REFERENCE_LIBRARY_VERSION, type ReferenceAttachment, type ReferenceLibr
 import { StorageError } from "@/lib/storage/errors";
 import { pathExists, writeJsonAtomically } from "@/lib/storage/fs-utils";
 import { fileExistence } from "@/lib/storage/library-links";
+import { isNotebookMigrating, isPathMigrating } from "@/lib/storage/migration-fence";
+import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { notifySearchReferenceChanges } from "@/lib/storage/search-updates";
 import {
   filePathFromParts,
@@ -365,17 +367,28 @@ function underPath(candidate: string, root: string) {
 }
 
 /**
- * A file or folder moved from `from` to `to` (library-relative). Never fails
- * the file operation that called it.
+ * A file or folder moved from `from` to `to` (library-relative). The
+ * attachments are remapped and a tethered .bib inside follows, both finished
+ * before this returns (the move's rollback and the check run after it). The
+ * tether follows even when the attachments could not; that error is then
+ * thrown, so the caller reports the step as unfinished or rolls back.
  */
 export async function moveReferenceAttachments(from: string, to: string) {
   if (from === to) return;
-  publishReferenceEvent({ type: "moved", from, to });
+  let failure: unknown = null;
   try {
     await remapReferenceAttachments((current) => underPath(current, from) ? to + current.slice(from.length) : current);
   } catch (error) {
-    console.error(`[references] Could not update attachments moved from ${from} to ${to}:`, error);
+    failure = error;
   }
+  // Called here, not through a "moved" event: that listener exists only once bib-tether.ts happens to be loaded. Imported lazily because bib-tether.ts imports this module.
+  try {
+    const { moveTetheredFiles } = await import("@/lib/references/bib-tether");
+    await moveTetheredFiles(from, to);
+  } catch (error) {
+    console.error(`[references] Could not follow the tethered .bib from ${from} to ${to}:`, error);
+  }
+  if (failure) throw failure;
 }
 
 /**
@@ -442,7 +455,7 @@ export async function detachReferenceAttachments(removed: string) {
 const SKIPPED_ENTRIES = new Set(["__MACOSX", "_assets", "node_modules", "__pycache__", "bower_components"]);
 const WALK_ENTRY_LIMIT = 100_000;
 
-type CandidateFile = { path: string; absolutePath: string; size: number };
+type CandidateFile = { path: string; absolutePath: string; size: number; mtimeMs: number };
 
 /**
  * Files in every notebook whose extension is one of `extensions`. `complete`
@@ -463,7 +476,7 @@ async function candidateFiles(extensions: Set<string>) {
       const childRelative = `${relative}/${entry.name}`;
       if (entry.isDirectory()) await walk(absolutePath, childRelative);
       else if (entry.isFile() && extensions.has(path.extname(entry.name).toLowerCase())) {
-        try { files.push({ path: childRelative, absolutePath, size: (await stat(absolutePath)).size }); } catch { complete = false; }
+        try { const stats = await stat(absolutePath); files.push({ path: childRelative, absolutePath, size: stats.size, mtimeMs: stats.mtimeMs }); } catch { complete = false; }
       }
     }
   }
@@ -516,12 +529,37 @@ async function missingAttachments(notebook?: string) {
 }
 
 /**
+ * Drops attachments that are not known to be moved: a file of a shared notebook
+ * the manifest lists (or that cannot be told: the manifest is unavailable) is
+ * still being delivered, not moved; and nothing is judged while a migration
+ * involves the attachment's notebook or path.
+ */
+async function settledMissing(missing: MissingAttachment[]) {
+  type Manifest = { state: string; files?: Map<string, unknown> };
+  const manifests = new Map<string, Promise<Manifest>>();
+  const manifestOf = (name: string) => {
+    if (!manifests.has(name)) manifests.set(name, import("@/lib/storage/shared-manifest-view").then((view) => view.readManifestView(name) as Promise<Manifest>).catch((): Manifest => ({ state: "unavailable" })));
+    return manifests.get(name)!;
+  };
+  const settled: MissingAttachment[] = [];
+  for (const item of missing) {
+    if (await isNotebookMigrating(item.notebook) || await isNotebookMigrating(item.path.split("/")[0]) || await isPathMigrating(item.path)) continue;
+    if (isSharedNotebookPath(item.path)) {
+      const manifest = await manifestOf(item.path.split("/")[0]);
+      if (manifest.state !== "ok" || manifest.files!.has(item.path)) continue;
+    }
+    settled.push(item);
+  }
+  return settled;
+}
+
+/**
  * Re-point attachments whose file is gone to the one file in the library with
  * the same size, extension and SHA-256. Ambiguous or absent matches are left
  * alone. Searches the folders only when an attachment is missing.
  */
 export async function reattachMissingReferenceFiles(notebook?: string): Promise<ReattachResult> {
-  const missing = await missingAttachments(notebook);
+  const missing = await settledMissing(await missingAttachments(notebook));
   if (!missing.length) return { missing: 0, walked: false, reattached: 0 };
   const { files: candidates, complete } = await candidateFiles(new Set(missing.map((item) => path.extname(item.path).toLowerCase())));
   const hashes = new Map<string, Promise<string | null>>();
@@ -529,7 +567,7 @@ export async function reattachMissingReferenceFiles(notebook?: string): Promise<
     if (!hashes.has(file.absolutePath)) hashes.set(file.absolutePath, hashFile(file.absolutePath).catch(() => null));
     return hashes.get(file.absolutePath)!;
   };
-  type Repoint = { next: string; sha256: string; size: number };
+  type Repoint = { next: string; sha256: string; size: number; absolutePath: string; mtimeMs: number };
   const repoint = new Map<string, Map<string, Map<string, Repoint>>>(); // target → entry → old path → new path and what chose it
   // Without a complete search, "the only match" can't be told: leave every pointer alone.
   for (const item of complete ? missing : []) {
@@ -543,19 +581,20 @@ export async function reattachMissingReferenceFiles(notebook?: string): Promise<
       else if (hash === item.sha256) matches.push(file.path);
     }
     if (matches.length !== 1 || unreadable) continue;
+    const chosenFile = candidates.find((file) => file.path === matches[0])!;
     const byEntry = repoint.get(item.target) ?? new Map<string, Map<string, Repoint>>();
     const byPath = byEntry.get(item.entryId) ?? new Map<string, Repoint>();
-    byPath.set(item.path, { next: matches[0], sha256: item.sha256, size: item.size });
+    byPath.set(item.path, { next: matches[0], sha256: item.sha256, size: item.size, absolutePath: chosenFile.absolutePath, mtimeMs: chosenFile.mtimeMs });
     byEntry.set(item.entryId, byPath);
     repoint.set(item.target, byEntry);
   }
 
   let reattached = 0;
   for (const [target, byEntry] of repoint) {
-    reattached += await withLibraryLock(target, async () => {
+    const committed = await withLibraryLock(target, async (): Promise<{ count: number; library: ReferenceLibrary } | null> => {
       let library: ReferenceLibrary | null;
-      try { library = await readLibraryFile(target); } catch { return 0; }
-      if (!library) return 0;
+      try { library = await readLibraryFile(target); } catch { return null; }
+      if (!library) return null;
       // The scan ran outside this lock: what it saw is rechecked here, under it.
       // Same test as the check's. The old path counts as present unless it is known to be gone, the new one as absent unless known to be a file: when it can't be told, nothing moves.
       const present = new Map<string, boolean>();
@@ -564,6 +603,22 @@ export async function reattachMissingReferenceFiles(notebook?: string): Promise<
         for (const [old, { next }] of byPath) {
           present.set(old, await disk.isFile(old) !== false);
           present.set(next, await disk.isFile(next) === true);
+        }
+      }
+      // The copy the scan chose is the one that is there now: same size and time, or (changed since) the same bytes.
+      // Nothing is judged while a migration moves either path.
+      const trusted = new Map<string, boolean>();
+      for (const byPath of byEntry.values()) {
+        for (const [old, chosen] of byPath) {
+          let ok = !(await isPathMigrating(old)) && !(await isPathMigrating(chosen.next));
+          if (ok) {
+            try {
+              const stats = await stat(chosen.absolutePath);
+              if (stats.size !== chosen.size) ok = false;
+              else if (stats.mtimeMs !== chosen.mtimeMs) ok = await hashFile(chosen.absolutePath) === chosen.sha256;
+            } catch { ok = false; }
+          }
+          trusted.set(`${old}\0${chosen.next}`, ok);
         }
       }
       const existsAtCommit = (file: string) => present.get(file) ?? true;
@@ -579,7 +634,7 @@ export async function reattachMissingReferenceFiles(notebook?: string): Promise<
           if (!chosen) return attachment;
           const { next } = chosen;
           // Changed meanwhile (the original is back, or the record was replaced), or the entry already points at that file.
-          if (attachment.sha256 !== chosen.sha256 || attachment.size !== chosen.size || existsAtCommit(attachment.path) || !existsAtCommit(next)
+          if (!trusted.get(`${attachment.path}\0${next}`) || attachment.sha256 !== chosen.sha256 || attachment.size !== chosen.size || existsAtCommit(attachment.path) || !existsAtCommit(next)
             || entry.attachments.some((other) => other.kind !== "url" && other.path === next)) return attachment;
           entryChanged = true;
           count += 1;
@@ -587,9 +642,18 @@ export async function reattachMissingReferenceFiles(notebook?: string): Promise<
         });
         if (entryChanged) entry.updatedAt = now;
       }
-      if (count) await writeJsonAtomically(target, { ...library, revision: library.revision + 1 }, () => assertRevisionUnchanged(target, library.revision));
-      return count;
+      if (!count) return null;
+      const next = { ...library, revision: library.revision + 1 };
+      await writeJsonAtomically(target, next, () => assertRevisionUnchanged(target, library.revision));
+      return { count, library: next };
     });
+    if (!committed) continue;
+    reattached += committed.count;
+    // Like any other library change: the generated .bib, Global Search, the tether and open windows follow.
+    const owner = missing.find((item) => item.target === target)!.notebook;
+    scheduleBibMirror(owner, committed.library);
+    notifySearchReferenceChanges([owner]);
+    publishReferenceEvent({ type: "library", notebook: owner, revision: committed.library.revision });
   }
   return { missing: missing.length, walked: true, reattached };
 }
