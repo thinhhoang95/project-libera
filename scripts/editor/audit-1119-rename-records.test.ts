@@ -53,6 +53,8 @@ class StubHost {
         const op = JSON.parse(body) as FileOpRequest;
         if (op.op === "rename" && op.to) {
           renameSync(path.join(this.notebook, op.path), path.join(this.notebook, op.to));
+          // The manifest has the file (or every file under the folder) at its new path, as the real host's list does once it committed (S-C2: records follow what the list shows).
+          this.entries = this.entries.map((item) => item.path === op.path ? { ...item, path: op.to as string } : item.path.startsWith(`${op.path}/`) ? { ...item, path: `${op.to}${item.path.slice(op.path.length)}` } : item);
           onRename?.();
         }
         return send(200, { paths: [`Shared/${op.to ?? op.path}`] });

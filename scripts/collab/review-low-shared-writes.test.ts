@@ -18,6 +18,7 @@ import { moveSharedFile, renameSharedFolder, saveSharedFileText } from "../../sr
 /** The host's file operations and path resolution: "doc.md" is a shared document, everything else a file. */
 class StubHost {
   readonly ops: FileOpRequest[] = [];
+  entries = ["note.md", "big.md", "sub/inner.md"].map((relative) => ({ fileId: `fil_${relative}`, path: relative, kind: "doc" as const, updatedAt: 1 }));
   private server: Server | null = null;
   url = "";
   readonly token = "test-token";
@@ -38,6 +39,8 @@ class StubHost {
           const liberaPath = url.searchParams.get("path") ?? "";
           return send(200, liberaPath.endsWith("/doc.md") ? { docId: "doc_1", projectId: "prj_test", path: liberaPath, role: "editor", readOnly: false } : null);
         }
+        // The notebook's file list, as the real host's: it shows a rename once committed (S-C2: records follow what the list shows, and a list that cannot be read is not guessed at).
+        if (/\/projects\/[^/]+\/file-entries$/.test(url.pathname)) return send(200, { entries: this.entries });
         if (!/\/projects\/[^/]+\/files$/.test(url.pathname)) return send(404, { error: { code: "not-found", message: "No route." } });
         const op = JSON.parse(body) as FileOpRequest;
         this.ops.push(op);
@@ -49,6 +52,7 @@ class StubHost {
         if (op.op === "rename") {
           if (!existsSync(target)) return send(404, { error: { code: "not-found", message: "Not found." } });
           renameSync(target, path.join(this.notebookRoot, ...(op.to ?? "").split("/")));
+          this.entries = this.entries.map((item) => item.path === op.path ? { ...item, path: op.to as string } : item);
           return send(200, { paths: [`Shared/${op.path}`, `Shared/${op.to}`] });
         }
         return send(400, { error: { code: "bad-request", message: "Unsupported." } });
