@@ -5,6 +5,7 @@ import { useTranslations } from "next-intl";
 import type { LiberaFileNode, LiberaFilePayload } from "@/lib/types";
 import type { OpenTab } from "./types";
 import { apiRequest } from "./api-client";
+import { remapMovedPath, subscribeFollowedMoves } from "./file-move-channel";
 
 // Each window owns its snapshot; the main app only sends content on request.
 export function useMarkdownWindows(
@@ -13,8 +14,18 @@ export function useMarkdownWindows(
   onError: (message: string) => void,
 ) {
   const t = useTranslations("useMarkdownWindows");
-  // Track authorization without keeping closed windows and their DOMs alive.
-  const windows = useRef(new WeakMap<Window, { file: LiberaFileNode; tabId?: string }>());
+  // Track authorization without keeping closed windows and their DOMs alive (closed ones are dropped as moves arrive).
+  const windows = useRef(new Map<Window, { file: LiberaFileNode; tabId?: string }>());
+
+  // A move or rename changes a tab's id and path: each window keeps finding its document by following the move.
+  useEffect(() => subscribeFollowedMoves((moves) => {
+    for (const [child, source] of windows.current) {
+      if (child.closed) { windows.current.delete(child); continue; }
+      const path = remapMovedPath(source.file.path, moves);
+      if (path !== source.file.path) source.file = { ...source.file, path, name: path.split("/").at(-1)!, notebook: path.split("/")[0] };
+      if (source.tabId) source.tabId = remapMovedPath(source.tabId, moves);
+    }
+  }), []);
 
   useEffect(() => {
     async function receive(event: MessageEvent) {
@@ -54,6 +65,7 @@ export function useMarkdownWindows(
       onError(t("popupBlockedMarkdownError"));
       return;
     }
-    windows.current.set(child, { file, tabId: tabs.find((tab) => tab.file.path === file.path)?.id });
+    for (const [other] of windows.current) if (other.closed) windows.current.delete(other);
+    windows.current.set(child,{ file, tabId: tabs.find((tab) => tab.file.path === file.path)?.id });
   };
 }

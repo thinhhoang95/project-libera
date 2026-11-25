@@ -34,6 +34,8 @@ import { ChatReasoningSelect } from "./chat-reasoning-select";
 import { ChatTokenUsage } from "./chat-token-usage";
 import { chatUsageRequests } from "@/lib/chat-token-usage";
 import { apiRequest } from "./api-client";
+import { movedNotePaths, remapChatStorePaths } from "./document-chat-moves";
+import { subscribeFollowedMoves } from "./file-move-channel";
 import { keepGalleryChatPhoto, subscribeGalleryPhotoDeletions } from "./gallery-store";
 import { GalleryPhotoPicker, galleryPhotoFile } from "./gallery-photo-picker";
 import type { GalleryPhoto } from "@/lib/image-generation";
@@ -710,6 +712,25 @@ export const DocumentChatPanel = memo(function DocumentChatPanel({ viewedPhoto =
   const updateChat = useCallback((id: string, update: (current: DocumentChat) => DocumentChat, persist = true) => {
     setStore((current) => current && ({ ...current, chats: current.chats.map((item) => item.id === id ? update(item) : item) }), persist);
   }, [setStore]);
+
+  // Files that moved or were renamed: the chats' attached contexts, exclusions and page budgets follow, so a PDF or
+  // recording is read from where it is now and a note's text is read again. The server rewrote its saved copy
+  // the same way (document-chat storage); remapping the in-memory copy keeps a later save from writing old paths back
+  // (persist = false: nothing to save for the remap itself).
+  const storeRef = useRef(store);
+  useLayoutEffect(() => { storeRef.current = store; });
+  useEffect(() => subscribeFollowedMoves((moves) => {
+    const before = storeRef.current;
+    if (!before) return;
+    const notes = before.chats.flatMap((chat) => movedNotePaths(chat, moves).map((path) => ({ chatId: chat.id, path })));
+    setStore((current) => current && remapChatStorePaths(current, moves), false);
+    for (const { chatId, path } of notes) {
+      void apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(path)}`).then(({ content }) => {
+        if (typeof content !== "string") return;
+        updateChat(chatId, (current) => ({ ...current, selections: current.selections.map((item) => item.kind === "document" && item.path === path && !item.excerpt ? { ...item, text: content } : item) }), false);
+      }).catch(() => undefined);
+    }
+  }), [setStore, updateChat]);
 
   useEffect(() => {
     function addSelection(event: KeyboardEvent) {
