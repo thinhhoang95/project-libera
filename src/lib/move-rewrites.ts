@@ -287,7 +287,14 @@ export function writeChartValue(written: string, next: string) {
   return plain ? next : JSON.stringify(next);
 }
 
-/** A LaTeX path as written in braces; null when TeX would read it otherwise (braces, `%`, `#`, a backslash). */
-export function writeLatexPath(next: string) {
-  return /[{}%#\\]/.test(next) ? null : next;
+/**
+ * A LaTeX path as written in braces; null when TeX or our readers would read it
+ * otherwise: braces, `%`, `#`, a backslash; spaces at either end (the readers
+ * trim them, and braces cannot quote them); and in `\bibliography{...}` a comma,
+ * which separates keys there (latex/path-occurrences.ts, readLatexBibliographyReferences).
+ */
+export function writeLatexPath(next: string, kind?: LatexPathKind) {
+  if (/[{}%#\\]/.test(next) || next !== next.trim()) return null;
+  if (kind === "latex-bibliography" && next.includes(",")) return null;
+  return next;
 }

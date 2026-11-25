@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { transformReviewBaselines } from "@/lib/agent/review-store";
 import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
-import { latexCandidates, latexDependencies, graphicsPaths, needsExpansion, type LatexCandidateKind } from "@/lib/latex/dependencies";
+import { latexCandidates, latexDependencies, latexOpenable, graphicsPaths, needsExpansion, type LatexCandidateKind } from "@/lib/latex/dependencies";
 import { latexPathOccurrences, type LatexPathKind } from "@/lib/latex/path-occurrences";
 import { getRelativePath, isLikelyWorkspaceMarkdownLink } from "@/lib/markdown-file-links";
 import { rawFileSourcePath } from "@/lib/markdown-image-sources";
@@ -235,11 +235,16 @@ const LATEX_KINDS: Record<LatexPathKind, LatexCandidateKind> = {
 };
 
 /** `written` again, at `next` (a library path) from `base`'s folder; without the extension when the source left it to TeX. */
-function latexSpellings(written: string, base: string, next: string) {
-  const relative = getRelativePath(parentOf(base), next);
+function latexSpellings(written: string, base: string, next: string, kind: LatexCandidateKind) {
   const extension = path.extname(next);
   const omitted = extension && path.extname(written).toLowerCase() !== extension.toLowerCase();
-  return omitted ? [relative.slice(0, -extension.length), relative] : [relative];
+  const from = (folder: string) => {
+    const relative = getRelativePath(folder, next);
+    return omitted ? [relative.slice(0, -extension.length), relative] : [relative];
+  };
+  // A bibliography is also found from the notebook folder (BIBINPUTS, latex/build.ts), where `../` is not needed.
+  const searched = (kind === "bibliography" || kind === "bibresource") && notebookOf(next) === notebookOf(base) ? from(notebookOf(next)) : [];
+  return [...new Set([...from(parentOf(base)), ...searched])];
 }
 
 /**
@@ -273,7 +278,10 @@ async function planLatex(notebook: string, layout: Layout, source: LinkSource) {
     if (text === undefined) continue;
     const rewrite: MovedPathRewrite = {};
     const decided = new Set<string>();
-    for (const occurrence of latexPathOccurrences(text)) {
+    const occurrences = latexPathOccurrences(text);
+    // A name written to `\include` anywhere in the file also has to survive the mirror's skipped folders.
+    const includes = new Set(occurrences.filter((occurrence) => occurrence.command === "include").map((occurrence) => occurrence.written));
+    for (const occurrence of occurrences) {
       const key = `${occurrence.kind}\0${occurrence.written}`;
       if (decided.has(key) || needsExpansion(occurrence.written)) continue;
       decided.add(key);
@@ -291,8 +299,10 @@ async function planLatex(notebook: string, layout: Layout, source: LinkSource) {
       }
       if (keeps) continue;
       let next: string | null = null;
-      for (const spelling of latexSpellings(occurrence.written, builds[0].main, builds[0].target)) {
-        if (!writeLatexPath(spelling)) continue;
+      // Only a spelling the build can open: `../x` and `_folder/x` for \include are refused by the compiler (latexOpenable).
+      const viaInclude = includes.has(occurrence.written);
+      for (const spelling of latexSpellings(occurrence.written, builds[0].main, builds[0].target, kind)) {
+        if (!writeLatexPath(spelling, occurrence.kind) || !latexOpenable(spelling, { include: viaInclude })) continue;
         let all = true;
         for (const build of builds) {
           const main = layout.backward(build.main) ?? build.main;

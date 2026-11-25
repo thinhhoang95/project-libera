@@ -159,17 +159,18 @@ test("an image or an included TeX file must be a readable file: a folder or a da
 }));
 
 test("a chapter two main files share is checked from each, and the finding names the build that loses the file", () => withLibrary(async () => {
-  const main = (name: string) => `\\documentclass{article}\n\\begin{document}\n\\input{../shared/chap}\n\\end{document}\n`.replace("article", name);
-  await writeLibraryFile("Nb/a/main.tex", main("article"));
-  await writeLibraryFile("Nb/b/main.tex", main("report"));
-  await writeLibraryFile("Nb/shared/chap.tex", "\\includegraphics{plot}\n");
+  // The chapter is reached from two folders without `../` (the compiler refuses it: latexOpenable).
+  const main = (name: string, input: string) => `\\documentclass{article}\n\\begin{document}\n\\input{${input}}\n\\end{document}\n`.replace("article", name);
+  await writeLibraryFile("Nb/main.tex", main("article", "a/chap"));
+  await writeLibraryFile("Nb/a/main.tex", main("report", "chap"));
+  await writeLibraryFile("Nb/a/chap.tex", "\\includegraphics{plot}\n");
   await writeLibraryFile("Nb/a/plot.pdf", "%PDF");
   const report = await verifyNotebook("Nb");
-  assert.deepEqual(messages(report, "latex"), ['error: shows "plot", which is not found when building Nb/b/main.tex.']);
-  assert.equal(of(report, "latex")[0].path, "Nb/shared/chap.tex");
+  assert.deepEqual(messages(report, "latex"), ['error: shows "plot", which is not found when building Nb/main.tex.']);
+  assert.equal(of(report, "latex")[0].path, "Nb/a/chap.tex");
   assert.equal(of(report, "latex")[0].code, "latexMissingInBuild");
 
-  await writeLibraryFile("Nb/b/plot.pdf", "%PDF");
+  await writeLibraryFile("Nb/plot.pdf", "%PDF");
   assert.deepEqual(messages(await verifyNotebook("Nb"), "latex"), []);
   await rm(filePathFromParts("Nb", ["a", "plot.pdf"]));
   assert.deepEqual(messages(await verifyNotebook("Nb"), "latex"), ['error: shows "plot", which is not found when building Nb/a/main.tex.']);
