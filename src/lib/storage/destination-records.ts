@@ -1,11 +1,11 @@
-import { readdir } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { listReviewEntryPaths } from "@/lib/agent/review-store";
 import { isEmptyReview, type ReviewDocument } from "@/lib/markdown-review";
 import { legacyPythonSidecarPath } from "@/lib/python/sidecar";
-import { readTetherTarget } from "@/lib/references/bib-tether";
+import { bibTetherStatePath, readTetherTarget } from "@/lib/references/bib-tether";
 import { foldedFileName } from "@/lib/storage/file-names";
 import { pathExists } from "@/lib/storage/fs-utils";
-import { filePathFromParts, getStateRoot, relativeFilePath, splitFilePath } from "@/lib/storage/paths";
+import { filePathFromParts, getStateRoot, referenceLibraryPath, relativeFilePath, splitFilePath } from "@/lib/storage/paths";
 import { libraryNotebookNames } from "@/lib/storage/library-links";
 import { readOrphans } from "@/lib/storage/pdf-sidecars";
 import { inspectReferenceLibrary } from "@/lib/storage/references";
@@ -20,13 +20,16 @@ import { inspectWorkspaceMetadata } from "@/lib/storage/workspace-metadata";
 // read once, then each path is answered from memory. Reads only.
 // The one reader of these records for every destination check: a single move
 // (leftoverRecords in storage/files.ts), a copy, an archive, a batch, a
-// migration. A store that can't be read is a blocker, never read as empty.
+// migration. A store that can't be read is never read as empty: a review index or the like is a blocker; a damaged reference library or tether file holds back the paths it still names.
 
 // What a file's records are called to the user.
 const RECORD_NAMES: Record<string, string> = {
   "pdf-annotations": "annotations", "image-annotations": "annotations", "pdf-outline": "outline", transcript: "transcript", "transcript-companion": "transcript",
   definitions: "definitions", ink: "ink", python: "Python code",
 };
+
+/** A store's bytes as a path is looked for in them: JSON escapes undone, each name folded. */
+const normalizedText = (text: string) => foldedFileName(text.replace(/\\u([0-9a-f]{4})/gi, (_, code: string) => String.fromCharCode(parseInt(code, 16))).replace(/\\\//g, "/"));
 
 /** A library path as the check compares it: each segment folded (NFC and case), so another spelling of a name is the same path. */
 const folded = (libraryPath: string) => libraryPath.split("/").map(foldedFileName).join("/");
@@ -87,12 +90,24 @@ export async function destinationRecords() {
   // Every library may attach a file, and may be tethered to one; read without a lock and without quarantining a damaged one.
   const attached = new PathSet();
   const tethered = new PathSet();
+  // A damaged library or tether file is not a blocker for every path (Check Notebook reports it for its own notebook and calls it
+  // unverified elsewhere): it only holds back the paths its bytes still name, or all of them when even the bytes can't be read.
+  const damagedStores: { label: string; mentions: (relative: string) => Promise<boolean> }[] = [];
+  const damagedStore = (label: string, file: string, notebook: string) => {
+    let text: Promise<string | null> | undefined;
+    damagedStores.push({ label, mentions: async (relative) => {
+      text ??= readFile(file, "utf8").then(normalizedText, () => null);
+      const raw = await text;
+      if (raw === null) return true;
+      return raw.includes(normalizedText(relative)) || (relative.startsWith(`${notebook}/`) && raw.includes(normalizedText(relative.slice(notebook.length + 1))));
+    } });
+  };
   for (const library of await libraryNotebookNames()) {
     const inspected = await inspectReferenceLibrary(library).catch((error: unknown) => ({ damaged: error instanceof Error ? error.message : String(error) }));
-    if ("damaged" in inspected) unreadable.push(`The reference library of ${library} (${inspected.damaged})`);
+    if ("damaged" in inspected) damagedStore(`The reference library of ${library} (${inspected.damaged})`, referenceLibraryPath(library), library);
     else for (const entry of Object.values(inspected.library?.entries ?? {})) for (const attachment of entry.attachments) if (attachment.kind !== "url") attached.add(attachment.path);
     const tether = await readTetherTarget(library).catch((error: unknown) => ({ damaged: error instanceof Error ? error.message : String(error) }));
-    if (tether && "damaged" in tether) unreadable.push(`The .bib tether of ${library} (${tether.damaged})`);
+    if (tether && "damaged" in tether) damagedStore(`The .bib tether of ${library} (${tether.damaged})`, bibTetherStatePath(library), library);
     else if (tether && "libraryPath" in tether) tethered.add(tether.libraryPath);
   }
   // The agent's undo history: restoring a run writes the file back at its path.
@@ -164,6 +179,7 @@ export async function destinationRecords() {
       if (tagged.has(relative, exact)) kept.add("tags");
       if (attached.has(relative, exact)) kept.add("reference attachment");
       if (tethered.has(relative, exact)) kept.add(".bib tether");
+      for (const store of damagedStores) if (await store.mentions(relative)) kept.add(`${store.label} may hold records here`);
       return [...kept];
     },
   };

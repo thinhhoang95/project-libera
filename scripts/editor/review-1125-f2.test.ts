@@ -152,3 +152,16 @@ test("L-M4: a cross-notebook note move rewrites its images atomically", () => wi
   assert.deepEqual((await readdir(path.dirname(filePathFromParts(notebook, parts)))).filter((name) => name.endsWith(".tmp")), []);
   await assertNotebookSound("Other");
 }));
+
+test("L-H5: a damaged reference library or tether holds back only the paths its bytes name", () => withTemporaryLibrary(["Nb", "Other"], async () => {
+  await writeAt(path.join(getStateRoot(), "Other", ".libera", "references", "library.json"), '{ "entries": [ "Nb/held.pdf" ');
+  await writeAt(bibTetherStatePath("Other"), "{ nope Nb/refs.bib");
+  const records = await destinationRecords();
+  assert.equal(records.blocker, null);
+  assert.equal((await records.at("Nb", ["free.pdf"], "pdf")).length, 0);
+  assert.ok((await records.at("Nb", ["held.pdf"], "pdf")).some((name) => name.includes("reference library of Other")));
+  assert.ok((await records.at("Nb", ["refs.bib"], "bibtex")).some((name) => name.includes(".bib tether of Other")));
+  await writeLibraryFile("Nb/m.pdf", "%PDF-1.4 m");
+  await assert.rejects(moveFile("Nb/m.pdf", "Nb", "held.pdf"), refused);
+  await moveFile("Nb/m.pdf", "Nb", "free.pdf");
+}));
