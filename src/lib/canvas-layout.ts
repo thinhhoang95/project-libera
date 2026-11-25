@@ -187,18 +187,60 @@ export function focusCanvasPane(layout: CanvasLayout, paneId: string): CanvasLay
   return layout.focusedPaneId === paneId || !findCanvasPane(layout, paneId) ? layout : { ...layout, focusedPaneId: paneId };
 }
 
+/**
+ * Tab renames of one change (old id to new id), as the workspace made them. Both
+ * ends are applied together, so a swap (A to B, B to A) swaps ids and a merge
+ * (A into an open B) folds A's pane into B's.
+ */
+export type CanvasTabRenames = ReadonlyMap<string, string>;
+
+/** `first` followed by `second` (two retargets before a render): each old id maps to where it ended. */
+export function composeCanvasRenames(first: CanvasTabRenames, second: CanvasTabRenames): Map<string, string> {
+  const composed = new Map<string, string>();
+  for (const [from, to] of first) composed.set(from, second.get(to) ?? to);
+  for (const [from, to] of second) if (!composed.has(from) && !first.has(from)) composed.set(from, to);
+  return composed;
+}
+
+// Applies renames to every pane at once. A pane that lands on a tab another pane
+// already shows closes (a tab is visible once); the pane that showed it before keeps it.
+function applyCanvasRenames(layout: CanvasLayout, renames: CanvasTabRenames): CanvasLayout {
+  const original = new Map(listCanvasPanes(layout.root).map((pane) => [pane.id, pane.tabId]));
+  let next = mapCanvasLayoutTabIds(layout, (tabId) => renames.get(tabId) ?? tabId);
+  if (next === layout) return layout;
+  const owner = new Map<string, string>();
+  const doomed: string[] = [];
+  const panes = listCanvasPanes(next.root);
+  // Panes that did not change claim their tab first.
+  for (const pane of panes) if (pane.tabId && original.get(pane.id) === pane.tabId) owner.set(pane.tabId, pane.id);
+  for (const pane of panes) {
+    if (!pane.tabId || owner.get(pane.tabId) === pane.id) continue;
+    if (owner.has(pane.tabId)) doomed.push(pane.id);
+    else owner.set(pane.tabId, pane.id);
+  }
+  for (const id of doomed) {
+    next = next.root.type === "pane"
+      ? { ...next, root: setPaneTab(next.root, id, "") }
+      : closeCanvasPane(next, id);
+  }
+  return next;
+}
+
 // Keeps the layout consistent with the open tabs and the workspace's active tab.
-// `previousTabIds` lets renames (which replace a tab id in place) follow the tab
-// into its pane instead of leaving the pane empty.
+// `renames` (the workspace's own old-to-new ids) is how a renamed tab follows its
+// pane. Without it `previousTabIds` lets renames that replace a tab id in place be
+// inferred by position, which cannot tell a swap or a merge from other changes.
 export function reconcileCanvasLayout(
   layout: CanvasLayout,
-  options: { tabIds: string[]; previousTabIds: string[]; activeTabId: string },
+  options: { tabIds: string[]; previousTabIds: string[]; activeTabId: string; renames?: CanvasTabRenames },
 ): CanvasLayout {
-  const { tabIds, previousTabIds, activeTabId } = options;
+  const { tabIds, previousTabIds, activeTabId, renames } = options;
   const open = new Set(tabIds);
   let next = layout;
 
-  if (previousTabIds.length === tabIds.length) {
+  if (renames?.size) {
+    next = applyCanvasRenames(next, renames);
+  } else if (previousTabIds.length === tabIds.length) {
     const previous = new Set(previousTabIds);
     previousTabIds.forEach((from, index) => {
       const to = tabIds[index];

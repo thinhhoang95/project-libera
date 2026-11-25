@@ -1,6 +1,7 @@
 "use client";
 
 import { useTranslations } from "next-intl";
+import { onPathsMoved } from "@/components/libera/path-follow";
 import { useRegisterGalleryTranslator } from "@/components/libera/gallery-i18n";
 import { MarkdownReviewProvider } from "@/components/libera/markdown-review-context";
 import { ReviewPaletteCommands, ReviewPopover } from "@/components/libera/markdown-review-ui";
@@ -176,6 +177,8 @@ export function LiberaApp({
   const markdownEditorMode = workspace.activeTab?.viewState?.markdown?.editorMode ?? "visual";
   const latexEditorMode = workspace.activeTab?.viewState?.latex?.editorMode ?? "source";
   const [activePreviewTabId, setActivePreviewTabId] = useState<string | null>(null);
+  // Preview mode stays with the file when it moves (its tab id is its path).
+  useEffect(() => onPathsMoved((remap) => setActivePreviewTabId((current) => current === null ? current : remap(current))), []);
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
   const [sidebarResizing, setSidebarResizing] = useState(false);
   const [chatWidth, setChatWidth] = useState(360);
