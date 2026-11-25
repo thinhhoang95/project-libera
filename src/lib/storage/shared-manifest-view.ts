@@ -73,6 +73,10 @@ export async function readManifestView(notebook: string): Promise<ManifestView> 
     const result = await listProjectEntries(marker.projectId, config);
     if (!result || !Array.isArray(result.entries)) return { state: "unavailable", reason: "The host did not return the shared notebook's file list." };
     entries = result.entries;
+    // A move or removal made here that the server has not acknowledged yet: the records kept on this computer follow it
+    // once it is, so they are still where the list before it had them, and judging them against the list now would call
+    // them leftovers. Not judged, so nothing is offered for removal on its account (S-C2).
+    if (result.awaitingServer) return { state: "unavailable", reason: "A change to this shared notebook's files is waiting for the server to confirm it, so the records kept for those files can't be judged yet. Check again once it has." };
   } catch (error) {
     return { state: "unavailable", reason: error instanceof Error ? error.message : String(error) };
   }
