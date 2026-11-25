@@ -4715,8 +4715,12 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       }).catch(async (error): Promise<LiberaFolderMovePayload> => {
         if (!sharedCommitted(error)) throw error;
         stayedBehind = error instanceof Error ? error.message : tRef.current("renameFolderError");
-        await workspaceManager.runFileChange(async () => undefined, () => ({ paths: [nextPath], moved: { from: folder.path, to: nextPath } })).catch(() => undefined);
-        return apiRequest<LiberaTree>("/api/tree?includeArchive=true");
+        // The links the host rewrote before the step that failed (absent on older errors: none).
+        const links = (sharedCommitted(error) as { links?: LiberaLinkRewrites } | null)?.links ?? (error as { links?: LiberaLinkRewrites } | null)?.links;
+        const rewrite = linkRewriteByPath(links);
+        await workspaceManager.runFileChange(async () => undefined, () => ({ paths: [nextPath], moved: { from: folder.path, to: nextPath }, ...(rewrite ? { rewrite } : {}) })).catch(() => undefined);
+        const tree = await apiRequest<LiberaTree>("/api/tree?includeArchive=true");
+        return links ? { ...tree, links } : tree;
       });
       // The open files follow through the one retarget path (collisions, drafts, ink, active tab, split panes), from the tabs as they are now.
       const renamed = prefixRetargets(
