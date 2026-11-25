@@ -31,7 +31,8 @@ import { markdownImageSources, rawFileSourcePath, rewriteMarkdownImageSources } 
 import { isInkBlockRenderingName } from "@/lib/ink/block";
 import { legacyPythonSidecarPath, ownsPythonFigureSource, parsePythonFigureSource, previousPythonFigureSources, pythonFigureFolder, pythonFigureSourcePrefix, pythonSidecarPath, withPreviousPythonFigureSources } from "@/lib/python/sidecar";
 import { assertNotMigrating } from "@/lib/storage/migration-fence";
-import { libraryNotebookNames } from "@/lib/storage/library-links";
+import { libraryNotebookNames, offlineLinkedFolderNames } from "@/lib/storage/library-links";
+import { foldedFileName } from "@/lib/storage/file-names";
 
 export { markdownImageSources } from "@/lib/markdown-image-sources";
 
@@ -99,8 +100,9 @@ function referencedRawFilePaths(markdown: string) {
 export function markdownImageTargets(documentPath: string, markdown: string) {
   const targets: { source: string; libraryPath: string | null; absolutePath: string | null }[] = [];
   for (const source of markdownImageSources(markdown)) {
+    let raw: string | null = null;
     try {
-      const raw = rawFileSourcePath(source);
+      raw = rawFileSourcePath(source);
       if (raw) {
         const { notebook, pathParts } = splitFilePath(raw);
         targets.push({ source, libraryPath: raw, absolutePath: filePathFromParts(notebook, pathParts) });
@@ -111,7 +113,8 @@ export function markdownImageTargets(documentPath: string, markdown: string) {
       const notebook = splitFilePath(target.documentPath).notebook;
       targets.push({ source, libraryPath: `${notebook}/${target.assetPath}`, absolutePath: markdownAssetPath(notebook, target.assetPath).targetPath });
     } catch {
-      targets.push({ source, libraryPath: null, absolutePath: null });
+      // A library address that names no user path (an image kept in `_assets`) is still read: the unused-image scan counts it.
+      targets.push({ source, libraryPath: raw, absolutePath: null });
     }
   }
   return targets;
@@ -127,13 +130,20 @@ export async function unreferencedMarkdownAssets(notebook: string, scan?: { docu
   const { documents, complete } = scan ?? await readMarkdownAssetDocuments(notebook);
   if (!complete) return null;
   const referenced = new Set<string>();
-  const owned: string[] = [];
+  const owned: { prefix: string }[] = [];
+  const ownName = foldedFileName(notebook);
   for (const document of documents) {
-    for (const asset of referencedMarkdownAssetPaths(document.documentPath, document.content)) referenced.add(asset.toLowerCase());
-    for (const prefix of ownedPrefixes(document.documentPath)) owned.push(`${prefix.toLowerCase()}/`);
+    for (const asset of referencedMarkdownAssetPaths(document.documentPath, document.content)) referenced.add(assetPathKey(asset));
+    // An embed by library address (`/api/files/raw/<notebook>/...`) shows the image as well: one rule with the cleanup that looks at addresses.
+    for (const raw of libraryAddressedPaths(document.documentPath, document.content)) {
+      const [owner, ...rest] = raw.split("/");
+      if (foldedFileName(owner) === ownName && rest.length) referenced.add(assetPathKey(rest.join("/")));
+    }
+    for (const prefix of ownedPrefixes(document.documentPath)) owned.push({ prefix });
   }
   const unused: string[] = [];
   const root = path.join(notebookPath(notebook), MARKDOWN_ASSETS_DIR);
+  const sameFolder = sameFolderOnDisk(notebook);
   const walk = async (directory: string, relative: string) => {
     let entries;
     try { entries = await readdir(directory, { withFileTypes: true }); } catch { return; }
@@ -141,13 +151,69 @@ export async function unreferencedMarkdownAssets(notebook: string, scan?: { docu
       const assetPath = `${relative}/${entry.name}`;
       if (entry.isDirectory()) await walk(path.join(directory, entry.name), assetPath);
       else if (entry.isFile() && !JUNK_FILES.has(entry.name)) {
-        const key = assetPath.toLowerCase();
-        if (!referenced.has(key) && !owned.some((prefix) => key.startsWith(prefix))) unused.push(`${notebook}/${assetPath}`);
+        if (!referenced.has(assetPathKey(assetPath)) && !(await isInOwnedFolder(assetPath, owned, sameFolder))) unused.push(`${notebook}/${assetPath}`);
       }
     }
   };
   await walk(root, MARKDOWN_ASSETS_DIR);
   return unused.sort();
+}
+
+/**
+ * An asset path as one name for comparing: each segment under the round's one
+ * name rule (NFC and case folding, storage/file-names.ts), so an NFD name on
+ * disk and its NFC reference are the same image.
+ */
+export function assetPathKey(assetPath: string) {
+  return assetPath.split("/").map(foldedFileName).join("/");
+}
+
+/**
+ * Whether an asset sits inside a folder a note owns (its own images, its
+ * Python code). Folded equality of the folder is enough only when it is one
+ * folder on disk: on a case-sensitive volume `Analysis.md` and `analysis.md`
+ * are two, and code left in the first after a case-only rename is nobody's.
+ * `sameFolder` asks the disk: true (the same folder), false (another), null
+ * (could not tell: kept as owned, never offered for removal on a guess).
+ */
+export async function isInOwnedFolder(
+  assetPath: string,
+  owned: { prefix: string }[],
+  sameFolder: (assetPath: string, prefix: string) => Promise<boolean | null>,
+) {
+  const key = assetPathKey(assetPath);
+  const exact = assetPath.normalize("NFC");
+  for (const { prefix } of owned) {
+    if (!key.startsWith(`${assetPathKey(prefix)}/`)) continue;
+    if (exact.startsWith(`${prefix.normalize("NFC")}/`)) return true;
+    if ((await sameFolder(assetPath, prefix)) !== false) return true;
+  }
+  return false;
+}
+
+/** Whether the first folders of an asset's path, as spelled on disk, are the folder `prefix` names: one inode, asked of the disk once per pair. */
+function sameFolderOnDisk(notebook: string) {
+  const answers = new Map<string, Promise<boolean | null>>();
+  return (assetPath: string, prefix: string) => {
+    const depth = prefix.split("/").length;
+    const actual = assetPath.split("/").slice(0, depth);
+    const id = `${prefix}\0${actual.join("/")}`;
+    if (!answers.has(id)) {
+      answers.set(id, (async () => {
+        try {
+          const [a, b] = await Promise.all([
+            stat(path.join(notebookPath(notebook), ...actual), { bigint: true }),
+            stat(path.join(notebookPath(notebook), ...prefix.split("/")), { bigint: true }),
+          ]);
+          if (!a.ino || !b.ino) return null;
+          return a.dev === b.dev && a.ino === b.ino;
+        } catch (error) {
+          return ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "") ? false : null;
+        }
+      })());
+    }
+    return answers.get(id)!;
+  };
 }
 
 const JUNK_FILES = new Set([".DS_Store", "Thumbs.db", "desktop.ini"]);
@@ -224,18 +290,21 @@ function libraryAddressedPaths(documentPath: string, markdown: string) {
 }
 
 /**
- * Library paths (lowercased) that notes of the other local notebooks embed by
- * address (see libraryAddressedPaths). `includeOwn` adds the notebook's own
+ * Library paths (as assetPathKey) that notes of the other local notebooks embed
+ * by address (see libraryAddressedPaths). `includeOwn` adds the notebook's own
  * notes, whose raw addresses its relative-path scan doesn't see. Null when one
- * of those notebooks could not be read in full.
+ * of those notebooks could not be read in full, or a linked folder that is not
+ * connected on this computer may hold such notes: it can't be searched, so it
+ * can't be said that nothing there shows the image.
  */
 export async function rawEmbedsInOtherNotebooks(notebook: string, { includeOwn = false }: { includeOwn?: boolean } = {}) {
+  if (offlineLinkedFolderNames().length) return null;
   const embeds = new Set<string>();
   for (const other of await libraryNotebookNames()) {
     if (other === notebook && !includeOwn) continue;
     const { documents, complete } = await readMarkdownAssetDocuments(other).catch(() => ({ documents: [] as MarkdownDocument[], complete: false }));
     if (!complete) return null;
-    for (const document of documents) for (const raw of libraryAddressedPaths(document.documentPath, document.content)) embeds.add(raw.toLowerCase());
+    for (const document of documents) for (const raw of libraryAddressedPaths(document.documentPath, document.content)) embeds.add(assetPathKey(raw));
   }
   return embeds;
 }
@@ -252,7 +321,7 @@ export async function cleanupMarkdownImageAssets(notebook: string, previous: Mar
   // A save can be superseded while this scan runs. Keep both the text on disk
   // and the caller's references; an older request must not prune a newer save.
   for (const document of [...documents, ...overrides]) {
-    for (const asset of referencedMarkdownAssetPaths(document.documentPath, document.content)) references.add(asset.toLowerCase());
+    for (const asset of referencedMarkdownAssetPaths(document.documentPath, document.content)) references.add(assetPathKey(asset));
   }
   const candidates = new Set<string>();
   const directories = new Set<string>();
@@ -262,7 +331,7 @@ export async function cleanupMarkdownImageAssets(notebook: string, previous: Mar
       // Sanitized note names can collide. Never bulk-prune another note's
       // uploads, including uploads that have not yet reached its saved text.
       const ambiguous = documents.some((other) => other.documentPath !== document.documentPath &&
-        [...ownedPrefixes(other.documentPath)].some((owned) => owned.toLowerCase() === prefix.toLowerCase()));
+        [...ownedPrefixes(other.documentPath)].some((owned) => assetPathKey(owned) === assetPathKey(prefix)));
       if (ambiguous) continue;
       const directory = markdownAssetPath(notebook, `${prefix}/placeholder`).targetPath;
       const assetDirectory = path.dirname(directory);
@@ -285,7 +354,7 @@ export async function cleanupMarkdownImageAssets(notebook: string, previous: Mar
   }
   const pruned: string[] = [];
   for (const candidate of candidates) {
-    if (references.has(candidate.toLowerCase())) continue;
+    if (references.has(assetPathKey(candidate))) continue;
     // ProseMirror history can refer to any prior version, regardless of its age.
     if ((parsePythonFigureSource(candidate) || isInkBlockRenderingName(path.basename(candidate))) && previous.some((document) => documents.some((saved) => saved.documentPath === document.documentPath))) continue;
     pruned.push(candidate);
@@ -300,7 +369,7 @@ export async function cleanupMarkdownImageAssets(notebook: string, previous: Mar
     embeddedElsewhere = elsewhere;
   }
   for (const candidate of pruned) {
-    if (embeddedElsewhere.has(`${notebook}/${candidate}`.toLowerCase())) continue;
+    if (embeddedElsewhere.has(assetPathKey(`${notebook}/${candidate}`))) continue;
     const asset = markdownAssetPath(notebook, candidate);
     await rm(asset.targetPath, { force: true });
     directories.add(path.dirname(asset.targetPath));

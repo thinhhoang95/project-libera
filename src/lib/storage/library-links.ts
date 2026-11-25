@@ -18,6 +18,11 @@ export async function libraryNotebookNames() {
   ];
 }
 
+/** Linked folders that are not connected on this computer: they may hold notes that cannot be read from here. */
+export function offlineLinkedFolderNames() {
+  return getLinkedFolders().filter((folder) => folder.unresolved).map((folder) => folder.name);
+}
+
 /** Each Markdown file's links, as written, from the notebook's link index (kept by tree loads; read, never written here). */
 export async function readNotebookLinkIndex(notebook: string): Promise<Record<string, string[]>> {
   try {

@@ -13,7 +13,7 @@ import { inkFolderPath } from "@/lib/storage/ink";
 import { sharedMayClear, verifyNotebook, type CleanupAction, type IntegrityFinding, type IntegrityLimits } from "@/lib/storage/integrity";
 import { readManifestView, type ManifestView } from "@/lib/storage/shared-manifest-view";
 import { fileExistence } from "@/lib/storage/library-links";
-import { rawEmbedsInOtherNotebooks, unreferencedMarkdownAssets } from "@/lib/storage/markdown-assets";
+import { assetPathKey, rawEmbedsInOtherNotebooks, unreferencedMarkdownAssets } from "@/lib/storage/markdown-assets";
 import { deleteReviewKey, findReview, reviewVersion } from "@/lib/storage/markdown-reviews";
 import { assertSafeSegment, getAdminRoot, notebookPath, notebookSystemDirectoryPath, splitFilePath, withReadOnlyStorage } from "@/lib/storage/paths";
 import { refreshNotebookCitations } from "@/lib/storage/reference-citations";
@@ -320,7 +320,7 @@ async function collect(notebook: string, repair: RepairPlan, options: CleanupOpt
       if (isImage(action)) {
         if (embeds === undefined) embeds = await rawEmbedsInOtherNotebooks(notebook, { includeOwn: true });
         if (!embeds) { hold("images-unscanned"); continue; }
-        if (embeds.has((action as { path: string }).path.toLowerCase())) { hold("image-used"); continue; }
+        if (embeds.has(assetPathKey((action as { path: string }).path))) { hold("image-used"); continue; }
       }
       clear.push(action);
     }
@@ -492,7 +492,7 @@ async function perform(notebook: string, action: CleanupAction, context: Context
         // A note saved since the plan may show it now (or an address in another notebook's note): looked at again, not trusted from the plan.
         const fresh = await context.images();
         if (!fresh) throw new NoLongerStale(`${action.path}: the notes could not all be read, so it can't be ruled out that one shows it; it is kept.`);
-        const key = action.path.toLowerCase();
+        const key = assetPathKey(action.path);
         if (fresh.embeds.has(key) || !fresh.unused.has(key)) throw new NoLongerStale(`${action.path} is shown by a note now; it is kept.`);
       }
       const outcome = await remove(notebook, file, version(file), recheck);
@@ -584,7 +584,7 @@ async function applyCleanup(name: string, token: string, options: CleanupOptions
     images: () => fresh ??= (async () => {
       const unused = await unreferencedMarkdownAssets(notebook);
       const embeds = await rawEmbedsInOtherNotebooks(notebook, { includeOwn: true });
-      return unused && embeds ? { unused: new Set(unused.map((asset) => asset.toLowerCase())), embeds } : null;
+      return unused && embeds ? { unused: new Set(unused.map(assetPathKey)), embeds } : null;
     })(),
   };
   // Images last, so the notes are read as late as possible; an ink folder's record after its payload.
