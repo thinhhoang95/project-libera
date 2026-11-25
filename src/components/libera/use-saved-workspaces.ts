@@ -319,6 +319,7 @@ export function useSavedWorkspaces(options: Options) {
     } finally {
       locked.current = false;
       setSwitching(false);
+      applyRemoteChanges();
     }
   }
 
@@ -332,6 +333,19 @@ export function useSavedWorkspaces(options: Options) {
     return () => window.removeEventListener("keydown", blockShortcuts, true);
   }, []);
 
+  const remoteChanges = useRef<WorkspaceFileChange[]>([]);
+  function applyRemoteChanges() {
+    if (locked.current || !readyRef.current || !remoteChanges.current.length) return;
+    const changes = remoteChanges.current;
+    remoteChanges.current = [];
+    let next = snapshot();
+    for (const change of changes) next = trackWorkspaceFileChange(next, next.activeWorkspaceId, change);
+    publish(next);
+  }
+  function followRemoteChange(change: WorkspaceFileChange) {
+    remoteChanges.current.push(change);
+    applyRemoteChanges();
+  }
   const activeWorkspace = library.workspaces.find((workspace) => workspace.id === library.activeWorkspaceId);
   const organizedTree = useMemo(() => applyWorkspaceView(options.tree, activeWorkspace?.view), [options.tree, activeWorkspace?.view]);
   const visibleTree = useMemo(() => filterWorkspaceTree(options.tree, activeWorkspace?.scope, activeWorkspace?.view), [options.tree, activeWorkspace?.scope, activeWorkspace?.view]);
@@ -382,13 +396,18 @@ export function useSavedWorkspaces(options: Options) {
       try { return await task; }
       finally { fileChanges.current.delete(task); }
     },
-    /** The moves among `moves` that saved workspaces may follow: not those whose `from` is held by a saved tab known to be another file. */
-    movesForSavedWorkspaces: <M extends { from: string; fileId?: string }>(moves: M[]): M[] => {
-      const library = snapshot();
-      const sessions = [library.librarySession, ...library.workspaces.map((workspace) => workspace.session)];
-      return moves.filter((move) => !move.fileId || !sessions.some((session) => session?.tabs.some((tab) =>
-        !tab.gallery && !tab.page && tab.file.path === move.from && tab.file.fileId !== undefined && tab.file.fileId !== move.fileId)));
-    },
+    /**
+     * The moves saved workspaces follow. A saved tab known to be another file than the one that moved
+     * stays where it is, judged in each saved workspace separately (remapWorkspacePathsMany reads `fileId`):
+     * one workspace holding another file at `from` no longer drops the move for the others.
+     */
+    movesForSavedWorkspaces: <M extends { from: string; fileId?: string }>(moves: M[]): M[] => moves,
+    /**
+     * A file change another window already wrote to the saved workspaces: this window's copy follows in
+     * memory only, so two windows never both PUT it (the originating window's write is the one). While a
+     * workspace switch or load is running it waits and is applied when that ends.
+     */
+    followRemoteChange,
     switchWorkspace: (id: string | null) => commit((value) => value, id),
     saveWorkspace: (workspace: Omit<SavedWorkspace, "session">) => {
       const exists = libraryRef.current.workspaces.some((item) => item.id === workspace.id);
