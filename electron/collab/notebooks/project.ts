@@ -3953,7 +3953,9 @@ export class SharedProject {
     if (!this.manifestReady()) return Promise.reject(new ControlError(503, "offline", "The notebook's file list has not loaded yet."));
     const entries = this.readEntries();
     const list: FileListEntry[] = [];
-    for (const [fileId, placed] of computeLayout(entries.values()).paths) {
+    const layout = computeLayout(entries.values());
+    const awaitingServer = this.awaitingTransitions(layout);
+    for (const [fileId, placed] of layout.paths) {
       const entry = entries.get(fileId);
       if (!entry) continue;
       list.push({
@@ -3967,7 +3969,7 @@ export class SharedProject {
         updatedAt: entry.updatedAt,
       });
     }
-    return Promise.resolve({ entries: list });
+    return Promise.resolve({ entries: list, ...(awaitingServer > 0 ? { awaitingServer } : {}) });
   }
 
   /**
@@ -4219,7 +4221,16 @@ export class SharedProject {
         // change; rebuild the resolvePath index here, or a file just created
         // would not resolve (the caller's next request is often an edit to it).
         this.ctx.layoutChanged(this.info.projectId);
-        return { paths: paths.map((item) => this.liberaPath(item)), ...(resultFileId ? { fileId: resultFileId } : {}), ...(moves.length ? { moves } : {}) };
+        // Whether the server has the move or removal, so that it is in the log now. When it does not (offline, or the
+        // acknowledgement is still on its way) the caller's records stay where they are: they follow the row recorded at
+        // the acknowledgement, and a change the server rolls back leaves them where the restored manifest expects them (S-C2).
+        let acknowledged: boolean | undefined;
+        if (moves.length > 0) {
+          this.entries = this.readEntries();
+          acknowledged = this.manifestDeferred ? false : this.recordTransitions(computeLayout(this.entries.values()));
+          if (!acknowledged) this.transitionsDeferred = true;
+        }
+        return { paths: paths.map((item) => this.liberaPath(item)), ...(resultFileId ? { fileId: resultFileId } : {}), ...(moves.length ? { moves } : {}), ...(acknowledged === undefined ? {} : { acknowledged }) };
       } finally {
         for (const hash of uploaded) this.uploadedBlobs.delete(hash);
       }
@@ -4555,29 +4566,59 @@ export class SharedProject {
     this.saveSoon();
   }
 
-  private recordTransitions(layout: { paths: Map<string, string>; refused: Array<{ fileId: string }> }): void {
-    if (this.info.album) return;
+  /** The manifest's paths by file ID in the form the transition log records them (an entry the layout refuses keeps its recorded place). */
+  private recordedLayoutPaths(layout: { paths: Map<string, string>; refused: Array<{ fileId: string }> }): Map<string, RecordedPath> {
+    const next = new Map<string, RecordedPath>();
+    for (const [fileId, path] of layout.paths) next.set(fileId, { path, kind: this.entries.get(fileId)?.kind === "folder" ? "folder" : "file" });
+    for (const { fileId } of layout.refused) {
+      const before = this.recordedPaths.get(fileId);
+      if (before && !next.has(fileId)) next.set(fileId, before);
+    }
+    return next;
+  }
+
+  /**
+   * How many moves and removals the manifest holds that the host's log does not
+   * (the server has not acknowledged them yet): what a record kept on this
+   * computer must not follow, because the server can still roll them back (S-C2).
+   * Zero once they are logged. Reads memory only.
+   */
+  private awaitingTransitions(layout: { paths: Map<string, string>; refused: Array<{ fileId: string }> }): number {
+    if (this.info.album || !this.transitionsDeferred) return 0;
+    return diffManifestPaths(this.recordedPaths, this.recordedLayoutPaths(layout), 0, false).transitions.length;
+  }
+
+  /**
+   * Records the manifest's moves and removals once the server has them. Returns
+   * whether they are in the log now (false: they wait for the server's
+   * acknowledgement, which runs this again). Rows recorded after having waited
+   * are announced (`transitions-recorded`): the tree event that told the windows
+   * of the move went out before the log held it, so Next must read the log again
+   * for the records to follow (S-C2).
+   */
+  private recordTransitions(layout: { paths: Map<string, string>; refused: Array<{ fileId: string }> }): boolean {
+    if (this.info.album) return true;
     // A move or removal the server has not acknowledged can still be rolled back (M23).
     if (!this.manifestAcknowledged()) {
       this.transitionsDeferred = true;
-      return;
+      return false;
     }
+    const waited = this.transitionsDeferred;
     this.transitionsDeferred = false;
     try {
-      const next = new Map<string, RecordedPath>();
-      for (const [fileId, path] of layout.paths) next.set(fileId, { path, kind: this.entries.get(fileId)?.kind === "folder" ? "folder" : "file" });
-      for (const { fileId } of layout.refused) {
-        const before = this.recordedPaths.get(fileId);
-        if (before && !next.has(fileId)) next.set(fileId, before);
-      }
+      const next = this.recordedLayoutPaths(layout);
       this.noteRemoteRespells(next);
       const diff = diffManifestPaths(this.recordedPaths, next, Date.now(), this.manifestHub?.caughtUp === true);
-      if (diff.upserts.length === 0 && diff.removals.length === 0) return;
+      if (diff.upserts.length === 0 && diff.removals.length === 0) return true;
       this.ctx.host.store.commitManifestPaths(this.info.projectId, diff);
       this.recordedPaths = next;
+      if (waited && diff.transitions.length > 0) this.ctx.emit({ t: "transitions-recorded", projectId: this.info.projectId, notebook: this.info.notebook });
+      return true;
     } catch (error) {
-      // Recorded again from the same comparison at the next pass.
+      // Recorded again from the same comparison at the next pass; until then the change is still awaited.
+      this.transitionsDeferred = true;
       this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: could not record the manifest's moves`, error);
+      return false;
     }
   }
 

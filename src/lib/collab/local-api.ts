@@ -416,6 +416,12 @@ export interface FileOpResult {
    * no-op repeat or not a rename or delete.
    */
   moves?: FileOpMove[];
+  /**
+   * For a rename or delete: whether the server has the change, so that the host's transition log holds it. False
+   * (offline, or the acknowledgement is still on its way): the records kept on this computer must wait for the
+   * log row, which the host announces (`transitions-recorded`); the server can still roll the change back.
+   */
+  acknowledged?: boolean;
 }
 
 export interface FileOpMove {
@@ -444,6 +450,11 @@ export interface FileListEntry {
 
 export interface FileListResponse {
   entries: FileListEntry[];
+  /**
+   * Moves and removals in the list that the server has not acknowledged yet (so the host's transition log does not
+   * hold them, and the server can still roll them back). Absent: none, or a host that does not say.
+   */
+  awaitingServer?: number;
 }
 
 /**
@@ -698,6 +709,11 @@ export type HostEvent =
       moves: { from: string; to: string; fileId?: string }[];
       removed: string[];
     }
+  /**
+   * Moves or removals the notebook's list held back until the server acknowledged them are in the host's transition
+   * log now: the records kept on this computer follow them (Next reads the log).
+   */
+  | { t: "transitions-recorded"; projectId: string; notebook: string }
   /**
    * A file put in a shared notebook's folder matched one removed from the
    * notebook (or its old contents are unknown), so it went to the notebook's

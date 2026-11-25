@@ -29,6 +29,7 @@ import type { ManifestTransition } from "@/lib/collab/local-api";
 import type { SharedCommittedChange } from "@/lib/collab/shared-outcomes";
 import { sharedNotebookMarker } from "@/lib/collab/shared-notebook";
 import { getFileType } from "@/lib/storage/file-types";
+import { foldedFileName } from "@/lib/storage/file-names";
 import { discardReviewsAt, hasReviewEntry, moveReviewEntryAfterMove } from "@/lib/agent/review-store";
 import { moveTetheredFilesBatch } from "@/lib/references/bib-tether";
 import { copyFileIfExists, isCaseOnlyRename, pathExists, renameCaseAlias, retireIfUnchanged, snapshotFile, withPathLocks } from "@/lib/storage/fs-utils";
@@ -97,7 +98,15 @@ export interface FollowOptions {
   own?: ReadonlyArray<SharedCommittedChange>;
 }
 
-type Manifest = { byPath: Map<string, string>; fileIds: Set<string> };
+/**
+ * The notebook's file list. `byPath` is keyed by the round's name rule (`foldedPath`): on a volume that treats case and Unicode form as
+ * one name, a record at `Shared/Note.md` is the record of whichever file the manifest has at `Shared/note.md` (S-H4).
+ * `awaiting`: moves and removals in it that the server has not acknowledged yet (S-C2).
+ */
+type Manifest = { byPath: Map<string, string>; fileIds: Set<string>; pathOf: Map<string, string>; awaiting: number };
+
+/** A Libera path under the one name rule (foldedFileName per segment), the key two spellings of one name share. */
+const foldedPath = (path: string) => path.split("/").map(foldedFileName).join("/");
 
 const isFinal = (outcome: TransitionOutcome) => outcome.state === "applied" || outcome.state === "held" || outcome.state === "obsolete";
 
@@ -111,11 +120,36 @@ type FollowState = {
   drains: Map<string, Promise<void>>;
   /** Applied here, acknowledgement not yet confirmed: a later run acknowledges again and does not apply again. */
   applied: Map<string, TransitionOutcome>;
+  /**
+   * This user's own changes the host committed but the server had not acknowledged when their wrapper looked, by notebook: their records
+   * wait for the log row recorded at the acknowledgement, which is then an explicit move (a PDF's legacy notes follow it). Memory only,
+   * bounded and dated; a change lost here (a restart) is still followed from the log, as a collaborator's would be.
+   */
+  expected: Map<string, Array<{ change: SharedCommittedChange; at: number }>>;
 };
 const STATE_KEY = Symbol.for("libera.sharedRecordFollow");
-const followState = ((globalThis as { [STATE_KEY]?: FollowState })[STATE_KEY] ??= { tails: new Map(), drains: new Map(), applied: new Map() });
+const followState = ((globalThis as { [STATE_KEY]?: FollowState })[STATE_KEY] ??= { tails: new Map(), drains: new Map(), applied: new Map(), expected: new Map() });
 // A state object made by an earlier copy of this module (hot reload) has no drain queue.
 followState.drains ??= new Map();
+followState.expected ??= new Map();
+
+const EXPECTED_MAX = 1_000;
+const EXPECTED_TTL_MS = 24 * 60 * 60 * 1000;
+
+const sameChange = (change: SharedCommittedChange, transition: { from: string; to: string | null; fileId?: string }) =>
+  transition.from === change.from && transition.to === change.to && (change.fileId === undefined || change.fileId === transition.fileId);
+
+function expectChanges(notebook: string, changes: SharedCommittedChange[]) {
+  const now = Date.now();
+  const kept = (followState.expected.get(notebook) ?? []).filter((item) => now - item.at < EXPECTED_TTL_MS && !changes.some((change) => sameChange(change, { ...item.change, fileId: item.change.fileId })));
+  kept.push(...changes.map((change) => ({ change, at: now })));
+  followState.expected.set(notebook, kept.slice(-EXPECTED_MAX));
+}
+
+function forgetExpected(notebook: string, done: (change: SharedCommittedChange) => boolean) {
+  const kept = (followState.expected.get(notebook) ?? []).filter((item) => !done(item.change));
+  if (kept.length) followState.expected.set(notebook, kept); else followState.expected.delete(notebook);
+}
 
 /** The most seqs the host accepts in one acknowledgement (service.ts: transitionsAck). */
 const ACK_BATCH = 5_000;
@@ -275,15 +309,17 @@ async function arrived(to: string): Promise<boolean> {
 type Verdict = { kind: "own" } | { kind: "obsolete" } | { kind: "hold"; why: string };
 
 /** Whether the records at `from` can be taken for this transition's file's, from what the manifest says now. */
-function judge(t: FollowTransition, manifest: Manifest | null): Verdict {
+function judge(t: FollowTransition, manifest: Manifest | null, batch: FollowTransition[] = []): Verdict {
   // The shared wrappers pass no seq: the host has just answered that it committed this change for the file they asked about, which is what they know without the list.
   // A change from the log is never judged without the list (drain waits for it).
   if (!manifest) return t.seq === undefined ? { kind: "own" } : { kind: "hold", why: "the notebook's file list could not be read, so the owner of its records cannot be established" };
   // A local-only file the host archived because an incoming entry claimed its path: the claimant is at `from` by design, and the records there are the archived file's.
   if (t.fileId?.startsWith(DISPLACED_PREFIX)) return { kind: "own" };
-  const occupant = manifest.byPath.get(t.from);
+  // Compared under the name rule: the file the manifest has at `Shared/note.md` owns the records at `Shared/Note.md` on a volume where they are one slot (S-H4).
+  const occupant = manifest.byPath.get(foldedPath(t.from));
   if (occupant !== undefined && t.fileId === undefined) return { kind: "hold", why: "another file is at that path now and this change does not say which file it was" };
-  if (occupant !== undefined && occupant !== t.fileId) return { kind: "hold", why: "another file is at that path now, so its records may be that file's" };
+  // A file that is at that path because it moved in within this very batch (a chain: this one moves out first, see orderTransitions) is not a claimant of the records there.
+  if (occupant !== undefined && occupant !== t.fileId && !batch.some((other) => other.fileId === occupant && other.to !== null && foldedPath(other.to) === foldedPath(t.from))) return { kind: "hold", why: "another file is at that path now, so its records may be that file's" };
   // From the log (it has a file ID): a file listed in the manifest again was not removed after all, and records of a file that is still there are not deleted.
   // The shared wrappers pass no seq: the host has just answered that it removed the file.
   if (t.to === null && t.seq !== undefined && t.fileId !== undefined && manifest.fileIds.has(t.fileId)) return { kind: "obsolete" };
@@ -365,7 +401,7 @@ function orderTransitions(list: FollowTransition[]): { ordered: FollowTransition
     if (i === j) return;
     // b comes before a when it is the same file's earlier step, or when b moves out of the path a moves into.
     if (a.fileId !== undefined && a.fileId === b.fileId) { if ((b.seq ?? j) < (a.seq ?? i) || (b.seq === a.seq && j < i)) after[i].add(j); }
-    else if (a.to !== null && b.from === a.to) after[i].add(j);
+    else if (a.to !== null && foldedPath(b.from) === foldedPath(a.to)) after[i].add(j);
   }));
   const ordered: FollowTransition[] = [];
   const placed = new Set<number>();
@@ -407,7 +443,7 @@ async function applyTransitions(notebook: string, projectId: string | null, tran
         continue;
       }
       let outcome: TransitionOutcome;
-      try { outcome = await applyOne(t, judge(t, manifest), history); }
+      try { outcome = await applyOne(t, judge(t, manifest, ordered), history); }
       catch (error) {
         console.error(`[shared-record-follow] ${t.from}:`, error);
         outcome = { ...(t.seq === undefined ? {} : { seq: t.seq }), ...(t.fileId === undefined ? {} : { fileId: t.fileId }), from: t.from, to: t.to, state: "unfinished", held: [], unfinished: [`records of ${t.from}`] };
@@ -441,11 +477,13 @@ async function readManifest(notebook: string, projectId: string, config: HostCli
     if (!result || !Array.isArray(result.entries)) return null;
     const byPath = new Map<string, string>();
     const fileIds = new Set<string>();
+    const pathOf = new Map<string, string>();
     for (const entry of result.entries) {
-      byPath.set(`${notebook}/${entry.path}`, entry.fileId);
+      byPath.set(foldedPath(`${notebook}/${entry.path}`), entry.fileId);
+      pathOf.set(entry.fileId, `${notebook}/${entry.path}`);
       fileIds.add(entry.fileId);
     }
-    return { byPath, fileIds };
+    return { byPath, fileIds, pathOf, awaiting: typeof result.awaitingServer === "number" ? result.awaitingServer : 0 };
   } catch {
     return null;
   }
@@ -508,9 +546,11 @@ async function drain(notebook: string, options: FollowOptions): Promise<DrainRes
   // Nothing from the log is applied without knowing who owns the paths now: it stays in the log for the next run.
   if (!manifest) return blank(notebook, { error: "The notebook's file list could not be read, so the owner of its records cannot be established. The changes stay in the host's log." });
   // This user's own wrapper's changes are explicit moves; the rest of the log (a collaborator's, or one replayed after a crash) is not.
-  const own = options.own ?? [];
-  const marked: FollowTransition[] = transitions.map((t) => own.some((change) => change.from === t.from && change.to === t.to && (change.fileId === undefined || change.fileId === t.fileId)) ? { ...t, explicit: true } : t);
+  // Changes whose wrapper had to leave them for the server's acknowledgement are this user's too (S-C2).
+  const own = [...(options.own ?? []), ...(followState.expected.get(notebook)?.map((item) => item.change) ?? [])];
+  const marked: FollowTransition[] = transitions.map((t) => own.some((change) => sameChange(change, t)) ? { ...t, explicit: true } : t);
   const outcomes = await applyTransitions(notebook, marker.projectId, marked, manifest);
+  if (followState.expected.has(notebook)) forgetExpected(notebook, (change) => outcomes.some((outcome) => isFinal(outcome) && sameChange(change, outcome)));
   const done = outcomes.filter(isFinal).map((outcome) => outcome.seq).filter((seq): seq is number => seq !== undefined);
   let error: string | undefined;
   // The host takes at most ACK_BATCH seqs per call (it answers 400 for more); a batch that failed leaves the rest for the next run.
@@ -577,6 +617,22 @@ export interface FollowedChange {
   unfinished: string[];
   /** Records left alone because their owner cannot be established (also in `unfinished`). */
   held: string[];
+  /** Changes the server has not acknowledged yet, one plain phrase each: their records follow the host's log row recorded at the acknowledgement (not a failure; nothing was moved or removed). */
+  awaiting: string[];
+}
+
+/** Whether the manifest as it is now still shows the change (a move put the file at `to`; a removal left it out), so a record can follow it; false: the server rolled it back or it was changed since. */
+function manifestShows(change: SharedCommittedChange & { kind?: "file" | "folder" }, manifest: Manifest): boolean {
+  if (change.fileId !== undefined) {
+    const now = manifest.pathOf.get(change.fileId);
+    return change.to === null ? now === undefined : now !== undefined && foldedPath(now) === foldedPath(change.to);
+  }
+  // A folder held only as the directory of its files has no entry of its own: its files say where it is.
+  if (change.kind === "folder") {
+    const below = (folder: string) => [...manifest.byPath.keys()].some((key) => key.startsWith(`${foldedPath(folder)}/`));
+    return change.to === null ? !below(change.from) : below(change.to);
+  }
+  return true;
 }
 
 /**
@@ -587,26 +643,59 @@ export interface FollowedChange {
  * does not hold (a host that does not keep one, a failed read) is applied from
  * `committed` through the same steps. Nothing here can undo the host's change:
  * every step runs, and what stayed behind is returned, never thrown.
+ *
+ * Nothing local is destroyed or moved before the server has the change (S-C2): the
+ * host logs a move or removal only once the server acknowledged it, because the
+ * server can still roll it back. A change the log does not hold yet while the host
+ * says changes are awaiting the server is left for the log row: the host announces
+ * it when it is recorded (`transitions-recorded`), Next drains it, and it is followed
+ * once, as this user's own move. A rolled-back change never gets a row, so its
+ * records are where the restored manifest expects them.
  */
 export async function followCommittedChange(notebook: string, committed: Array<SharedCommittedChange & { kind?: "file" | "folder" }>, options: FollowOptions = {}): Promise<FollowedChange> {
-  const drained = await drainSharedRecordTransitions(notebook, { ...options, own: committed });
   const covered = (change: SharedCommittedChange, outcome: TransitionOutcome) => outcome.from === change.from && outcome.to === change.to;
   const mine: TransitionOutcome[] = [];
-  const uncovered: Array<FollowTransition> = [];
-  for (const change of committed) {
-    const hits = drained.outcomes.filter((outcome) => covered(change, outcome));
-    if (hits.length) mine.push(...hits);
-    else uncovered.push({ ...(change.fileId ? { fileId: change.fileId } : {}), ...(change.kind ? { kind: change.kind } : {}), from: change.from, to: change.to, explicit: true });
-  }
+  const awaiting: string[] = [];
+  const extra: string[] = [];
+  /** Splits `changes` into what `drained` covered (added to `mine`) and what it did not. */
+  const split = (changes: typeof committed, drained: DrainResult) => {
+    const rest: typeof committed = [];
+    for (const change of changes) {
+      const hits = drained.outcomes.filter((outcome) => covered(change, outcome));
+      if (hits.length) mine.push(...hits); else rest.push(change);
+    }
+    return rest;
+  };
+  let uncovered = split(committed, await drainSharedRecordTransitions(notebook, { ...options, own: committed }));
   if (uncovered.length) {
+    // Remembered before the host is asked: the row can be recorded and announced while this reads, and it is this user's move.
+    expectChanges(notebook, uncovered);
     const marker = sharedNotebookMarker(notebook);
     const config = options.config === undefined ? collabHostConfig() : options.config;
-    const manifest = marker?.projectId && config ? await readManifest(notebook, marker.projectId, config) : null;
-    mine.push(...await applyTransitions(notebook, null, uncovered, manifest));
+    let manifest = marker?.projectId && config ? await readManifest(notebook, marker.projectId, config) : null;
+    if (!manifest) {
+      // Whether the server has the change cannot be established: nothing is moved or removed on a guess, and the report says so.
+      for (const change of uncovered) extra.push(`records of ${change.from} (the notebook's file list could not be read, so it is not known whether the server has the change)`);
+      uncovered = [];
+    } else if (manifest.awaiting > 0) {
+      for (const change of uncovered) awaiting.push(`records of ${change.from} (waiting for the server to confirm the change)`);
+      uncovered = [];
+    } else {
+      // The server has everything this notebook's list shows, so the log holds it: the row may have been recorded since the first read.
+      uncovered = split(uncovered, await drainSharedRecordTransitions(notebook, { ...options, own: committed }));
+      // What the log still lacks is a host that does not keep one. A change the manifest no longer shows was rolled back or changed since: its records stay.
+      manifest = manifest as Manifest;
+      const current = uncovered.filter((change) => manifestShows(change, manifest as Manifest));
+      if (current.length) {
+        mine.push(...await applyTransitions(notebook, null, current.map((change) => ({ ...(change.fileId ? { fileId: change.fileId } : {}), ...(change.kind ? { kind: change.kind } : {}), from: change.from, to: change.to, explicit: true })), manifest));
+      }
+      forgetExpected(notebook, (expected) => committed.some((change) => change.from === expected.from && change.to === expected.to && change.fileId === expected.fileId));
+    }
   }
   return {
-    unfinished: mine.flatMap((outcome) => [...outcome.unfinished, ...outcome.pending ?? [], ...outcome.held]),
+    unfinished: [...mine.flatMap((outcome) => [...outcome.unfinished, ...outcome.pending ?? [], ...outcome.held]), ...extra],
     held: mine.flatMap((outcome) => outcome.held),
+    awaiting,
   };
 }
 

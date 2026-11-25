@@ -9,6 +9,7 @@ import { applyInkOps, mergeInkFiles } from "@/lib/ink/merge";
 import { inkToSvg } from "@/lib/ink/svg";
 import type { InkAuthor, InkAuthorFile, InkFrame, InkOps, InkSource, InkStroke, MergedInkStroke } from "@/lib/ink/types";
 import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
+import { manifestPathBelow, sameManifestPath } from "@/lib/collab/manifest-paths";
 import { INK_DIR } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
 import { getFileType } from "@/lib/storage/file-types";
@@ -387,12 +388,15 @@ export async function writeInk(relativePath: string, chunk: string, opsValue: un
       const known = new Set([author.key, ...others.map((file) => file.author.key)]);
       const listed = await listSharedEntries(notebook).catch(() => []);
       // The drawing's owner as the manifest has it now: the save is bound to this file (see writeSharedBlob).
-      ownerFileId = listed.find((entry) => entry.kind !== "folder" && entry.path === libraryPath)?.fileId;
-      const folderPrefix = `${inkLibraryPath(notebook, pathParts)}/`;
+      // Compared as the manifest does (NFC, case): a disk that spells the name another way is still this file (S-H3).
+      ownerFileId = listed.find((entry) => entry.kind !== "folder" && sameManifestPath(entry.path, libraryPath))?.fileId;
+      const folderPrefix = inkLibraryPath(notebook, pathParts);
       const arrived: string[] = [];
       for (const entry of listed) {
-        if (entry.kind !== "blob" || !entry.path.startsWith(folderPrefix)) continue;
-        const parsed = parseInkFileName(entry.path.slice(folderPrefix.length));
+        if (entry.kind !== "blob") continue;
+        const rest = manifestPathBelow(entry.path, folderPrefix);
+        if (rest === null) continue;
+        const parsed = parseInkFileName(rest);
         if (parsed && parsed.chunk === chunk && !known.has(parsed.author)) { known.add(parsed.author); arrived.push(parsed.author); }
       }
       others = [...others, ...(await Promise.all(arrived.map(readAuthor))).filter((file): file is InkAuthorFile => file !== null)];
@@ -515,8 +519,30 @@ export async function copyInkThroughEdit(sourcePath: string, targetPath: string,
   const source = splitFilePath(sourcePath);
   const target = splitFilePath(targetPath);
   const files = (await readInkFolder(inkFolderPath(source.notebook, source.pathParts), new Set(["image"]))).get("image") ?? [];
-  if (!files.length) return;
   const shared = isSharedNotebookPath(targetPath);
+  // A shared original's ink is the host's: this disk can lag it, so every author's file the manifest lists is read from the host's
+  // blobs (the local copy stands in for one that cannot be read), and an author whose file has not arrived yet is not dropped (S-H3).
+  if (isSharedNotebookPath(sourcePath)) {
+    const { listSharedEntries, readSharedBlob } = await import("@/lib/collab/shared-writes");
+    const folder = inkLibraryPath(source.notebook, source.pathParts);
+    const listed = await listSharedEntries(source.notebook).catch(() => []);
+    const byAuthor = new Map(files.map((file) => [file.author.key, file]));
+    for (const entry of listed) {
+      if (entry.kind !== "blob") continue;
+      const rest = manifestPathBelow(entry.path, folder);
+      const parsed = rest === null ? null : parseInkFileName(rest);
+      if (!parsed || parsed.chunk !== "image") continue;
+      const theirs = await readSharedBlob(entry.path).catch(() => null);
+      if (!theirs || theirs.contentBase64 === null) continue;
+      try {
+        const parsedFile = normalizeInkAuthorFile(JSON.parse(Buffer.from(theirs.contentBase64, "base64").toString("utf8")));
+        if (parsedFile && parsedFile.author.key === parsed.author) byAuthor.set(parsed.author, parsedFile);
+      } catch { /* the local copy stands in */ }
+    }
+    files.splice(0, files.length, ...byAuthor.values());
+  }
+  if (!files.length) return;
+  const ownerFileId = shared ? await (await import("@/lib/collab/shared-owner")).sharedOwnerFileId(targetPath) : undefined;
   const folder = inkFolderPath(target.notebook, target.pathParts);
   // The copy is a different file: ink finds it by its own bytes.
   const identity = await cachedPdfIdentity(filePathFromParts(target.notebook, target.pathParts)).catch(() => null);
@@ -525,8 +551,12 @@ export async function copyInkThroughEdit(sourcePath: string, targetPath: string,
     const name = inkFileName("image", file.author.key);
     if (shared) {
       const { writeSharedBlob } = await import("@/lib/collab/shared-writes");
+      // Bound to the copy and created only: ink already at the copy's place is another's and is never replaced, and the host
+      // refuses it when the copy moved or was removed meanwhile (it never creates ink at a vacated owner path).
       await writeSharedBlob(inkLibraryPath(target.notebook, target.pathParts, name), new TextEncoder().encode(`${JSON.stringify(mapped)}
-`));
+`), { createOnly: true, ...(ownerFileId ? { ownerFileId } : {}) }).catch((error: unknown) => {
+        if ((error as { status?: number })?.status !== 409) throw error;
+      });
     } else {
       await mkdir(folder, { recursive: true });
       await publishInkFile(path.join(folder, name), mapped);
