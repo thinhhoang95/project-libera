@@ -170,7 +170,8 @@ export async function moveReviewPaths(moves: ReadonlyMap<string, string>, option
  * of the text before gets the text after, its comments' anchors mapped
  * through each edit in turn (`edits` run from the end of the text to its
  * start), so a comment is never taken for one on changed text. A review of
- * another text is left to sync when the note is next opened.
+ * an earlier text (the move also rewrote its images or citation keys) is
+ * first mapped to the text before the edits, as opening the note would.
  */
 export async function rewriteReviewSnapshots(changes: readonly { path: string; before: string; edits: readonly { start: number; end: number; text: string }[] }[]) {
   const byPath = new Map(changes.filter((change) => change.edits.length).map((change) => [change.path, change]));
@@ -180,9 +181,10 @@ export async function rewriteReviewSnapshots(changes: readonly { path: string; b
       const change = byPath.get(key);
       if (!change) continue;
       const doc = await tx.getIfPresent(id);
-      if (!doc || doc.snapshot !== change.before) continue;
+      if (!doc) continue;
       let text = change.before;
-      let next = doc;
+      // The same move may already have rewritten the note's images or citation keys: the snapshot is then the text before that, which anchors are mapped from to the text this rewrite starts from (as opening the note would), and on through the edits.
+      let next = doc.snapshot === change.before ? doc : syncReview(doc, change.before, false);
       for (const edit of change.edits) {
         text = text.slice(0, edit.start) + edit.text + text.slice(edit.end);
         next = syncReview(next, text, false);
