@@ -96,6 +96,8 @@ import { missingTabIds, unsavedNamesUnder } from "./tab-presence";
 import { movesFromRepairMessage, REPAIR_CHANNEL_NAME } from "./repair-channel";
 import type { ReferenceMoveResult } from "@/lib/references/moves";
 import { remapDocumentHeadingNumbering } from "./heading-numbering-state";
+import { notifyPathsMoved, prefixRetargets, remapRecordKeys, renamePathPrefix, type PathRemap } from "./path-follow";
+import { composeCanvasRenames } from "@/lib/canvas-layout";
 import { agentReviewStore } from "@/lib/agent-review/store";
 import { announceTextReplaced } from "./link-rewrite-echo";
 import { moveItemLinks } from "./batch-move-links";
@@ -478,7 +480,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     };
   }, [notebookSelectionWriter, expansionWriter]);
 
-  const canvas = useCanvasLayout({ tabs, activeTabId, activateTab });
+  // The renames of the latest retarget, so a swap or a merge moves the split panes with the files (reconcileCanvasLayout).
+  const canvasRenamesRef = useRef<{ resultKey: string; map: Map<string, string> } | null>(null);
+  const canvas = useCanvasLayout({ tabs, activeTabId, activateTab, renames: canvasRenamesRef.current });
   const canvasLayout = canvas.layout;
   // Shared tabs keep their place in the session but not their text: the
   // host's SQLite is their journal (journalTab).
@@ -3470,7 +3474,25 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
             ...notebookValues,
           }),
         }, () => ({ moved: { from: previousName, to: nextName }, notebookGroup }));
-        pendingSaves.moveUnsaved(previousName, nextName, { prefix: true });
+        if (previousName !== nextName) {
+          // The open files follow through the one retarget path (collisions, drafts, ink, active tab, split panes), from the tabs as they are now.
+          const renamed = prefixRetargets(
+            tabsRef.current.filter((tab) => !isGalleryTab(tab) && !isRecordingTab(tab) && !isPageTab(tab) && !tab.untitled && tab.file.notebook === previousName).map((tab) => tab.file.path),
+            previousName,
+            nextName,
+          );
+          if (renamed.length) {
+            retargetOpenTabs(renamed.map((move) => {
+              const tab = tabsRef.current.find((item) => item.file.path === move.from)!;
+              return { from: move.from, payload: { file: { ...tab.file, notebook: nextName, path: move.to } } };
+            }));
+          }
+          // Unsaved state of files that are not open follows as well.
+          pendingSaves.moveUnsaved(previousName, nextName, { prefix: true });
+          followUntitledSaveDirectories(previousName, nextName);
+          followFileKeyedState((path) => renamePathPrefix(path, previousName, nextName));
+          setClosedViewStates((current) => remapClosedViewStates(current, (path) => renamePathPrefix(path, previousName, nextName)));
+        }
         await applyCompleteTree(nextTree);
         // The File menu lists linked folders by name.
         if (notebookDialog.notebook.folder && previousName !== nextName) {
@@ -3494,45 +3516,6 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         });
         setSelectedNotebookName((current) =>
           current === previousName ? nextName : current,
-        );
-        tabs.forEach((tab) => {
-          if (tab.file.notebook !== previousName) {
-            return;
-          }
-
-          const suffix = tab.file.path.slice(previousName.length + 1);
-          const nextPath = `${nextName}/${suffix}`;
-          const draft = getTabDraft(tab);
-
-          forgetTabDraft(tab.id);
-          rememberTabDraft(nextPath, draft);
-        });
-        setTabs((currentTabs) =>
-          currentTabs.map((tab) => {
-            if (tab.file.notebook !== previousName) {
-              return tab;
-            }
-
-            const suffix = tab.file.path.slice(previousName.length + 1);
-            const nextPath = `${nextName}/${suffix}`;
-
-            return {
-              ...tab,
-              id: nextPath,
-              draft: latestDraftByTabIdRef.current[nextPath] ?? tab.draft,
-              file: {
-                ...tab.file,
-                notebook: nextName,
-                path: nextPath,
-              },
-              rawUrl: `/api/files/raw/${encodeFilePath(nextPath)}`,
-            };
-          }),
-        );
-        setActiveTabId((current) =>
-          current.startsWith(`${previousName}/`)
-            ? `${nextName}/${current.slice(previousName.length + 1)}`
-            : current,
         );
       }
 
@@ -4045,12 +4028,41 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
           } : {}),
         }];
       });
+    const idsKey = (all: OpenTab[]) => all.map((item) => item.id).join("
+");
+    const beforeKey = idsKey(snapshot);
     changeTabsNow(apply);
+    const renames = new Map(decisions.flatMap((decision) => decision.kind !== "keep" && decision.from !== decision.to ? [[decision.from, decision.to] as const] : []));
+    if (renames.size) {
+      const earlier = canvasRenamesRef.current;
+      canvasRenamesRef.current = { resultKey: idsKey(tabsRef.current), map: earlier && earlier.resultKey === beforeKey ? composeCanvasRenames(earlier.map, renames) : renames };
+    }
+    // Caches keyed by path outside the tab list (Preview mode, PDF comments, remembered LaTeX main files) follow too.
+    const followed: PathRemap = (path) => { const decision = decided.get(path); return decision?.kind === "merge" ? decision.to : byFrom.get(path)?.file.path ?? path; };
+    notifyPathsMoved(followed);
     setActiveTabId((current) => {
       const decision = decided.get(current);
       return decision?.kind === "merge" ? decision.to : byFrom.get(current)?.file.path ?? current;
     });
     setClosedViewStates((current) => remapClosedViewStates(current, (path) => byFrom.get(path)?.file.path ?? path));
+  }
+
+  /** What is remembered per file path outside the tabs: when it was last opened, and its heading numbering choice. */
+  function followFileKeyedState(remap: PathRemap) {
+    setFileInteractions((current) => {
+      const next = remapRecordKeys(current, remap);
+      if (next === current) return current;
+      try { window.localStorage.setItem(FILE_INTERACTIONS_STORAGE_KEY, JSON.stringify(next)); } catch { /* Storage unavailable. */ }
+      return next;
+    });
+    remapDocumentHeadingNumbering(remap);
+  }
+
+  /** The save folder of an untitled tab follows a renamed folder or notebook. */
+  function followUntitledSaveDirectories(from: string, to: string) {
+    const follows = (tab: OpenTab) => tab.untitled && tab.saveDirectory !== undefined && renamePathPrefix(tab.saveDirectory, from, to) !== tab.saveDirectory;
+    if (!tabsRef.current.some(follows)) return;
+    changeTabsNow((all) => all.map((tab) => follows(tab) ? { ...tab, saveDirectory: renamePathPrefix(tab.saveDirectory!, from, to) } : tab));
   }
 
   /** Remote moves saved workspaces could not take yet (the workspace library was loading or switching). */
@@ -4753,10 +4765,27 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       }).catch(async (error): Promise<LiberaFolderMovePayload> => {
         if (!sharedCommitted(error)) throw error;
         stayedBehind = error instanceof Error ? error.message : tRef.current("renameFolderError");
-        await workspaceManager.runFileChange(async () => undefined, () => ({ paths: [nextPath], moved: { from: folder.path, to: nextPath } })).catch(() => undefined);
-        return apiRequest<LiberaTree>("/api/tree?includeArchive=true");
+        // The links the host rewrote before the step that failed (absent on older errors: none).
+        const links = (sharedCommitted(error) as { links?: LiberaLinkRewrites } | null)?.links ?? (error as { links?: LiberaLinkRewrites } | null)?.links;
+        const rewrite = linkRewriteByPath(links);
+        await workspaceManager.runFileChange(async () => undefined, () => ({ paths: [nextPath], moved: { from: folder.path, to: nextPath }, ...(rewrite ? { rewrite } : {}) })).catch(() => undefined);
+        const tree = await apiRequest<LiberaTree>("/api/tree?includeArchive=true");
+        return links ? { ...tree, links } : tree;
       });
+      // The open files follow through the one retarget path (collisions, drafts, ink, active tab, split panes), from the tabs as they are now.
+      const renamed = prefixRetargets(
+        tabsRef.current.filter((tab) => !isGalleryTab(tab) && !isRecordingTab(tab) && !isPageTab(tab) && !tab.untitled).map((tab) => tab.file.path),
+        folder.path,
+        nextPath,
+      );
+      if (renamed.length) retargetOpenTabs(renamed.map((move) => {
+        const tab = tabsRef.current.find((item) => item.file.path === move.from)!;
+        return { from: move.from, payload: { file: { ...tab.file, path: move.to } } };
+      }));
+      // Unsaved state of files that are not open follows as well.
       pendingSaves.moveUnsaved(folder.path, nextPath, { prefix: true });
+      followUntitledSaveDirectories(folder.path, nextPath);
+      followFileKeyedState((path) => renamePathPrefix(path, folder.path, nextPath));
       await applyCompleteTree(nextTree);
       updateExpanded((current) => {
         const next = new Set<string>();
@@ -4774,45 +4803,6 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         next.add(parentPath);
         return next;
       });
-      tabs.forEach((tab) => {
-        if (!tab.file.path.startsWith(`${folder.path}/`)) {
-          return;
-        }
-
-        const suffix = tab.file.path.slice(folder.path.length + 1);
-        const updatedPath = `${nextPath}/${suffix}`;
-        const draft = getTabDraft(tab);
-
-        forgetTabDraft(tab.id);
-        rememberTabDraft(updatedPath, draft);
-      });
-      // At once (tabsRef too): the link rewrites below find the tabs by their new paths.
-      changeTabsNow((currentTabs) =>
-        currentTabs.map((tab) => {
-          if (!tab.file.path.startsWith(`${folder.path}/`)) {
-            return tab;
-          }
-
-          const suffix = tab.file.path.slice(folder.path.length + 1);
-          const updatedPath = `${nextPath}/${suffix}`;
-
-          return {
-            ...tab,
-            id: updatedPath,
-            draft: latestDraftByTabIdRef.current[updatedPath] ?? tab.draft,
-            file: {
-              ...tab.file,
-              path: updatedPath,
-            },
-            rawUrl: `/api/files/raw/${encodeFilePath(updatedPath)}`,
-          };
-        }),
-      );
-      setActiveTabId((current) =>
-        current.startsWith(`${folder.path}/`)
-          ? `${nextPath}/${current.slice(folder.path.length + 1)}`
-          : current,
-      );
       setClosedViewStates((current) => remapClosedViewStates(current, (path) =>
         withinPath(path, folder.path) ? `${nextPath}${path.slice(folder.path.length)}` : path));
       // Open files whose links followed the folder, inside it or not, get the same rewrite; the notice says so.
@@ -4846,10 +4836,11 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       }
 
       if (workspaceInputDialog.mode === "copy-file") {
-        const destinationDirectory = values.destinationDirectory.trim();
+        // Not trimmed: a folder name may end in a space, as drag and drop already allows. Only an all-blank path counts as empty.
+        const destinationDirectory = values.destinationDirectory;
         const destinationName = values.destinationName.trim();
 
-        if (!destinationDirectory) {
+        if (!destinationDirectory.trim()) {
           setWorkspaceInputDialogError(tRef.current("destinationPathRequired"));
           return;
         }
@@ -4863,9 +4854,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       }
 
       if (workspaceInputDialog.mode === "move-file") {
-        const destinationDirectory = values.destinationDirectory.trim();
+        // Not trimmed: a folder name may end in a space, as drag and drop already allows. Only an all-blank path counts as empty.
+        const destinationDirectory = values.destinationDirectory;
 
-        if (!destinationDirectory) {
+        if (!destinationDirectory.trim()) {
           setWorkspaceInputDialogError(tRef.current("destinationPathRequired"));
           return;
         }
@@ -4875,9 +4867,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       }
 
       if (workspaceInputDialog.mode === "move-files") {
-        const destinationDirectory = values.destinationDirectory.trim();
+        // Not trimmed: a folder name may end in a space, as drag and drop already allows. Only an all-blank path counts as empty.
+        const destinationDirectory = values.destinationDirectory;
 
-        if (!destinationDirectory) {
+        if (!destinationDirectory.trim()) {
           setWorkspaceInputDialogError(tRef.current("destinationPathRequired"));
           return;
         }
@@ -4974,6 +4967,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
 
     try {
+      // Set when the host archived the folder but a step after it failed: the archive stands, and this says what stayed behind.
+      let stayedBehind = "";
       const nextTree = await workspaceFileRequest<LiberaFolderMovePayload & { moved: { from: string; to: string } }>("/api/folders", {
         method: "PATCH",
         body: JSON.stringify({
@@ -4983,6 +4978,15 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       }, (result) => {
         const rewrite = linkRewriteByPath(result.links);
         return { moved: result.moved, paths: [result.moved.to], ...(rewrite ? { rewrite } : {}) };
+      }).catch(async (error): Promise<LiberaFolderMovePayload & { moved: { from: string; to: string } }> => {
+        // The folder moved although the request failed after it: the open files follow it, and the notice says what did not.
+        const committed = committedMove(error);
+        if (!committed) throw error;
+        stayedBehind = error instanceof Error ? error.message : tRef.current("archiveFolderError");
+        const rewrite = linkRewriteByPath(committed.links);
+        await workspaceManager.runFileChange(async () => undefined, () => ({ moved: committed.moved, paths: [committed.moved.to], ...(rewrite ? { rewrite } : {}) })).catch(() => undefined);
+        const tree = await apiRequest<LiberaTree>("/api/tree?includeArchive=true");
+        return { ...tree, moved: committed.moved, unfinished: committed.unfinished, ...(committed.links ? { links: committed.links } : {}) };
       });
       await applyCompleteTree(nextTree);
       updateExpanded((current) =>
@@ -5011,6 +5015,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       // Open files elsewhere whose links followed the folder get the same rewrite; the notice says so.
       applyLinkRewritesToTabs(nextTree.links, followers.map((follower) => follower.payload.file.path));
       reportMoveOutcome({ notebook: folder.path.split("/")[0], links: nextTree.links, unfinished: nextTree.unfinished });
+      if (stayedBehind) setWorkspaceError(stayedBehind);
     } catch (error) {
       setWorkspaceError(error instanceof Error ? error.message : tRef.current("archiveFolderError"));
     }

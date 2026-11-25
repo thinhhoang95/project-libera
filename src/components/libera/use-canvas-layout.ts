@@ -16,6 +16,7 @@ import {
   splitCanvasPane,
   type CanvasDropZone,
   type CanvasLayout,
+  type CanvasTabRenames,
 } from "@/lib/canvas-layout";
 import { captureCanvasViewState } from "./canvas-view-state";
 import type { OpenTab } from "./types";
@@ -31,8 +32,10 @@ export function useCanvasLayout(options: {
   tabs: OpenTab[];
   activeTabId: string;
   activateTab: (tabId: string) => void;
+  /** The renames that produced the tab list whose ids joined by newline are `resultKey`; used only while that list is current. */
+  renames?: { resultKey: string; map: CanvasTabRenames } | null;
 }) {
-  const { tabs, activeTabId, activateTab } = options;
+  const { tabs, activeTabId, activateTab, renames } = options;
   const tabIdsKey = tabs.map((tab) => tab.id).join("\n");
   // Drafts change `tabs` on every keystroke; only ids matter to the layout.
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -51,6 +54,7 @@ export function useCanvasLayout(options: {
       tabIds,
       previousTabIds: state.tabIds,
       activeTabId,
+      renames: renames && renames.resultKey === tabIdsKey ? renames.map : undefined,
     });
     setState({ layout, tabIds, activeTabId });
   }
