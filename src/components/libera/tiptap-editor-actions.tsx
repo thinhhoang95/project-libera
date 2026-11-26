@@ -7,6 +7,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Editor } from "@tiptap/core";
 import { useEditorState } from "@tiptap/react";
+import { CellSelection } from "@tiptap/pm/tables";
 import { ArrowDownToLine, ArrowLeftToLine, ArrowRightToLine, ArrowUpToLine, Columns3, ImageIcon, ListIndentDecrease, ListIndentIncrease, MessageSquarePlus, PenLine, Rows3, Sparkles, Volume2 } from "lucide-react";
 import { speakMarkdown } from "@/lib/tts/player";
 import { AiModelPicker, aiTaskRequestOptions } from "./ai-model-picker";
@@ -42,6 +43,8 @@ type Popup = EditorRange & {
   y: number;
   image?: ImageSelection;
   tableCell?: number;
+  /** The selected cells when the menu opened, so row/column actions cover all of them. */
+  cellSelection?: { anchor: number; head: number };
 };
 type AiAction = "format" | "rewrite" | "write" | "image";
 const menuItemClass = "flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium text-foreground hover:bg-muted focus-visible:bg-muted disabled:cursor-not-allowed disabled:opacity-50";
@@ -110,6 +113,10 @@ export function TiptapEditorActions({ editor, documentPath, onError, onPaste, sh
         const name = $cell!.node(depth).type.name;
         if (name === "tableCell" || name === "tableHeader") { tableCell = $cell!.start(depth); break; }
       }
+      const selection = editor.state.selection;
+      const cellSelection = selection instanceof CellSelection && tableCell !== undefined
+        ? { anchor: selection.$anchorCell.pos, head: selection.$headCell.pos }
+        : undefined;
       event.preventDefault();
       const point = event instanceof MouseEvent
         ? { left: event.clientX, top: event.clientY }
@@ -122,7 +129,7 @@ export function TiptapEditorActions({ editor, documentPath, onError, onPaste, sh
         const source = sharedTarget.sourceRange({ from, to });
         setSuggestText(sharedTarget.text().slice(source.start, source.end));
       } else setSuggestText("");
-      setPopup({ from, to, image, tableCell,
+      setPopup({ from, to, image, tableCell, cellSelection,
         x: Math.max(8, Math.min(point.left, window.innerWidth - 296)),
         y: Math.max(8, Math.min(point.top, window.innerHeight - 480)),
       });
@@ -304,7 +311,14 @@ export function TiptapEditorActions({ editor, documentPath, onError, onPaste, sh
   type TableAction = "addRowBefore" | "addRowAfter" | "addColumnBefore" | "addColumnAfter" | "deleteRow" | "deleteColumn";
   function tableAction(action: TableAction) {
     if (popup?.tableCell === undefined) return;
-    editor.chain().focus().setTextSelection(popup.tableCell)[action]().run();
+    const { tableCell, cellSelection } = popup;
+    // Restore a multi-cell selection so deleting removes every selected row/column,
+    // not only the one holding the first cell.
+    const isCell = (pos: number) => ["cell", "header_cell"].includes(editor.state.doc.nodeAt(pos)?.type.spec.tableRole);
+    const chain = editor.chain().focus();
+    (cellSelection && isCell(cellSelection.anchor) && isCell(cellSelection.head)
+      ? chain.command(({ tr }) => { tr.setSelection(CellSelection.create(tr.doc, cellSelection.anchor, cellSelection.head)); return true; })
+      : chain.setTextSelection(tableCell))[action]().run();
     setPopup(null);
   }
   const writeForm = <form className={`${writeOnly ? "" : "mt-1 border-t border-border "}px-2 py-2`} onSubmit={(event) => { event.preventDefault(); void runAi("write"); }}>
