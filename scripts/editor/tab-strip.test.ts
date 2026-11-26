@@ -90,6 +90,7 @@ test("file actions use one native menu between comments and the AI panel", async
     onCloseOtherTabs: () => undefined,
     onCloseTab: () => undefined,
     onCreateUntitled: () => undefined,
+    onCreateUntitledText: () => undefined,
     onDeleteFile: async () => undefined,
     onDownloadAnnotatedPdf: async (selectedTab) => { pdfDownloads.push(`annotated:${selectedTab.file.name}`); },
     onDownloadFile: (file) => { pdfDownloads.push(`original:${file.name}`); },

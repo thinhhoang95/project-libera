@@ -7488,6 +7488,8 @@
     "markdownFile": "Markdown file",
     "move": "Move",
     "moveFile": "Move file…",
+    "newMarkdown": "New Markdown",
+    "newTextFile": "New Text File",
     "newUntitledFile": "New untitled file",
     "newUntitledNote": "New Untitled Note",
     "openBelow": "Open Below",

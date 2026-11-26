@@ -3159,13 +3159,14 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     createUntitledFile("", undefined, { fileName: RECOVERED_REVIEW_NAME, content }, id);
   }
 
-  function createUntitledFile(notebook = "", parentPath?: string, initial?: { fileName: string; content: string }, restoredId?: string) {
-    const id = restoredId ?? `untitled-${crypto.randomUUID()}.md`;
+  function createUntitledFile(notebook = "", parentPath?: string, initial?: { fileName: string; content: string }, restoredId?: string, fileType: "markdown" | "text" = "markdown") {
+    const extension = fileType === "text" ? "txt" : "md";
+    const id = restoredId ?? `untitled-${crypto.randomUUID()}.${extension}`;
     const now = new Date().toISOString();
     const tab: OpenTab = {
       id, untitled: true, saveDirectory: parentPath || notebook,
-      file: { kind: "file", name: initial?.fileName ?? `${DEFAULT_UNTITLED_NAME}.md`, path: id, notebook: "",
-        fileType: "markdown", createdAt: now, updatedAt: now, size: 0 },
+      file: { kind: "file", name: initial?.fileName ?? `${DEFAULT_UNTITLED_NAME}.${extension}`, path: id, notebook: "",
+        fileType, createdAt: now, updatedAt: now, size: 0 },
       draft: initial?.content ?? "", saved: "", status: initial?.content ? "dirty" : "clean",
     };
     rememberTabDraft(id, tab.draft);
@@ -3225,7 +3226,11 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       setSaveDraftError(tRef.current("enterFileNameError"));
       return;
     }
-    const fileName = /\.(md|markdown)$/i.test(requestedName) ? requestedName : `${requestedName}.md`;
+    const isText = tab.file.fileType === "text";
+    // A text draft keeps the extension it was given; a bare name (other than Makefile, LICENSE…) becomes .txt.
+    const fileName = isText
+      ? /\.[^.]+$/.test(requestedName) || TEXT_FILE_NAMES.has(requestedName.toLowerCase()) ? requestedName : `${requestedName.replace(/\.$/, "")}.txt`
+      : /\.(md|markdown)$/i.test(requestedName) ? requestedName : `${requestedName}.md`;
     savingDraftRef.current = true;
     setSaveDraftSubmitting(true);
     setSaveDraftError("");
@@ -3236,7 +3241,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         let savedFileName = fileName;
         let standaloneSaveId: string | undefined;
         if (exporter) {
-          const result = await exporter({ content: draft, fileName });
+          const result = await exporter({ content: draft, fileName, textFile: isText });
           standaloneSaveId = result.saveId;
           savedFileName = result.fileName ?? fileName;
           if (result.canceled) return;
@@ -5462,6 +5467,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   // review provider's draft readers and the agent bridge.
   const stable = useStableHandlers({
     createUntitledFile,
+    createUntitledTextFile: () => createUntitledFile("", undefined, undefined, undefined, "text"),
     closeSaveDraftDialog,
     submitSaveDraft,
     saveChatToNotebook,

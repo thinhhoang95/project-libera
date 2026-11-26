@@ -7488,6 +7488,8 @@
     "markdownFile": "Fichier Markdown",
     "move": "Déplacer",
     "moveFile": "Déplacer le fichier…",
+    "newMarkdown": "Nouveau Markdown",
+    "newTextFile": "Nouveau fichier texte",
     "newUntitledFile": "Nouveau fichier sans titre",
     "newUntitledNote": "Nouvelle note sans titre",
     "openBelow": "Ouvrir en dessous",

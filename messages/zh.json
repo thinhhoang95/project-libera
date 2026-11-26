@@ -7488,6 +7488,8 @@
     "markdownFile": "Markdown 文件",
     "move": "移动",
     "moveFile": "移动文件…",
+    "newMarkdown": "新建 Markdown",
+    "newTextFile": "新建文本文件",
     "newUntitledFile": "新建无标题文件",
     "newUntitledNote": "新建无标题笔记",
     "openBelow": "在下方打开",

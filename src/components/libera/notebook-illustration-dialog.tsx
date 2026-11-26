@@ -82,14 +82,14 @@ export function NotebookIllustrationDialog({ notebook, coverUrl, onChange, onClo
 
         {sets.map((set) => (
           <section key={set.id} aria-label={set.name}>
-            <h3 className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-[var(--muted-foreground)]">
+            <h3 className="mb-2 flex items-center gap-2 text-sm font-semibold text-[var(--muted-foreground)]">
               {set.id === "vietnamese-monuments" ? <Landmark aria-hidden className="h-3.5 w-3.5 text-[var(--accent)]" />
                 : set.builtIn ? <Sparkles aria-hidden className="h-3.5 w-3.5 text-[var(--accent)]" />
                 : <Images aria-hidden className="h-3.5 w-3.5 text-[var(--accent)]" />}
               {set.name}
-              <span className="font-medium normal-case tracking-normal">· {set.images.length}</span>
+              <span className="font-medium">· {set.images.length}</span>
               {set.id === library.selected ? (
-                <span className="ml-1 inline-flex items-center gap-1 rounded-full bg-[var(--muted)] px-2 py-0.5 text-[10px] normal-case tracking-normal text-[var(--foreground)]">
+                <span className="ml-1 inline-flex items-center gap-1 rounded-full bg-[var(--muted)] px-2 py-0.5 text-[10px] text-[var(--foreground)]">
                   <Check aria-hidden className="h-3 w-3" /> {t("chosenInPreferences")}
                 </span>
               ) : null}

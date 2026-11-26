@@ -2048,8 +2048,8 @@ function installExportHandlers() {
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? mainWindow;
     const result = await dialog.showSaveDialog(parentWindow, {
       defaultPath: path.join(app.getPath("documents"), path.basename(input.fileName)),
-      filters: [{ name: tm("markdownFilter"), extensions: ["md", "markdown"] }],
-      title: tm("saveMarkdownFileTitle"),
+      filters: input.textFile ? [] : [{ name: tm("markdownFilter"), extensions: ["md", "markdown"] }],
+      title: input.textFile ? tm("saveAsTitle") : tm("saveMarkdownFileTitle"),
     });
     if (result.canceled || !result.filePath) return { canceled: true };
     await fsp.writeFile(result.filePath, input.content, "utf8");

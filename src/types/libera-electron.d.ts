@@ -90,7 +90,7 @@ declare global {
       glass: boolean;
     };
     liberaExport?: {
-      saveMarkdownFile: (input: { content: string; fileName: string; saveId?: string }) => Promise<{ canceled: boolean; saveId?: string; fileName?: string }>;
+      saveMarkdownFile: (input: { content: string; fileName: string; saveId?: string; textFile?: boolean }) => Promise<{ canceled: boolean; saveId?: string; fileName?: string }>;
       /** A Save dialog for any text export (transcripts as Markdown, text or subtitles). */
       saveTextFile?: (input: { content: string; fileName: string; filterName: string; extensions: string[] }) => Promise<{ canceled: boolean; fileName?: string }>;
       exportMarkdownPdf: (

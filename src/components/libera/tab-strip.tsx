@@ -31,6 +31,7 @@ type TabStripProps = {
   chatOpen: boolean;
   onToggleChat: () => void;
   onCreateUntitled: () => void;
+  onCreateUntitledText: () => void;
   markdownEditorMode: MarkdownEditorMode;
   onMarkdownEditorModeChange: (mode: MarkdownEditorMode) => void;
   /** The active .tex tab's editor mode (LaTeX opens in Source). */
@@ -178,6 +179,7 @@ export const TabStrip = memo(function TabStrip({
   chatOpen,
   onToggleChat,
   onCreateUntitled,
+  onCreateUntitledText,
   markdownEditorMode,
   onMarkdownEditorModeChange,
   latexEditorMode,
@@ -279,6 +281,26 @@ export const TabStrip = memo(function TabStrip({
 
   const tabRowRef = useWheelScrollsSideways();
 
+  /** The + button: a native menu to pick the new file's kind (the browser build makes a note). */
+  async function openNewFileMenu(event: MouseEvent<HTMLButtonElement>) {
+    const menu = window.liberaMenu;
+    if (!menu) {
+      onCreateUntitled();
+      return;
+    }
+    const selectedItemId = await menu
+      .popup({
+        ...nativeMenuPointFromButton(event.currentTarget),
+        items: [
+          { id: "new-markdown", label: t("newMarkdown") },
+          { id: "new-text", label: t("newTextFile") },
+        ],
+      })
+      .catch(() => null);
+    if (selectedItemId === "new-markdown") onCreateUntitled();
+    else if (selectedItemId === "new-text") onCreateUntitledText();
+  }
+
   function showTabAt(step: number) {
     const index = tabs.findIndex((tab) => tab.id === activeTabId);
     const next = tabs[(index + step + tabs.length) % tabs.length];
@@ -288,6 +310,7 @@ export const TabStrip = memo(function TabStrip({
   // The macOS Tab menu: new and switch tabs, then the active tab's context menu.
   useAppMenuItems("tab", 0, () => [
     { id: "new", label: t("newUntitledNote"), onSelect: onCreateUntitled },
+    { id: "new-text", label: t("newTextFile"), onSelect: onCreateUntitledText },
     { type: "separator" },
     { id: "previous", label: t("showPreviousTab"), enabled: tabs.length > 1, onSelect: () => showTabAt(-1) },
     { id: "next", label: t("showNextTab"), enabled: tabs.length > 1, onSelect: () => showTabAt(1) },
@@ -325,7 +348,7 @@ export const TabStrip = memo(function TabStrip({
   return (
     <div className="libera-tab-strip libera-window-drag-region border-b border-border bg-card">
       <div className="flex min-h-12 items-center gap-2 px-3 py-2">
-        <button type="button" aria-label={t("newUntitledFile")} title={t("newUntitledFile")} onClick={onCreateUntitled} className="libera-window-no-drag-region rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-foreground"><Plus aria-hidden className="h-4 w-4" /></button>
+        <button type="button" aria-label={t("newUntitledFile")} title={t("newUntitledFile")} aria-haspopup="menu" onClick={openNewFileMenu} className="libera-window-no-drag-region rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-foreground"><Plus aria-hidden className="h-4 w-4" /></button>
         <div ref={tabRowRef} className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {tabs.map((tab) => {
             const isActive = activeTabId === tab.id;

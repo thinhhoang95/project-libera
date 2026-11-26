@@ -130,6 +130,7 @@ test("the tab strip renders zero times for a draft or view-state change and once
     const actions = useStableHandlers({
       onToggleChat: () => { downloads.push(tabs[0].draft); },
       onCreateUntitled: () => undefined,
+      onCreateUntitledText: () => undefined,
       onMarkdownEditorModeChange: (_mode: "visual" | "source") => undefined,
       onLatexEditorModeChange: (_mode: "visual" | "source") => undefined,
       onAddToAiChat: (_tab: ChromeTab) => undefined,

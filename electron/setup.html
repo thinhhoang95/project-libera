@@ -729,10 +729,11 @@
       .illustration-set-band { display: grid; gap: 14px 12px; grid-template-columns: repeat(auto-fill, minmax(172px, 1fr)); }
       .illustration-set-tile { background: none; border: 0; color: var(--foreground, #18181b); cursor: pointer; display: flex; flex-direction: column; font: inherit; gap: 7px; min-width: 0; padding: 0; position: relative; text-align: left; }
       .illustration-set-tile:focus-visible { outline: 2px solid var(--ring, #2563eb); outline-offset: 3px; border-radius: 12px; }
-      .illustration-set-preview { background: var(--muted, #f4f4f5); border: 1px solid var(--border, #e4e4e7); border-radius: 11px; display: grid; gap: 3px; overflow: hidden; padding: 3px; transition: box-shadow 0.12s, transform 0.12s; }
+      .illustration-set-preview { background: var(--muted, #f4f4f5); border: 1px solid var(--border, #e4e4e7); border-radius: 11px; display: grid; flex: 1 1 auto; gap: 3px; min-height: 84px; overflow: hidden; padding: 3px; position: relative; transition: box-shadow 0.12s, transform 0.12s; }
       .illustration-set-tile:hover .illustration-set-preview { box-shadow: 0 4px 12px rgb(0 0 0 / 0.12); transform: translateY(-1px); }
       .illustration-set-tile[aria-checked="true"] .illustration-set-preview { box-shadow: 0 0 0 2px var(--dialog-surface, #fff), 0 0 0 4px var(--accent, #2563eb); }
       .illustration-set-preview img, .illustration-set-blank { aspect-ratio: 3 / 1; border-radius: 8px; display: block; object-fit: cover; width: 100%; }
+      .illustration-set-preview > img:only-child, .illustration-set-preview > .illustration-set-blank { aspect-ratio: auto; height: calc(100% - 6px); inset: 3px; position: absolute; width: calc(100% - 6px); }
       .illustration-set-blank { align-items: center; color: var(--muted-foreground, #71717a); display: flex; justify-content: center; }
       .illustration-set-strip { display: grid; gap: 3px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
       .illustration-set-strip img, .illustration-set-strip span { aspect-ratio: 3 / 1; border-radius: 4px; display: block; object-fit: cover; width: 100%; }
@@ -774,7 +775,7 @@
       .illustration-item-actions button[data-action="remove"]:hover { color: #dc2626 !important; }
       .illustration-item-actions button:disabled { opacity: 0.4; }
       .illustration-item-badge { background: rgb(0 0 0 / 0.55); border-radius: 999px; color: #fff; font-size: 10px; font-weight: 650; left: 6px; padding: 1px 7px; position: absolute; top: 6px; }
-      .illustration-drop { align-items: center; border: 1.5px dashed var(--input, #d4d4d8); border-radius: 12px; color: var(--muted-foreground, #71717a); cursor: pointer; display: flex; flex-direction: column; gap: 8px; grid-column: 1 / -1; justify-content: center; padding: 28px 16px; text-align: center; }
+      .illustration-drop { align-items: center; background: transparent; border: 1.5px dashed var(--input, #d4d4d8); border-radius: 12px; color: var(--muted-foreground, #71717a); cursor: pointer; display: flex; flex-direction: column; gap: 8px; grid-column: 1 / -1; font: inherit; justify-content: center; padding: 28px 16px; text-align: center; }
       .illustration-drop:hover { border-color: var(--accent, #2563eb); color: var(--accent, #2563eb); }
       .illustration-drop strong { color: var(--foreground, #18181b); font-size: 13px; }
       .illustration-dialog-error { color: #dc2626; font-size: 12.5px; margin: 0; min-height: 18px; }

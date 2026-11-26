@@ -641,6 +641,7 @@ export function LiberaApp({
   const tabStripActions = useStableHandlers({
     onToggleChat: () => changeChatCollapsed(!chatCollapsed),
     onCreateUntitled: () => workspace.createUntitledFile(),
+    onCreateUntitledText: () => workspace.createUntitledTextFile(),
     onMarkdownEditorModeChange: (mode: MarkdownEditorMode) => {
       workspace.setActiveTabViewState({ markdown: { editorMode: mode } });
       setActivePreviewTabId(null);
@@ -952,6 +953,7 @@ export function LiberaApp({
             chatOpen={!chatCollapsed}
             onToggleChat={tabStripActions.onToggleChat}
             onCreateUntitled={tabStripActions.onCreateUntitled}
+            onCreateUntitledText={tabStripActions.onCreateUntitledText}
             markdownEditorMode={markdownEditorMode}
             onMarkdownEditorModeChange={tabStripActions.onMarkdownEditorModeChange}
             latexEditorMode={latexEditorMode}
