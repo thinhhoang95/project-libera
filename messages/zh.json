@@ -4783,6 +4783,8 @@
     "saveError": "无法保存 Markdown 显示设置。"
   },
   "markdownDisplayZoom": {
+    "textSizeLabel": "文本大小：{size}px，缩放 {zoom, number, percent}",
+    "textZoomLabel": "文本缩放",
     "sizeLabel": "渲染后的 Markdown 文本大小：{size}px，缩放 {zoom, number, percent}",
     "zoomLabel": "渲染后的 Markdown 文本缩放",
     "zoomValue": "{zoom, number, percent} / {size}px"

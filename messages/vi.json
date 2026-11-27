@@ -4783,6 +4783,8 @@
     "saveError": "Không thể lưu cài đặt hiển thị Markdown."
   },
   "markdownDisplayZoom": {
+    "textSizeLabel": "Cỡ chữ: {size}px ở mức thu phóng {zoom, number, percent}",
+    "textZoomLabel": "Thu phóng chữ",
     "sizeLabel": "Cỡ chữ Markdown đã hiển thị: {size}px ở mức thu phóng {zoom, number, percent}",
     "zoomLabel": "Thu phóng chữ Markdown đã hiển thị",
     "zoomValue": "{zoom, number, percent} / {size}px"

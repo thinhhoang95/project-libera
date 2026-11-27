@@ -55,7 +55,7 @@ export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, m
   const t = useTranslations("latex.latexInsertToolbar");
   const tStyles = useTranslations("lib.latex.snippets");
   const tAppMenu = useTranslations("appMenu");
-  const textScale = useMarkdownDisplayPreference("textScale");
+  const textScale = useMarkdownDisplayPreference("latexTextScale");
   const latexSpellcheck = useMarkdownDisplayPreference("latexSpellcheck");
   const { updatePreferences } = useMarkdownDisplayPreferenceActions();
   const [open, setOpen] = useState<MenuId | null>(null);
@@ -332,9 +332,9 @@ export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, m
       >
         <SpellCheck aria-hidden className={iconClass} />
       </button>
-      {/* Text size and line height share the Markdown zoom, as the editor already follows it. */}
+      {/* The LaTeX editor's own zoom (text size and line height), apart from Markdown's. */}
       <span className="px-1">
-        <MarkdownDisplayZoom compact markdownBaseFontSize={fontSizePx / (textScale / 100)} markdownZoom={textScale} onMarkdownZoomChange={(zoom) => updatePreferences({ textScale: zoom })} />
+        <MarkdownDisplayZoom compact subject="text" markdownBaseFontSize={fontSizePx / (textScale / 100)} markdownZoom={textScale} onMarkdownZoomChange={(zoom) => updatePreferences({ latexTextScale: zoom })} />
       </span>
 
       {open === "table" ? (

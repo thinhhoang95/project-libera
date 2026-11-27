@@ -30,6 +30,8 @@ import { CODEMIRROR_TEXT_WIDTH_CLASS, CodeMirrorTextWidth } from "@/components/l
 import { CodeMirrorFindBar } from "@/components/libera/find/codemirror-find-bar";
 import { searchKeymapWithoutPanel } from "@/lib/find/codemirror";
 import { CodeMirrorFindSession } from "@/lib/find/codemirror-session";
+import { MarkdownDisplayZoom } from "@/components/libera/markdown-display-zoom";
+import { useMarkdownDisplayPreference, useMarkdownDisplayPreferenceActions } from "@/components/libera/markdown-display-preferences";
 
 type CodeEditorProps = {
   fileName: string;
@@ -37,7 +39,8 @@ type CodeEditorProps = {
   documentPath?: string;
   value: string;
   fontFamily: string;
-  fontSizePx: number;
+  /** The font size at 100%; the status bar's zoom (saved as `codeTextScale`) scales it. */
+  baseFontSizePx: number;
   lineHeight: number;
   initialViewState?: TextTabViewState;
   saving: boolean;
@@ -64,7 +67,7 @@ function wrapsLines(fileName: string) {
 
 /** A CodeMirror editor for plain-text and code files, highlighted by file name. */
 export function CodeEditor({
-  fileName, documentPath, value, fontFamily, fontSizePx, lineHeight, initialViewState, saving,
+  fileName, documentPath, value, fontFamily, baseFontSizePx, lineHeight, initialViewState, saving,
   onChange, onRegisterDraft, onViewStateChange, onSave, collab,
 }: CodeEditorProps) {
   const t = useTranslations("codeEditor");
@@ -91,6 +94,10 @@ export function CodeEditor({
   const [findSession] = useState(() => new CodeMirrorFindSession());
   // The agent's changes under manual review, for the change bar.
   const [agentHunks, setAgentHunks] = useState<ReviewHunk[]>([]);
+  // Text files keep their own zoom, apart from the Markdown and LaTeX editors' shared one.
+  const textScale = useMarkdownDisplayPreference("codeTextScale");
+  const { updatePreferences } = useMarkdownDisplayPreferenceActions();
+  const fontSizePx = baseFontSizePx * (textScale / 100);
 
   const publishDraft = useCallback(() => {
     if (draftTimerRef.current !== null) clearTimeout(draftTimerRef.current);
@@ -353,6 +360,7 @@ export function CodeEditor({
         <span className="ml-auto tabular-nums">
           {cursor.selected ? t("cursorPositionSelected", cursor) : t("cursorPosition", cursor)}
         </span>
+        <MarkdownDisplayZoom compact subject="text" markdownBaseFontSize={baseFontSizePx} markdownZoom={textScale} onMarkdownZoomChange={(zoom) => updatePreferences({ codeTextScale: zoom })} />
       </div>
     </div>
   );

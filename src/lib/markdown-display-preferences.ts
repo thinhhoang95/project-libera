@@ -5,7 +5,12 @@ export type MarkdownDisplayPreferences = {
   latexTextWidth: number;
   /** The page-width triangle of the plain CodeMirror editor for other text files. */
   codeTextWidth: number;
+  /** The text zoom of the Markdown editors and rendered view. */
   textScale: number;
+  /** The text zoom of the LaTeX editor (source and Visual). */
+  latexTextScale: number;
+  /** The text zoom of the plain CodeMirror editor for other text files. */
+  codeTextScale: number;
   outlineExpansionLevel: number;
   /** Spellcheck in the LaTeX editor's Visual mode (Source mode never checks: command names would be flagged). */
   latexSpellcheck: boolean;
@@ -25,6 +30,8 @@ export const DEFAULT_MARKDOWN_DISPLAY_PREFERENCES: MarkdownDisplayPreferences = 
   latexTextWidth: 75,
   codeTextWidth: 75,
   textScale: 100,
+  latexTextScale: 100,
+  codeTextScale: 100,
   outlineExpansionLevel: 6,
   latexSpellcheck: true,
 };
@@ -35,12 +42,17 @@ export function normalizeMarkdownDisplayPreferences(input: Partial<MarkdownDispl
       ? Math.max(min, Math.min(max, Math.round(value)))
       : fallback;
   const textWidth = normalize(input.textWidth, 75, 0, 100);
+  const textScale = normalize(input.textScale, 100, 75, 250);
   return {
     textWidth,
     // Settings saved before the widths were split start from the shared width.
     latexTextWidth: normalize(input.latexTextWidth, textWidth, 0, 100),
     codeTextWidth: normalize(input.codeTextWidth, textWidth, 0, 100),
-    textScale: normalize(input.textScale, 100, 75, 250),
+    textScale,
+    // Settings saved while Markdown and LaTeX shared one zoom: LaTeX keeps that zoom.
+    latexTextScale: normalize(input.latexTextScale, textScale, 75, 250),
+    // Text files never shared it, so they start at 100%.
+    codeTextScale: normalize(input.codeTextScale, 100, 75, 250),
     outlineExpansionLevel: normalize(input.outlineExpansionLevel, 6, 1, 6),
     latexSpellcheck: typeof input.latexSpellcheck === "boolean" ? input.latexSpellcheck : true,
   };

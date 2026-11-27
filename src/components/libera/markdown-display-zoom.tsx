@@ -10,15 +10,17 @@ type Props = {
   onMarkdownZoomChange: (zoom: number) => void;
   /** A smaller control sized for the document status bar. */
   compact?: boolean;
+  /** What the zoom sizes, for its labels: rendered Markdown (the default) or a text file's editor. */
+  subject?: "markdown" | "text";
 };
 
-export function MarkdownDisplayZoom({ markdownBaseFontSize, markdownZoom, onMarkdownZoomChange, compact = false }: Props) {
+export function MarkdownDisplayZoom({ markdownBaseFontSize, markdownZoom, onMarkdownZoomChange, compact = false, subject = "markdown" }: Props) {
   const t = useTranslations("markdownDisplayZoom");
   const format = useFormatter();
   const { flushPreferences } = useMarkdownDisplayPreferenceActions();
   const markdownFontSize = markdownBaseFontSize * (markdownZoom / 100);
   const formattedFontSize = format.number(markdownFontSize, { maximumFractionDigits: 1 });
-  const sizeLabel = t("sizeLabel", { size: formattedFontSize, zoom: markdownZoom / 100 });
+  const sizeLabel = t(subject === "text" ? "textSizeLabel" : "sizeLabel", { size: formattedFontSize, zoom: markdownZoom / 100 });
 
   return (
     <label
@@ -36,7 +38,7 @@ export function MarkdownDisplayZoom({ markdownBaseFontSize, markdownZoom, onMark
         max="250"
         step="5"
         value={markdownZoom}
-        aria-label={t("zoomLabel")}
+        aria-label={t(subject === "text" ? "textZoomLabel" : "zoomLabel")}
         onChange={(event) => onMarkdownZoomChange(Number(event.target.value))}
         onPointerUp={flushPreferences}
         onPointerCancel={flushPreferences}

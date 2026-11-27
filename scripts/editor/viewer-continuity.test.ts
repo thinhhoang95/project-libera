@@ -36,7 +36,7 @@ test("source editors retain exact scroll and selection through rapid tab switche
     };
     await act(async () => root.render(createElement(StrictMode, null, latex
       ? createElement(LatexEditor, { ...common, documentPath: id, diagnostics: [], project: { labels: [], bibEntries: [], files: [] }, editorRef: { current: null }, onEdit: () => {}, onCompile: () => {}, onForwardSync: () => {}, onAiError: () => {}, onAddSnippet: () => {} })
-      : createElement(CodeEditor, { ...common, saving: false, onSave: () => {} }))));
+      : createElement(CodeEditor, { ...common, baseFontSizePx: 14, saving: false, onSave: () => {} }))));
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 35)); });
   }
   function scroller() { return host.querySelector<HTMLElement>(".cm-scroller")!; }

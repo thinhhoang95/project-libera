@@ -4783,6 +4783,8 @@
     "saveError": "Could not save Markdown display settings."
   },
   "markdownDisplayZoom": {
+    "textSizeLabel": "Text size: {size}px at {zoom, number, percent} zoom",
+    "textZoomLabel": "Text zoom",
     "sizeLabel": "Rendered Markdown text size: {size}px at {zoom, number, percent} zoom",
     "zoomLabel": "Rendered Markdown text zoom",
     "zoomValue": "{zoom, number, percent} / {size}px"

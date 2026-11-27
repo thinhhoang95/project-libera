@@ -756,8 +756,10 @@ function WorkspacePanelContent({
   const activeMarkdownViewState =
     activeTab?.file.fileType === "markdown" ? activeTab.viewState?.markdown : undefined;
   const { updatePreferences: updateDisplayPreferences } = useMarkdownDisplayPreferenceActions();
-  // Only Markdown and LaTeX tabs show the zoom, so other panes stay still while the slider moves.
-  const markdownZoom = useMarkdownDisplayPreference("textScale", activeFileType === "markdown" || activeFileType === "latex");
+  // Markdown and LaTeX each keep their own zoom; each is followed only while its tab is active,
+  // so other panes stay still while the slider moves. (Text files read theirs in the editor.)
+  const markdownZoom = useMarkdownDisplayPreference("textScale", activeFileType === "markdown");
+  const latexZoom = useMarkdownDisplayPreference("latexTextScale", activeFileType === "latex");
   const markdownZoomScale = markdownZoom / 100;
   const markdownFontSizePx = markdownPreferences.baseFontSize * markdownZoomScale;
   // Each editor's typeface comes from its theme (Preferences → Markdown → Themes).
@@ -2008,7 +2010,7 @@ function WorkspacePanelContent({
           files={files}
           fontFamily={latexEditorFontFamily}
           visualFontFamily={latexVisualFontFamily}
-          fontSizePx={markdownFontSizePx}
+          fontSizePx={markdownPreferences.baseFontSize * (latexZoom / 100)}
           lineHeight={markdownPreferences.baseLineHeight}
           readOpenTabs={readOpenTabs}
           onSetDraft={onSetDraft}
@@ -2027,7 +2029,7 @@ function WorkspacePanelContent({
           documentPath={activeTab.untitled ? undefined : activeTab.file.path}
           value={activeTab.draft}
           fontFamily={markdownEditorFontFamily}
-          fontSizePx={markdownFontSizePx}
+          baseFontSizePx={markdownPreferences.baseFontSize}
           lineHeight={markdownPreferences.baseLineHeight}
           initialViewState={activeTab.viewState?.text}
           saving={activeTab.status === "saving"}

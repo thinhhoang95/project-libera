@@ -29,7 +29,7 @@ test("moving visible tabs between split panes snapshots positions before remount
       renderPane: (pane) => {
         const tab = tabs.find((tab) => tab.id === pane.tabId);
         return tab ? createElement(CodeEditor, { key: tab.id, fileName: tab.file.name, value: tab.draft,
-          fontFamily: "monospace", fontSizePx: 14, lineHeight: 1.5, saving: false,
+          fontFamily: "monospace", baseFontSizePx: 14, lineHeight: 1.5, saving: false,
           initialViewState: tab.viewState?.text,
           onChange: (draft) => setTabs((current) => current.map((item) => item.id === tab.id ? { ...item, draft } : item)),
           onSave: () => {},

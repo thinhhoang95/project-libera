@@ -4783,6 +4783,8 @@
     "saveError": "Impossible d’enregistrer les réglages d’affichage du Markdown."
   },
   "markdownDisplayZoom": {
+    "textSizeLabel": "Taille du texte : {size} px à un zoom de {zoom, number, percent}",
+    "textZoomLabel": "Zoom du texte",
     "sizeLabel": "Taille du texte Markdown affiché : {size} px à un zoom de {zoom, number, percent}",
     "zoomLabel": "Zoom du texte Markdown affiché",
     "zoomValue": "{zoom, number, percent} / {size} px"
